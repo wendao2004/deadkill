@@ -17,6 +17,7 @@
 | 客户端 | **纯 TypeScript + Vite** | 游戏循环与 Vue 响应式敌对；纯 TS 可嵌入任何宿主 |
 
 完整决策依据（含被否决的方案与代价）见 `docs/技术栈决策.md`。
+引擎内核（固定步换算、帧相位、确定性随机、共享层边界）见 `docs/内核.md`。
 接入宿主的步骤见 `docs/接入 WebLearning.md`。
 
 ## 快速开始
@@ -41,6 +42,8 @@ pnpm --filter @dk/client dev
 
 ```
 shared/          两端共用的代码（不含 DOM、不含 node: 内置模块）
+  kernel/        引擎内核：fixed-clock（固定步/丢积压/插值 alpha）、registry（依赖拓扑）、
+                 events（同步总线）、rng（xoshiro128** + forkFor）、kernel（帧相位编排）
   math.ts        零依赖向量/角度运算
   constants.ts   所有"两端必须一致"的常量与武器表
   protocol.ts    手写二进制协议（定长、小端、DataView）
@@ -49,21 +52,25 @@ shared/          两端共用的代码（不含 DOM、不含 node: 内置模块�
   sim.ts         移动加速模型（纯函数）
   character.ts   Rapier 角色控制器封装
   hit.ts         射线命中、散布、伤害衰减
+  loot.ts        搜刮点掉落（纯函数，两端可各自重算）
+  matchDriver.ts 线索 → 放逐 → 撤离状态机
+  lagcomp.ts     回滚到哪一 tick + 历史帧里的胶囊位姿
+  snapshotView.ts 快照投影与 ackSeq 贴取
 
 server/          游戏服务端（作为 Fastify 插件）
-  world.ts       一个房间 = 一个 Rapier World + 60Hz tick + 延迟补偿
+  world.ts       一个房间 = 一个 Rapier World + 9 段 tick 流水线 + 延迟补偿
   worlds.ts      World 注册表与空闲回收
   game.ts        /api/game/status + /ws/game 握手
   index.ts       独立开发入口（集成时不用它）
 
 client/          Three.js 客户端
-  game.ts        预测 / 和解 / 远端插值
+  game.ts        预测 / 和解 / 远端插值（四个系统注册进内核）
   render.ts      场景、关卡网格、第一人称武器、曳光弹
   input.ts       键鼠 → PlayerInput
   net.ts         WebSocket 收发
   main.ts        DOM 接线（换成 Vue 组件只需改这一个文件）
 
-docs/            技术栈决策 + 宿主接入指南
+docs/            技术栈决策 + 宿主接入指南 + 内核说明（docs/内核.md）
 ```
 
 ## 已经做对的三件难事
