@@ -92,10 +92,12 @@ import {
   carrionHeal,
   executeScale,
   EXECUTE_BELOW,
+  forkFor,
   getModifier,
   maxHealthBonus,
   MODIFIERS,
   monsterDamageScale,
+  Rng,
   rollModifier,
   rollLoot,
   meleeStrike,
@@ -447,12 +449,23 @@ export class World {
   private sightY = 0
   private sightZ = 0
   /**
-   * 怪物用的随机源。
+   * 玩法主流：天气/战利品位、刷怪位置与种类、怪物游荡、弹道扩散、Boss 召唤。
    *
-   * 只有"在家待机时缓慢游荡"会用它，绝不参与命中判定 —— 所以它不参与
-   * 延迟补偿的重放也能保持一致性。种子来自房间 id，同一房间重放同一条轨迹。
+   * 用内核的 `Rng`（xoshiro128**）而不是 mulberry32：客户端表现层用的是同一套，
+   * 两端共用一种 PRNG 才谈得上"同种子同轨迹"。状态可以导出（`state()`），
+   * 这是以后做录像回放与观战的前提。
+   *
+   * `rng` 这个函数式门面保留下来，是因为两百多处调用都写成了 `this.rng()`。
    */
+  private readonly stream: Rng
   private readonly rng: () => number
+  /**
+   * 出生点选择专用的独立流。
+   *
+   * 单独一条：选点会消耗随机数，如果和玩法主流共用，加一个出生点判断就会
+   * 让本局的怪物刷新顺序整体错位 —— 同一个种子再也复现不出同一局。
+   */
+  private readonly spawnRng: Rng
   /**
    * 线索 / 放逐 / 撤离的状态机。
    *
@@ -529,7 +542,10 @@ export class World {
     this.onEmpty = options.onEmpty
     this.physics = createLevelWorld(this.level)
     addBounds(this.physics, this.level)
-    this.rng = mulberry32(hashSeed(this.id))
+    const seed = hashSeed(this.id)
+    this.stream = new Rng(seed)
+    this.rng = () => this.stream.float()
+    this.spawnRng = forkFor(seed, 'spawn')
     // 先抽天气、再刷怪：刷怪数量与种类都要吃 modifier（虫潮 1.6 倍怪量），
     // 反过来先刷怪就得把整批怪重算一遍。
     this.modifier = rollModifier(this.rng)
@@ -2492,7 +2508,7 @@ export class World {
       // 没有其他玩家时 nearest 仍是 Infinity，加随机扰动把选择打散。
       // 扰动走世界自己的种子流，不用 Math.random：选点曾经是全仓唯一一处
       // 绕过种子的权威随机，只要它在，回放就不可能逐帧复现。
-      const score = (nearest === Infinity ? 1e6 : nearest) + this.rng() * 4
+      const score = (nearest === Infinity ? 1e6 : nearest) + this.spawnRng.float() * 4
       if (score > bestScore) {
         bestScore = score
         best = spawn

@@ -7,6 +7,7 @@ import {
   Kernel,
   Rng,
   SystemRegistry,
+  forkFor,
   type FrameTime,
   type KernelContext,
 } from '../shared/src/index.ts'
@@ -224,4 +225,25 @@ test('内核：上下文必须使用 kernel.clock.time，否则固定步推进�
   await kernel.init({ events, time: kernel.clock.time })
   assert.equal(kernel.clock.time, kernel.clock.time)
   assert.equal(kernel.clock.time.fixed, 1 / 60)
+})
+
+test('内核随机：forkFor 只取决于 (种子, 标签)，与派生顺序无关', () => {
+  const seed = 0xdeadbeef
+  const initial = forkFor(seed, 'spawn').state()
+
+  // 先派生别的系统、消耗掉一堆随机数，spawn 这条流必须一点没变 ——
+  // 这就是"加一个粒子系统不会让 AI 换个走法"的技术保证。
+  const other = forkFor(seed, 'fx')
+  for (let i = 0; i < 32; i++) other.float()
+  assert.deepEqual(forkFor(seed, 'spawn').state(), initial)
+
+  // 同一 (种子, 标签) 派生两次，头三个数必须逐个相同。
+  const a = forkFor(seed, 'spawn')
+  const b = forkFor(seed, 'spawn')
+  assert.deepEqual(a.state(), b.state())
+  for (let i = 0; i < 3; i++) assert.equal(a.float(), b.float())
+
+  // 不同标签、不同种子必须分到不同的流，否则等于共用一条。
+  assert.notEqual(forkFor(seed, 'spawn').u32(), forkFor(seed, 'ai').u32())
+  assert.notEqual(forkFor(seed, 'spawn').state()[0], forkFor(seed + 1, 'spawn').state()[0])
 })

@@ -133,3 +133,20 @@ export class Rng {
     return this
   }
 }
+
+/**
+ * 从对局种子派生一条子系统专属的随机流。
+ *
+ * 为什么不从主流 `fork()`：fork 出来的是"第几条"，取决于谁先 fork ——
+ * 系统初始化顺序本来就是会变的，加一个粒子系统就可能让 AI 的游荡路线变形。
+ * 用 (seed, label) 直接哈希，任何系统的流只取决于自己：加系统、改顺序、
+ * 调画质都不影响玩法随机的复现。
+ */
+export function forkFor(seed: number, label: string): Rng {
+  // FNV-1a：短字符串上散得开，实现只有三行，不必引第三方哈希。
+  let hash = 0x811c9dc5
+  for (let i = 0; i < label.length; i++) {
+    hash = Math.imul(hash ^ label.charCodeAt(i), 0x01000193)
+  }
+  return new Rng((seed ^ hash) >>> 0)
+}
