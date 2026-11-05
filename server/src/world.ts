@@ -64,6 +64,7 @@ import {
   SNAPSHOT_HISTORY,
   SNAPSHOT_RATE,
   StateFlags,
+  SystemRegistry,
   TICK_DT,
   TICK_MS,
   TICK_RATE,
@@ -122,6 +123,7 @@ import {
   type MeleeCandidate,
   type PlayerInput,
   type GameEvent,
+  type FrameTime,
   type PlayerSnapshot,
   type MonsterSnapshot,
   type Monster,
@@ -136,6 +138,18 @@ import { Capsule, ColliderDesc, Ray, RigidBodyDesc } from '@dimforge/rapier3d-co
 
 import { MatchDriver } from './match.ts'
 import { addBounds, createLevelWorld } from './physics.ts'
+
+/**
+ * 服务端内核上下文。
+ *
+ * 与客户端同形：时间 + 世界入口。服务端没有 update/lateUpdate/render 相位，
+ * 所以不套 `Kernel` 的帧外壳，只用它的 `SystemRegistry` + `FixedClock` ——
+ * 共享的是"固定步怎么换算、阶段按什么顺序跑"，不是"服务端也要画一帧"。
+ */
+interface WorldContext {
+  readonly time: FrameTime
+  readonly world: World
+}
 
 /** 历史帧里某个玩家的位姿，回滚用。 */
 interface HistoryEntry {
@@ -516,6 +530,15 @@ export class World {
     maxSubsteps: MAX_CATCHUP_TICKS,
     maxFrameDt: 0.1,
   })
+  /**
+   * 一个 tick 内的阶段顺序。
+   *
+   * 以前这九段是 `step()` 里从上到下的一串调用，顺序只写在注释里：
+   * 谁都不能看出"怪必须在玩家输入之前动"，只有改错一次、看见命中差一 tick 才知道。
+   * 现在顺序是数据（deps 决定），`with('fixedUpdate')` 缓存后每 tick 只做一次数组遍历。
+   */
+  private readonly phases = new SystemRegistry<WorldContext>()
+  private readonly ctx: WorldContext
   private emptySince = 0
   private stopped = false
 
@@ -540,6 +563,21 @@ export class World {
     // modifier 由 World 抽、由目标包下发；MatchDriver 只持有它，一局不变。
     this.match.state.modifier = this.modifier
     this.spawnMonsters()
+
+    this.ctx = { time: this.clock.time, world: this }
+    // 顺序即玩法。九段全部显式命名，依赖关系写在 deps 里：
+    // 想插一段"在物理之前"，只要声明 deps，不必猜自己该插在哪一行。
+    this.phases
+      .add('lifecycle', { fixedUpdate: () => this.beginTick() })
+      .add('monsters', { fixedUpdate: () => this.stepMonsters() }, ['lifecycle'])
+      .add('inputs', { fixedUpdate: () => this.stepInputs() }, ['monsters'])
+      // physics.step 是唯一屏障：所有角色都提交完 next kinematic translation 才能推进。
+      .add('physics', { fixedUpdate: () => this.physics.step() }, ['inputs'])
+      .add('interactions', { fixedUpdate: () => this.stepInteractions() }, ['physics'])
+      .add('history', { fixedUpdate: () => this.pushHistory() }, ['interactions'])
+      .add('match', { fixedUpdate: () => this.stepMatch() }, ['history'])
+      .add('objective', { fixedUpdate: () => this.stepObjective() }, ['match'])
+      .add('broadcast', { fixedUpdate: () => this.stepBroadcast() }, ['objective'])
   }
 
   // ------------------------------------------------------------ 生命周期
@@ -1476,7 +1514,19 @@ export class World {
 
   // ------------------------------------------------------------ tick
 
+  /**
+   * 前进恰好一个 tick：按注册顺序跑完九个固定步阶段。
+   *
+   * 这里不读时钟 —— 一个 tick 就是一个 tick，"真实时间够不够"是 pump 的事。
+   * 测试直接调它推进，所以它可以被跑得比墙钟快得多。
+   */
   private step(): void {
+    const phases = this.phases.with('fixedUpdate')
+    for (let i = 0; i < phases.length; i++) phases[i]!.system.fixedUpdate?.(TICK_DT, this.ctx)
+  }
+
+  /** 阶段 1：tick 计数、尸体过期、断线超时。 */
+  private beginTick(): void {
     this.tick++
     // 尸体缓存到期就消失；如果它带着赏金，下一次 match.step 会看到
     // bountyOnGround()=false，把阶段退回 banish（赏金回到血巢）。
@@ -1492,11 +1542,15 @@ export class World {
         }
       }
     }
+  }
 
-    // 怪先动、再处理玩家输入：这样同一 tick 里玩家的射线看到的是本 tick 的怪，
-    // 反过来会永远差一 tick，表现为"明明擦着边打过去却判定命中"。
-    this.stepMonsters()
-
+  /**
+   * 阶段 3：消费玩家输入与复活。
+   *
+   * 排在怪物之后：这样同一 tick 里玩家的射线看到的是本 tick 的怪，反过来会
+   * 永远差一 tick，表现为"明明擦着边打过去却判定命中"。
+   */
+  private stepInputs(): void {
     for (const player of this.players.values()) {
       if (!player.alive) {
         if (this.tick >= player.respawnTick) this.respawn(player)
@@ -1516,17 +1570,20 @@ export class World {
       }
       this.tickTimers(player)
     }
+  }
 
-    // 所有角色都提交完 next kinematic translation，才 step 一次世界。
-    this.physics.step()
+  /** 阶段 5：搜刮与包扎进度。都用物理推进后的落点算，理由见各自动机。 */
+  private stepInteractions(): void {
     // 搜索进度用**物理推进后**的落点算：放前面会拿到上一 tick 的脚底位置，
     // 在人贴着木板边缘时表现为"明明没动却判成走开了"。
     for (const player of this.players.values()) this.stepSearch(player)
     // 包扎进度也放在物理推进之后：脚底位置是"这一 tick 真的走到了哪"，
     // 放前面会把上一 tick 的位移当成"走开了"，边退边打药会被判成原地不动。
     for (const player of this.players.values()) if (player.heal) this.stepHeal(player)
-    this.pushHistory()
+  }
 
+  /** 阶段 7：目标状态机推进 + 上一局收尾清理。 */
+  private stepMatch(): void {
     // 目标状态放在快照之前推进：本 tick 的线索/放逐进度要跟着这一帧的位置走，
     // 放到快照之后会让 HUD 永远比画面慢一帧。
     this.match.step()
@@ -1561,12 +1618,19 @@ export class World {
       }
     }
     this.lastMatchPhase = matchPhase
+  }
+
+  /** 阶段 8：Boss 生命周期与目标广播。 */
+  private stepObjective(): void {
     // Boss 跟着线索走：集齐就刷、一局结束就清场。放在 match.step 之后是因为
     // 刷 Boss 的时机就是"lairRevealed 变 true 的那一 tick"。
     if (this.match.state.phase === 'hunt' && this.bossSpawned) this.despawnBoss()
     else if (this.match.state.lairRevealed && !this.bossSpawned) this.spawnBoss()
     this.publishObjective()
+  }
 
+  /** 阶段 9：出网节奏 —— 快照 / 战利品 / 事件。 */
+  private stepBroadcast(): void {
     if (this.tick % Math.round(TICK_RATE / SNAPSHOT_RATE) === 0) this.broadcastSnapshot()
     if (this.tick % Math.round(TICK_RATE / LOOT_RATE) === 0) this.publishLoot()
     if (this.pendingEvents.length > 0) this.flushEvents()
