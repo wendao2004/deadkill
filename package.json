@@ -1,0 +1,20 @@
+{
+  "name": "dead-kill",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"pnpm -F @dk/server dev\" \"pnpm -F @dk/client dev\"",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "typecheck": "pnpm -F @dk/shared typecheck && pnpm -F @dk/server typecheck && pnpm -F @dk/client typecheck",
+    "start": "pnpm -F @dk/server start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

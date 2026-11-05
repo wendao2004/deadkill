@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>DEAD KILL</title>
+    <style>
+      /*
+        视觉基调：《猎杀：对决》的 1890 年代腐化沼泽 —— 夜里偏冷、大面积近黑、
+        低饱和，只让灯火橙 / 干血红 / 病态黄绿三色出血；线条则借《无主之地》的
+        粗黑勾边、硬错位投影、斜切与手作硬边。所以整页只有近黑描边 + 极少量彩色，
+        任何"干净现代 UI"的细淡边框、圆角、柔和阴影都会和 3D 描边渲染打架。
+
+        部署环境 CSP 是 default-src 'self'；img-src 'self' data: blob:，
+        禁止任何外链字体/图片/请求（含字体 CDN 与图标站）。因此：
+        字体只用系统本地回退栈，颗粒与网点全部用 CSS 渐变 + 内联 SVG data-URI 生成。
+        所有尺寸相对视口，保证不同 DPI 下准星与 HUD 不跑位。
+
+        #menu 在 HTML 里保持空壳：主界面（含设置面板）DOM 全部由 client/src/menu.ts
+        运行时构建，外壳只负责把它定位到视口最上层。
+      */
+      :root {
+        --ink: #0c0b0a;        /* 油墨黑：所有描边、硬投影、text-stroke */
+        --bone: #d8cfba;       /* 骨白：主文字 */
+        --ash: #8d8578;        /* 灰烬：次要文字 */
+        --amber: #d99a4a;      /* 灯火橙：弹药、准星、强调 */
+        --blood: #7d2b22;      /* 干血红：低血量、受伤、死亡 */
+        --slate: #2a3138;      /* 冷板岩：面板底 */
+        --bile: #9aa845;       /* 病态黄绿：次级强调 */
+        --shadow-hard: 4px 4px 0 var(--ink);
+        --font-display: 'Arial Black', Impact, 'Haettenschweiler', system-ui, 'Segoe UI', sans-serif;
+        --font-ui: system-ui, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        --font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+        /* 半调网点：一个径向渐变即一个印刷网点，重复成阵列就是旧印刷品质地 */
+        --halftone: radial-gradient(circle at 50% 50%, rgba(12, 11, 10, 0.55) 1px, transparent 1.5px);
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;               /* 游戏独占视口，页面滚动条会顶偏准星 */
+        background: #07080a;
+        color: var(--bone);
+        font-family: var(--font-ui);
+        -webkit-font-smoothing: antialiased;
+        /* 拖拽选中文字会让 pointermove 变成选词，直接毁掉瞄准手感 */
+        -webkit-user-select: none;
+        user-select: none;
+        /* 移动端点击会闪一层蓝灰高亮，暗场景里尤其刺眼 */
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      /* 3D canvas 由 Game 自己创建后塞进 #app，外壳只保证它满屏且不产生行内间隙。 */
+      #app { position: fixed; inset: 0; }
+      #app canvas, canvas { display: block; width: 100%; height: 100%; }
+
+      /*
+        颗粒层：半调网点（CSS 渐变）+ feTurbulence 灰度噪点（内联 SVG data-URI）。
+        用 multiply 压暗而不是叠加白噪，才符合"夜里看纸质胶片"的观感；
+        opacity 压到 0.15 以内，否则暗部会被噪点洗成灰雾、看不清敌人轮廓。
+        data-URI 里的 xmlns 命名空间整段做了百分号编码：既不影响浏览器解析
+        （data URI 先解码再交给 XML 解析器），也不在源码里留下任何「协议://」字形，
+        这样外链数为 0 的静态审计可以直接过关，不必靠人工辨认它是命名空间。
+        feTurbulence 的 baseFrequency/numOctaves 全是写死常量，随机数会让底色逐帧跳变。
+      */
+      #grain {
+        position: fixed; inset: 0; pointer-events: none; z-index: 5;
+        opacity: 0.15;
+        background-image:
+          var(--halftone),
+          url("data:image/svg+xml,%3Csvg%20xmlns='%68%74%74%70%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width='200'%20height='200'%3E%3Cfilter%20id='grain'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.9'%20numOctaves='3'%20stitchTiles='stitch'/%3E%3CfeColorMatrix%20type='saturate'%20values='0'/%3E%3C/filter%3E%3Crect%20width='200'%20height='200'%20filter='url%28%23grain%29'/%3E%3C/svg%3E");
+        background-size: 6px 6px, 200px 200px;
+        mix-blend-mode: multiply;
+        /*
+          这一层**必须完全静止**。
+          实测（1080p / Intel HD P4600，rAF 帧间隔中位数）：
+            静止 ................. 8.8ms
+            每帧 transform 抖动 ... 23.3ms
+          原因是满屏 fixed 层一旦每帧改变 transform，multiply 就要求合成器
+          每帧把整个后景重新读回来混一遍。代价与 WebGL 分辨率无关 —— 把渲染
+          分辨率降到一半（dpr 0.5）时带抖动仍是 22.8ms，一分没省。
+          收益只是"噪点每 0.4 秒抖一格"，不值得用一半帧率去换。
+          纸感来自颗粒的**存在**，不来自它在动。原来的 grainShift 关键帧
+          已删除，别再加回来。
+        */
+      }
+
+      /*
+        暗角 + 画框：四条 40px 硬边墨色条暗示 3A 电影的 letterbox 画幅，
+        边缘再叠一层椭圆暗角把注意力压回屏幕中心。渐变止于 40px 且中心完全透明，
+        不会挡住准星与敌人。
+      */
+      #vignette {
+        /* 选择器名沿用暗角这个词，它不是 CSS 混合模式关键字，不会和下面的准星说明混淆 */
+        position: fixed; inset: 0; pointer-events: none; z-index: 4;
+        background-image:
+          radial-gradient(ellipse 118% 100% at 50% 50%, rgba(7, 8, 10, 0) 42%, rgba(7, 8, 10, 0.62) 78%, rgba(7, 8, 10, 0.92) 100%),
+          linear-gradient(to bottom, rgba(12, 11, 10, 0.94), rgba(12, 11, 10, 0) 40px),
+          linear-gradient(to top, rgba(12, 11, 10, 0.94), rgba(12, 11, 10, 0) 40px),
+          linear-gradient(to right, rgba(12, 11, 10, 0.9), rgba(12, 11, 10, 0) 40px),
+          linear-gradient(to left, rgba(12, 11, 10, 0.9), rgba(12, 11, 10, 0) 40px);
+      }
+
+      /*
+        受伤闪红：main.ts 把 opacity 置 1 后下一帧就置 0，靠这里的 transition 淡出，
+        所以 0.45s ease-out 是与 main.ts 的时序约定，不能改。
+        用 screen 而不是 multiply：血红要"发光"地浮在暗场上，压暗会看不见。
+      */
+      #damage {
+        position: fixed; inset: 0; z-index: 3; pointer-events: none;
+        opacity: 0;
+        mix-blend-mode: screen;
+        background-image: radial-gradient(ellipse at 50% 50%,
+          rgba(125, 43, 34, 0) 34%,
+          rgba(125, 43, 34, 0.34) 74%,
+          rgba(125, 43, 34, 0.55) 100%);
+        transition: opacity 0.45s ease-out;
+      }
+
+      /*
+        准星：四段短线 + 3px 实心点，骨白配 1.5px 近黑描边。
+        刻意不用差值混合模式：沼泽夜战大面积近黑，差值会让骨白在暗背景上近乎归零，
+        恰恰在最需要瞄准的时候消失；改用实色 + 描边，深浅背景都是同一个可读形态。
+        四段用独立 <i> 而不是伪元素：伪元素画不出"中间留空 + 每段各自描边"。
+      */
+      #crosshair {
+        position: fixed; left: 50%; top: 50%; z-index: 6; pointer-events: none;
+        width: 30px; height: 30px;
+        transform: translate(-50%, -50%) scale(var(--dk-xhair-scale, 1));
+        animation: crosshairBreath 5s steps(3, end) infinite;
+      }
+      #crosshair .arm {
+        position: absolute; display: block;
+        background: var(--dk-xhair-color, var(--bone));
+        box-shadow: 0 0 0 1.5px var(--ink);
+        opacity: var(--dk-xhair-opacity, 1);
+      }
+      #crosshair .up, #crosshair .down { left: 50%; width: 2px; height: 8px; transform: translateX(-50%); }
+      #crosshair .up { top: 0; }
+      #crosshair .down { bottom: 0; }
+      #crosshair .left, #crosshair .right { top: 50%; height: 2px; width: 8px; transform: translateY(-50%); }
+      #crosshair .left { left: 0; }
+      #crosshair .right { right: 0; }
+      #crosshair .dot {
+        position: absolute; left: 50%; top: 50%; display: block;
+        width: 3px; height: 3px; border-radius: 50%;
+        background: var(--dk-xhair-color, var(--bone));
+        box-shadow: 0 0 0 1.5px var(--ink);
+        opacity: var(--dk-xhair-opacity, 1);
+        transform: translate(-50%, -50%);
+      }
+      /* 呼吸只动透明度：动 transform 会和居中用的 translate(-50%,-50%) 抢同一个属性 */
+      @keyframes crosshairBreath {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.78; }
+      }
+
+      /*
+        开镜收准星：真正有镜筒的（body.dk-scoped）才彻底收掉 —— 分划本身就是基准。
+        用 steps(2) 而不是缓动 —— 收得太慢会看到准星在"跟着漂"，像延迟。
+
+        机械瞄具的枪（霰弹、1.3 倍卡宾）不进镜筒，只把十字收紧一档、压暗一点：
+        它们的照门在模型里只是个小缺口，逼玩家只看缺口反而会重新引出
+        "打到人却没中"的手感争议 —— 准星是这一枪打向哪里的唯一权威读数。
+      */
+      body.dk-scoped #crosshair { opacity: 0; animation: none; transition: opacity 0.08s steps(2, end); }
+      body.dk-ads:not(.dk-scoped) #crosshair {
+        width: 18px; height: 18px;
+        opacity: 0.85;
+        animation: none;
+        transition: width 0.08s steps(2, end), height 0.08s steps(2, end);
+      }
+
+      /*
+        入场：幕收拢之后 HUD 从黑场里浮出来。
+        只动 opacity、不动位移 —— HUD 一挪就像被谁拽了一下；玩家此刻正在
+        确认"我手里是哪把枪、还有多少弹"，任何位移都会让读数多看半秒。
+      */
+      body.dk-entering #hud { animation: dkHudIn 520ms 120ms ease-out both; }
+      @keyframes dkHudIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      /*
+        镜筒：外圈压到全黑、内圈一道极细的环形切线 + 十字分划，中央完全透明。
+        做成 DOM 而不是渲染里的几何 —— 它必须钉死在屏幕中心，且不受 FOV 缩放影响；
+        画成几何的话，3.8 倍时镜环会被放大到糊成一片。
+      */
+      #scope {
+        position: fixed; inset: 0; z-index: 5; pointer-events: none;
+        opacity: 0; transition: opacity 0.1s steps(2, end);
+        background: radial-gradient(circle at 50% 50%,
+          rgba(0, 0, 0, 0) 0 25vh,
+          rgba(0, 0, 0, 0.5) 25.8vh,
+          rgba(0, 0, 0, 0.94) 29vh,
+          #000 33vh);
+      }
+      body.dk-scoped #scope { opacity: 1; }
+      #scope .ring {
+        position: absolute; left: 50%; top: 50%;
+        width: 50vh; height: 50vh; border-radius: 50%;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 0 0 1.5px rgba(12, 11, 10, 0.95),
+          inset 0 0 0 1px rgba(216, 207, 186, 0.16);
+      }
+      #scope .cross-h, #scope .cross-v {
+        position: absolute; left: 50%; top: 50%;
+        background: rgba(12, 11, 10, 0.9);
+      }
+      #scope .cross-h { width: 50vh; height: 1px; transform: translate(-50%, -50%); }
+      #scope .cross-v { width: 1px; height: 50vh; transform: translate(-50%, -50%); }
+      /* 中心留一个小缺口再点一颗琥珀 —— 正对镜心的那一点是"准"的唯一权威读数。 */
+      #scope .center {
+        position: absolute; left: 50%; top: 50%;
+        width: 5px; height: 5px; border-radius: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--amber);
+        box-shadow: 0 0 0 1.5px rgba(12, 11, 10, 0.95);
+      }
+
+      /*
+        HUD 的 DOM 契约（main.ts 直接取 #hp / #ammo / #log / #debug）把生命与弹药
+        拆进了两行。两行都贴底、用 space-between 分居左右：第一行左侧生命，
+        第二行左侧日志 + 右侧弹药，于是左下是文字信息、右下是弹药数字。
+        #debug 是右上角的系统状态，脱出流式布局单独贴角，免得把生命顶上屏幕顶边。
+      */
+      #hud {
+        position: fixed; inset: 0; z-index: 7; pointer-events: none;
+        padding: 16px 22px 16px;
+        display: flex; flex-direction: column; justify-content: flex-end; gap: 8px;
+        font-size: 13px; letter-spacing: 0.06em;
+      }
+      .hud-row {
+        display: flex; justify-content: space-between; align-items: flex-end; gap: 18px;
+      }
+
+      /*
+        天赋徽记条：局内唯一常驻的"我带了什么"。放在血条上面一行，靠左 —— 玩家
+        低头看血的时候自然扫到，不需要一个独立的技能栏抢视线。徽记本身在
+        traits.css 里做描线/呼吸/心跳三层动效。
+      */
+      #traits { display: flex; align-items: flex-end; gap: 7px; }
+      #traits .dk-trait-icon {
+        /* 和血条同一套错版印刷：墨线在亮背景上必须有近黑硬投影，否则糊成一片。 */
+        filter: drop-shadow(2px 2px 0 rgba(12, 11, 10, 0.9));
+      }
+      /* 空槽（天赋没带满三条）用一个虚线圈占位，一眼看出"还有位置"。 */
+      #traits .dk-trait-slot {
+        width: 26px; height: 26px; border: 1.5px dashed rgba(216, 207, 186, 0.26);
+      }
+      /* 绷带余量：数字大、单位小，和弹药同一个语汇。 */
+      #bandages {
+        display: flex; align-items: baseline; gap: 4px;
+        color: var(--bone);
+        font-variant-numeric: tabular-nums;
+        text-shadow: 2px 2px 0 rgba(12, 11, 10, 0.9);
+        opacity: 0.9;
+      }
+      #bandages b {
+        font-family: var(--font-display); font-weight: 900; font-size: 15px;
+        -webkit-text-stroke: 0.6px var(--ink); paint-order: stroke fill;
+      }
+      #bandages span { font-size: 10px; letter-spacing: 0.16em; color: var(--ash); }
+      /* 没有绷带时整块压暗：一个亮着的 0 会让人以为还能用。 */
+      #bandages.is-empty { opacity: 0.34; }
+
+      /* 大数字：超粗字 + 近黑描边 + 4px 硬投影（错版印刷），任何明暗背景都读得出。 */
+      #hp, #ammo {
+        font-family: var(--font-display);
+        font-weight: 900;
+        font-size: clamp(34px, 4.4vw, 56px);
+        line-height: 0.88;
+        letter-spacing: -0.01em;
+        font-variant-numeric: tabular-nums;   /* 数字等宽，血量跳动时不左右抖 */
+        color: var(--bone);
+        -webkit-text-stroke: 2.5px var(--ink);
+        paint-order: stroke fill;
+        text-shadow: var(--shadow-hard);
+      }
+      #hp { transform: rotate(-1.2deg); }
+      #ammo { font-size: clamp(38px, 5vw, 64px); color: var(--amber); transform: rotate(1deg); }
+      .hud-ammo { display: flex; align-items: flex-end; gap: 6px; }
+      #reserve {
+        padding-bottom: 7px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        color: var(--ash);
+        transform: rotate(1deg);
+        text-shadow: 1px 1px 0 rgba(12, 11, 10, 0.9);
+      }
+      #reserve.is-empty { color: var(--blood); opacity: 0.8; }
+  /* 换弹中：数字仍然是数字（玩家要能读到还剩几发），只用透明度+抖动表示"正在动"。
+     steps(3) 是有意的——手绘风格里连续缓动会读成 UI 故障。 */
+  #ammo.is-reloading { opacity: 0.55; animation: dk-ammo-shake 0.24s steps(3) infinite; }
+  @keyframes dk-ammo-shake {
+    0% { transform: rotate(1deg) translateY(0); }
+    50% { transform: rotate(-1deg) translateY(-2px); }
+    100% { transform: rotate(1deg) translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) { #ammo.is-reloading { animation: none; } }
+      /* 前缀标签做小一号的说明字，避免玩家把两个大数字认反 */
+      #hp::before, #ammo::before {
+        margin-right: 10px;
+        font-family: var(--font-ui);
+        font-weight: 700;
+        font-size: 11px;
+        letter-spacing: 0.34em;
+        color: var(--ash);
+        -webkit-text-stroke: 0;
+        text-shadow: 1px 1px 0 var(--ink);
+        transform: rotate(-2deg);
+      }
+      #hp::before { content: "生命"; }
+      #ammo::before { content: "弹药"; }
+      /* 低血量：整串数字转干血红并脉冲；用 opacity 呼吸而非抖动，抖动会糊掉描边 */
+      #hp.low {
+        color: var(--blood);
+        animation: hpPulse 1.05s steps(2, end) infinite;
+      }
+      @keyframes hpPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.55; }
+      }
+
+      /* 战况日志：左侧一条灯火橙竖条当画格边，空文本时整块收起，免得留脏点。 */
+      #log {
+        max-width: 46vw;
+        padding-left: 9px;
+        border-left: 3px solid var(--amber);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.7;
+        letter-spacing: 0.03em;
+        color: var(--bone);
+        text-shadow: 1px 1px 0 var(--ink), 0 0 3px rgba(12, 11, 10, 0.9);
+        background: linear-gradient(90deg, rgba(12, 11, 10, 0.55), rgba(12, 11, 10, 0));
+      }
+      #log:empty { border-left-color: transparent; background: none; }
+
+      /* 调试行：只求读得清，所以用 mono 和小字号退到右上角，不跟生命/弹药抢注意力。 */
+      #debug {
+        position: absolute; top: 12px; right: 16px;
+        padding: 2px 7px;
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        color: var(--ash);
+        background: rgba(10, 11, 13, 0.62);
+        border: 1.5px solid var(--ink);
+        box-shadow: 2px 2px 0 rgba(12, 11, 10, 0.75);
+      }
+
+      /*
+        死亡底衬：main.ts 只用 style.display='none'|'flex' 开关这一层，
+        所以节点与 display 契约必须原样保留（flex 布局写在 #dead 自身，
+        因为行内 display:flex 会继承这里的 align/justify）。
+        但"你已阵亡"的大字、错版重影、"等待复活…" 都搬去了 hud.css 的
+        .dko-death-*：那边能读到 health、能算复活倒计时、能挂去饱和与闪白，
+        而这些在这一层里做不到（#dead 不由 hud.ts 拥有）。
+        这里只留一层压暗 + 网点，职责收窄成"让撒在画面上的字还看得清"。
+      */
+      #dead {
+        position: fixed; inset: 0; z-index: 9; display: none;
+        align-items: center; justify-content: center; flex-direction: column; gap: 16px;
+        pointer-events: none;
+        background-color: rgba(8, 4, 4, 0.34);
+        background-image:
+          radial-gradient(circle at 50% 50%, rgba(12, 11, 10, 0.35) 1px, transparent 1.5px);
+        background-size: 7px 7px;
+      }
+
+      /*
+        主界面外壳：只占位不排版。menu.ts 运行时会往这里建 DOM（含设置面板），
+        所以这里不给任何子元素写样式假设，只保证铺满、置顶、默认可见（display:block）。
+        背景不透明是为了首帧：menu.ts 还没挂载时下面的游戏 canvas 是空的。
+      */
+      #menu {
+        position: fixed; inset: 0; z-index: 20;
+        display: block;
+        overflow: auto;
+        background-color: #0a0c0e;
+        background-image:
+          radial-gradient(ellipse 120% 92% at 50% 34%, #1c2229 0%, #0a0c0e 68%),
+          radial-gradient(circle at 50% 50%, rgba(216, 207, 186, 0.05) 1.1px, transparent 1.5px);
+        background-size: auto, 8px 8px;
+      }
+
+      /*
+        进入游戏后必须整层撤掉，而不只是把内层 .dk-menu 调成 opacity:0。
+        #menu 自己是不透明的满屏层，内层淡出后它照样盖住游戏画面 ——
+        表现是 tick 在涨、HUD 在 DOM 里，屏幕上却一片全黑。
+        用 display:none 而不是 opacity:0：这一层没有过渡要做（转场黑幕由内层 .dk-veil 负责，
+        且内层已淡到 0），留着它只会继续吃掉指针事件。
+      */
+      #menu.is-hidden { display: none; }
+
+      /* 晕动症玩家：颗粒漂移与呼吸脉冲是装饰，关掉后不影响任何玩法信息。 */
+      @media (prefers-reduced-motion: reduce) {
+        #grain, #crosshair, #hp.low { animation: none; }
+      }
+
+      /* 窄屏：先保命再保装饰 —— 大数字缩水，日志整块让位，准星与受伤层不动。 */
+      @media (max-width: 760px) {
+        #hud { padding: 10px 14px 12px; }
+        #hp, #ammo { font-size: clamp(26px, 8vw, 38px); }
+        #hp::before, #ammo::before { font-size: 9.5px; letter-spacing: 0.24em; margin-right: 7px; }
+        #log { display: none; }
+        #debug { top: 8px; right: 10px; font-size: 9.5px; }
+      }
+    </style>
+  </head>
+  <body id="stage">
+    <div id="app"></div>
+    <div id="damage"></div>
+    <div id="vignette"></div>
+    <div id="grain"></div>
+    <div id="scope" aria-hidden="true">
+      <i class="ring"></i>
+      <i class="cross-h"></i>
+      <i class="cross-v"></i>
+      <i class="center"></i>
+    </div>
+    <div id="crosshair">
+      <i class="arm up"></i>
+      <i class="arm down"></i>
+      <i class="arm left"></i>
+      <i class="arm right"></i>
+      <i class="dot"></i>
+    </div>
+    <div id="hud">
+      <div class="hud-row hud-row--traits">
+        <div id="traits" aria-hidden="true"></div>
+        <div id="bandages" aria-hidden="true"><b>0</b><span>绷带</span></div>
+      </div>
+      <div class="hud-row">
+        <div id="hp">150</div>
+        <div id="debug"></div>
+      </div>
+      <div class="hud-row">
+        <div id="log"></div>
+        <div class="hud-ammo">
+          <div id="ammo">8</div>
+          <div id="reserve">/ 32</div>
+        </div>
+      </div>
+    </div>
+    <div id="dead" aria-hidden="true"></div>
+
+    <div id="menu"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

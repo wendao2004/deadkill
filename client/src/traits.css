@@ -1,0 +1,122 @@
+/**
+ * 天赋徽记的动效层。
+ *
+ * 三层节奏刻意不同步（8s / 3.2s / 1.6s），这样一排三个徽记永远不会有两次
+ * 呼吸完全对齐 —— 齐步走会像加载动画，错开才有"活着"的感觉。
+ */
+
+.dk-trait-icon {
+  display: inline-block;
+  position: relative;
+  width: 26px;
+  height: 26px;
+  color: #e6dcc2;
+  line-height: 0;
+}
+
+/* 等级：一排小方块压在徽记底边。等级是 1~3，写数字在 26px 上会糊，
+   方块数一眼就数得出来。 */
+.dk-trait-pip {
+  position: absolute;
+  bottom: 0;
+  width: 4px;
+  height: 4px;
+  background: currentColor;
+  box-shadow: 0 0 0 1px rgba(12, 11, 10, 0.9);
+}
+
+.dk-trait-icon[data-level="1"] .dk-trait-pip:nth-of-type(1) { left: 11px; }
+.dk-trait-icon[data-level="2"] .dk-trait-pip:nth-of-type(1) { left: 6px; }
+.dk-trait-icon[data-level="2"] .dk-trait-pip:nth-of-type(2) { left: 16px; }
+.dk-trait-icon[data-level="3"] .dk-trait-pip:nth-of-type(1) { left: 5px; }
+.dk-trait-icon[data-level="3"] .dk-trait-pip:nth-of-type(2) { left: 12px; }
+.dk-trait-icon[data-level="3"] .dk-trait-pip:nth-of-type(3) { left: 19px; }
+
+.dk-trait-icon svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.dk-trait-icon svg path,
+.dk-trait-icon svg circle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* tk-a：描线。dasharray 用环路长度近似值，回到起点时无缝。 */
+.dk-trait-icon .tk-a {
+  stroke-dasharray: 120;
+  animation: dk-tk-draw 8s linear infinite;
+}
+
+/* tk-b：呼吸。只动不透明度，不动几何 —— 缩放会让 2px 墨线忽粗忽细。 */
+.dk-trait-icon .tk-b {
+  animation: dk-tk-breath 3.2s ease-in-out infinite;
+}
+
+/* tk-c：点睛。实心圆做心跳，缩放原点是它自己的中心。 */
+.dk-trait-icon .tk-c {
+  fill: currentColor;
+  stroke: none;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dk-tk-pulse 1.6s ease-in-out infinite;
+}
+
+/* 快手那颗指针单独转：绕表盘中心（24,24 的 view-box 坐标）。 */
+.dk-trait-icon .tk-hand {
+  transform-box: view-box;
+  transform-origin: 24px 24px;
+  animation: dk-tk-sweep 2.8s linear infinite;
+}
+
+@keyframes dk-tk-draw {
+  from { stroke-dashoffset: 120; }
+  to { stroke-dashoffset: -120; }
+}
+
+@keyframes dk-tk-breath {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+@keyframes dk-tk-pulse {
+  0%, 100% { transform: scale(0.72); opacity: 0.6; }
+  50% { transform: scale(1.12); opacity: 1; }
+}
+
+@keyframes dk-tk-sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 触发式高亮：天赋真的在生效的那一瞬间（挥刀、开枪、挨打、搜到钱）闪一下。
+   动画只跑一轮，class 由 main.ts 在 700ms 后摘掉。 */
+.dk-trait-icon.is-live {
+  color: #f0c063;
+}
+
+.dk-trait-icon.is-live svg {
+  animation: dk-tk-flash 700ms steps(3, end) 1;
+}
+
+@keyframes dk-tk-flash {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.22); }
+  100% { transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dk-trait-icon .tk-a,
+  .dk-trait-icon .tk-b,
+  .dk-trait-icon .tk-c,
+  .dk-trait-icon .tk-hand,
+  .dk-trait-icon.is-live svg {
+    animation: none;
+  }
+}

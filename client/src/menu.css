@@ -1,0 +1,2605 @@
+/*
+  DEAD KILL — 主界面样式。
+
+  三条设计线索：
+  1) 线条学《无主之地》：3px 近黑实边 + 6px 硬投影 + 轻微 rotate 错版 + 撕边 clip-path。
+     注意是"硬"投影 —— blur 为 0。任何一处模糊都会把它拉回网页卡片。
+  2) 配色学《猎杀：对决》：大面积近黑，骨白字，只有橙与黄绿做点缀。
+     所以这里几乎不用纯色块，全靠 1px 描边和极暗的面板底色分割空间。
+  3) 装饰零资源：颗粒、网点、暗角全是 CSS 渐变与内联 SVG data-URI。
+     CSP 是 default-src 'self'，任何外链字体/图片都会直接加载失败。
+*/
+
+.dk-menu {
+  --ink: #0c0b0a;
+  --bone: #d8cfba;
+  --ash: #8d8578;
+  --amber: #d99a4a;
+  --blood: #7d2b22;
+  --slate: #2a3138;
+  --bile: #9aa845;
+
+  --font-display: 'Arial Black', Impact, Haettenschweiler, system-ui, sans-serif;
+  --font-ui: system-ui, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, Consolas, 'Cascadia Mono', monospace;
+
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background: #07090b;
+  color: var(--bone);
+  font-family: var(--font-ui);
+  transition: opacity 260ms linear;
+}
+
+/* 显隐不销毁：进游戏时整体压黑淡出，DOM 与 3D 场景原地保留，
+   退回菜单时不用重建一次（重建意味着重新编译着色器，会卡一下）。 */
+.dk-menu.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 200ms linear, visibility 0s linear 200ms;
+}
+
+.dk-menu * {
+  box-sizing: border-box;
+}
+
+/* ------------------------------------------------------------------ 背景 */
+
+.dk-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.dk-bg canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* WebGL 起不来时的降级底：仍然是"沼泽夜色"，不是白屏。 */
+.dk-bg.is-flat {
+  background:
+    radial-gradient(ellipse 120% 55% at 50% 118%, rgba(168, 72, 31, 0.34), transparent 62%),
+    radial-gradient(ellipse 90% 60% at 50% 40%, #16232b, transparent 70%),
+    linear-gradient(to bottom, #0a121a 0%, #131d24 52%, #05070a 100%);
+}
+
+/* 四角暗角：中心透明、四边压厚，是"屏幕边缘没有信息"的 3A 常规做法。 */
+.dk-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 78% 78% at 50% 46%, transparent 38%, rgba(7, 9, 11, 0.78) 100%),
+    linear-gradient(to bottom, rgba(7, 9, 11, 0.72), transparent 15%),
+    linear-gradient(to top, rgba(7, 9, 11, 0.82), transparent 18%);
+}
+
+/* 胶片颗粒：内联 SVG 湍流 + 半调网点叠一层。multiply 让它只压暗不提亮，
+   否则颗粒会在暗部反光、变成"电视雪花"。 */
+.dk-grain {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: multiply;
+  background-image:
+    radial-gradient(circle at 50% 50%, rgba(12, 11, 10, 0.5) 0.9px, transparent 1.3px),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='150' height='150'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='150' height='150' filter='url(%23g)'/></svg>");
+  background-size: 6px 6px, 150px 150px;
+  animation: dk-grain-shift 4.2s steps(3, end) infinite;
+}
+
+@keyframes dk-grain-shift {
+  0% { transform: translate(0, 0); }
+  33% { transform: translate(-1px, 1px); }
+  66% { transform: translate(1px, -1px); }
+  100% { transform: translate(0, 0); }
+}
+
+/* ------------------------------------------------------------------ 顶栏 */
+
+.dk-top {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: clamp(16px, 2.4vw, 30px) clamp(18px, 3vw, 44px) 0;
+}
+
+.dk-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 标题入场：从墨点"溅开"成形。
+   blur 只在前 45% 出现 —— 墨点扩散时边缘是虚的，定住的一刻必须锐利，
+   否则看起来像"没加载完的图片"而不是泼墨。 */
+.dk-logo {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(34px, 5.6vw, 74px);
+  line-height: 0.82;
+  letter-spacing: -0.03em;
+  color: var(--bone);
+  text-shadow:
+    3px 3px 0 var(--ink),
+    6px 6px 0 rgba(125, 43, 34, 0.85),
+    9px 9px 0 rgba(12, 11, 10, 0.55);
+  transform: rotate(-1.4deg);
+  animation: dk-logo-in 860ms cubic-bezier(0.16, 0.9, 0.24, 1) both;
+}
+
+@keyframes dk-logo-in {
+  0% {
+    opacity: 0;
+    transform: scale(1.55) rotate(-6deg);
+    filter: blur(14px);
+    letter-spacing: 0.12em;
+  }
+  45% {
+    opacity: 1;
+    filter: blur(5px);
+  }
+  78% {
+    transform: scale(0.965) rotate(-1.1deg);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(-1.4deg);
+    filter: blur(0);
+    letter-spacing: -0.03em;
+  }
+}
+
+.dk-tagline {
+  margin: 6px 0 0 2px;
+  font-family: var(--font-mono);
+  font-size: clamp(9.5px, 0.82vw, 11.5px);
+  letter-spacing: 0.22em;
+  color: var(--ash);
+  text-shadow: 1px 1px 0 var(--ink);
+  opacity: 0;
+  animation: dk-fade-in 420ms 620ms linear both;
+}
+
+@keyframes dk-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 右上的血脉/赏金条：三个薄格子用 1px 描边分开，不用底色块 ——
+   近黑背景上任何实色块都会显得"平"。 */
+.dk-dossier {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border: 2px solid var(--ink);
+  background: linear-gradient(to bottom, rgba(42, 49, 56, 0.72), rgba(12, 11, 10, 0.66));
+  box-shadow: 4px 4px 0 var(--ink);
+  transform: rotate(0.5deg);
+  opacity: 0;
+  animation: dk-fade-in 420ms 480ms linear both;
+}
+
+.dk-dossier__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 14px 8px;
+  min-width: 74px;
+}
+
+.dk-dossier__cell + .dk-dossier__cell {
+  border-left: 1px solid rgba(216, 207, 186, 0.16);
+}
+
+.dk-dossier__label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.24em;
+  color: var(--ash);
+}
+
+.dk-dossier__value {
+  font-family: var(--font-display);
+  font-size: 17px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ 主体 */
+
+.dk-main {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: clamp(150px, 13.5vw, 210px) minmax(0, 1fr);
+  gap: clamp(14px, 2vw, 34px);
+  padding: clamp(12px, 1.8vw, 26px) clamp(18px, 3vw, 44px) clamp(10px, 1.6vw, 22px);
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ 导航 */
+
+.dk-nav {
+  position: relative;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+
+/* "墨迹划痕"高亮：一块被撕开的斜切墨块，靠 translateY 过渡在项之间滑动。
+   不用给每项换 class 直接跳变 —— 那是"下拉菜单"，不是"游戏主界面"。 */
+.dk-nav__ink {
+  position: absolute;
+  left: 0;
+  right: 8px;
+  top: 0;
+  height: 44px;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(96deg, rgba(217, 154, 74, 0.9) 0%, rgba(217, 154, 74, 0.62) 46%, rgba(125, 43, 34, 0.55) 100%);
+  clip-path: polygon(
+    0 12%, 42% 3%, 78% 9%, 100% 0, 99% 34%, 100% 62%, 96% 100%,
+    63% 94%, 30% 100%, 4% 91%, 0 66%
+  );
+  box-shadow: inset 0 0 0 2px var(--ink);
+  opacity: 0;
+}
+
+/* 只有挂上 is-ready 之后才允许过渡：
+   首次进入时 moveInk() 会把墨块从 top:0 移到第一项，若此时已有过渡，
+   玩家会看到一条墨水横着飞过去，像是点错了。 */
+.dk-nav__ink.is-ready {
+  opacity: 1;
+  transition: transform 320ms cubic-bezier(0.22, 0.86, 0.26, 1), height 320ms cubic-bezier(0.22, 0.86, 0.26, 1);
+}
+
+.dk-nav__item {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    'index cn'
+    'index en';
+  align-content: center;
+  gap: 0 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 14px 6px 2px;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--ash);
+  transform: translateX(0);
+  transition: transform 90ms steps(2, end), color 140ms linear;
+  /* opacity 基础值必须是 1，动画用 backwards 只负责"开始前"的隐藏状态。
+     用 both 会把最后一帧的 transform 永久钉住，hover 的位移就永远不生效。 */
+  opacity: 1;
+  animation: dk-nav-in 380ms cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
+  animation-delay: calc(300ms + var(--i) * 40ms);
+}
+
+@keyframes dk-nav-in {
+  from {
+    opacity: 0;
+    transform: translateX(-26px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.dk-nav__item:hover,
+.dk-nav__item:focus-visible {
+  transform: translateX(2px);
+  color: var(--bone);
+}
+
+.dk-nav__item.is-active {
+  color: var(--ink);
+}
+
+.dk-nav__item.is-active .dk-nav__en,
+.dk-nav__item.is-active .dk-nav__index {
+  color: rgba(12, 11, 10, 0.68);
+}
+
+/* 键盘焦点必须看得见：用黄绿的硬描边，而不是浏览器默认的虚线框——
+   默认框在近黑背景上几乎不可见。 */
+.dk-nav__item:focus-visible,
+.dk-map:focus-visible,
+.dk-segment__item:focus-visible,
+.dk-threat__stop:focus-visible,
+.dk-wrow:focus-visible,
+.dk-cta:focus-visible,
+.dk-toggle:focus-visible,
+.dk-input:focus-visible {
+  outline: 3px solid var(--bile);
+  outline-offset: 2px;
+}
+
+.dk-nav__index {
+  grid-area: index;
+  align-self: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: rgba(141, 133, 120, 0.6);
+}
+
+.dk-nav__cn {
+  grid-area: cn;
+  font-family: var(--font-display);
+  font-size: clamp(15px, 1.35vw, 20px);
+  line-height: 1.05;
+  letter-spacing: 0.12em;
+}
+
+.dk-nav__en {
+  grid-area: en;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.26em;
+  color: rgba(141, 133, 120, 0.72);
+}
+
+/* ------------------------------------------------------------------ 面板 */
+
+.dk-pane-stack {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 所有 pane 叠在同一格里，只由显隐决定谁可见 ——
+   这样切换时不会因为高度不同把导航条上下顶动。 */
+.dk-pane {
+  position: absolute;
+  inset: 0;
+  display: none;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(141, 133, 120, 0.5) transparent;
+  padding-right: 4px;
+}
+
+.dk-pane.is-active {
+  display: block;
+}
+
+.dk-pane.is-entering {
+  animation: dk-pane-in 260ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.dk-pane.is-leaving {
+  display: block;
+  pointer-events: none;
+  animation: dk-pane-out 160ms linear both;
+}
+
+@keyframes dk-pane-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes dk-pane-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-10px); }
+}
+
+/* 面板本体：3px 近黑实边 + 6px 硬投影 + 极轻的错版旋转。 */
+.dk-panel {
+  position: relative;
+  padding: 16px 18px 18px;
+  background:
+    linear-gradient(to bottom, rgba(42, 49, 56, 0.78), rgba(12, 11, 10, 0.88));
+  border: 3px solid var(--ink);
+  box-shadow: 6px 6px 0 var(--ink);
+}
+
+/* 撕边：底部一条参差的黑锯齿，全靠 clip-path，没有图片。 */
+.dk-panel::after {
+  content: '';
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  bottom: -9px;
+  height: 9px;
+  background: var(--ink);
+  pointer-events: none;
+  clip-path: polygon(
+    0 0, 100% 0, 100% 46%, 92% 100%, 84% 40%, 76% 88%, 68% 30%, 60% 96%,
+    52% 44%, 44% 100%, 36% 38%, 28% 92%, 20% 42%, 12% 100%, 4% 48%, 0 100%
+  );
+}
+
+.dk-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.dk-section-head__cn {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(17px, 1.7vw, 24px);
+  line-height: 1;
+  letter-spacing: 0.1em;
+  color: var(--bone);
+  text-shadow: 2px 2px 0 var(--ink);
+}
+
+.dk-section-head__en {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--amber);
+}
+
+.dk-section-head__rule {
+  flex: 1;
+  height: 2px;
+  background: linear-gradient(to right, rgba(216, 207, 186, 0.34), transparent);
+}
+
+.dk-panel__caption {
+  display: block;
+  margin: 16px 0 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.26em;
+  color: var(--ash);
+}
+
+.dk-panel__foot {
+  margin: 14px 0 0;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(216, 207, 186, 0.2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--ash);
+}
+
+/* ------------------------------------------------------------------ 出击 */
+
+.dk-deploy {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(238px, 24vw, 320px);
+  gap: clamp(12px, 1.6vw, 22px);
+  align-items: start;
+  padding-bottom: 10px;
+}
+
+/* 左列自成一条纵向流：标题 + 卡片网格。给 min-width: 0 是因为 grid 的
+   子项默认 min-width: auto，长中文名会把整列顶出容器。 */
+.dk-deploy__maps {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dk-maps {
+  display: grid;
+  /* 150px：左列 663~700px 时四张图还能并成一行。178px 会折成两行，
+     光是地图卡就吃掉 387px，把天赋面板整个挤到滚动区外面。 */
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+/* 地图卡片：三块"俯视缩略"全靠 CSS 渐变拼地形，选中时描边转橙并整体下沉。
+   缩略图必须不是纯色块 —— 纯色块的卡片在 3A 主界面里读起来像加载失败的占位。 */
+.dk-map {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 3px solid var(--ink);
+  background: rgba(12, 11, 10, 0.9);
+  box-shadow: 5px 5px 0 var(--ink);
+  cursor: pointer;
+  text-align: left;
+  color: var(--bone);
+  transform: rotate(-0.4deg);
+  transition: transform 90ms steps(2, end), box-shadow 90ms steps(2, end);
+}
+
+.dk-map:nth-child(2) { transform: rotate(0.5deg); }
+.dk-map:nth-child(3) { transform: rotate(-0.2deg); }
+
+.dk-map:hover {
+  transform: translate(-1px, -1px) rotate(-0.4deg);
+  box-shadow: 7px 7px 0 var(--ink);
+}
+
+.dk-map:active {
+  transform: translate(3px, 3px) rotate(-0.4deg);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.dk-map.is-selected {
+  border-color: var(--amber);
+  box-shadow: 6px 6px 0 var(--ink), 0 0 0 2px rgba(217, 154, 74, 0.42);
+}
+
+.dk-map__art {
+  display: block;
+  height: 66px;
+  border-bottom: 3px solid var(--ink);
+  filter: saturate(0.7) brightness(0.8);
+  transition: filter 180ms linear;
+}
+
+.dk-map.is-selected .dk-map__art {
+  filter: saturate(1) brightness(1.05);
+}
+
+/* 农舍：平行的甘蔗垄 + 一块谷仓屋顶 */
+.dk-map__art[data-art='farm'] {
+  background:
+    linear-gradient(112deg, rgba(12, 11, 10, 0.9) 0 26%, transparent 26%),
+    repeating-linear-gradient(96deg, rgba(125, 43, 34, 0.5) 0 3px, transparent 3px 11px),
+    linear-gradient(to bottom, #1b2a24, #0e1612 62%, #080b0a);
+}
+
+/* 矿坑：塌方的斜井 + 零星的灰骸 */
+.dk-map__art[data-art='mine'] {
+  background:
+    linear-gradient(148deg, transparent 44%, rgba(12, 11, 10, 0.92) 44% 62%, transparent 62%),
+    radial-gradient(circle at 26% 74%, rgba(154, 168, 69, 0.24) 0 2px, transparent 3px),
+    radial-gradient(circle at 66% 82%, rgba(141, 133, 120, 0.3) 0 2px, transparent 3px),
+    linear-gradient(to bottom, #23282c, #14181b 60%, #080a0b);
+}
+
+/* 墓园：密集的十字 + 一盏提灯光 */
+.dk-map__art[data-art='church'] {
+  background:
+    linear-gradient(90deg, transparent 0 18%, rgba(12, 11, 10, 0.85) 18% 26%, transparent 26% 46%,
+      rgba(12, 11, 10, 0.85) 46% 54%, transparent 54% 74%, rgba(12, 11, 10, 0.85) 74% 82%,
+      transparent 82%),
+    radial-gradient(circle at 78% 62%, rgba(217, 154, 74, 0.4) 0 5px, transparent 12px),
+    linear-gradient(to bottom, #1d2128, #12161a 58%, #07090a);
+}
+
+/* 车站：铁轨透视 + 雨棚下的一条暖光 */
+.dk-map__art[data-art='station'] {
+  background:
+    linear-gradient(84deg, transparent 46%, rgba(12, 11, 10, 0.9) 46% 50%, transparent 50%),
+    linear-gradient(96deg, transparent 52%, rgba(12, 11, 10, 0.9) 52% 56%, transparent 56%),
+    linear-gradient(to bottom, rgba(217, 154, 74, 0.16) 0 14%, transparent 14%),
+    linear-gradient(to bottom, #1b2429, #131a1f 60%, #070a0c);
+}
+
+/* 水道：横向水道 + 半沉的钟 */
+.dk-map__art[data-art='canal'] {
+  background:
+    radial-gradient(circle at 68% 38%, rgba(217, 154, 74, 0.34) 0 5px, transparent 6px),
+    repeating-linear-gradient(174deg, rgba(42, 49, 56, 0.66) 0 4px, transparent 4px 12px),
+    linear-gradient(to bottom, #16232b, #101820 58%, #06090b);
+}
+
+.dk-map__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px 12px;
+}
+
+.dk-map__name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+}
+
+.dk-map__en {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.2em;
+  color: var(--amber);
+}
+
+.dk-map__desc {
+  /* 卡宽只有 150px 时中文一行只放得下七八个字，不夹行数的话四张卡会长成
+     四个高度，底边参差不齐像没画完。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ash);
+}
+
+/* 矮屏（笔记本 768/720）：把出击页的留白收紧一档，目标是天赋面板不用滚动
+   也能看见。高屏不受影响。 */
+@media (max-height: 820px) {
+  .dk-deploy {
+    gap: 12px;
+  }
+
+  .dk-map__art {
+    height: 52px;
+  }
+
+  .dk-map__body {
+    gap: 2px;
+    padding: 8px 10px 9px;
+  }
+
+  .dk-panel {
+    padding: 12px 14px 13px;
+  }
+
+  .dk-deploy__side {
+    gap: 9px;
+    padding: 12px 12px 13px;
+  }
+
+  .dk-primary .dk-section-head,
+  .dk-traits .dk-section-head {
+    margin-bottom: 7px;
+  }
+}
+
+.dk-map__meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 5px;
+}
+
+.dk-map__threat {
+  padding: 1px 6px;
+  border: 2px solid var(--ink);
+  background: rgba(125, 43, 34, 0.55);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--bone);
+}
+
+.dk-deploy__side {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 15px 15px 16px;
+  background: linear-gradient(to bottom, rgba(42, 49, 56, 0.72), rgba(12, 11, 10, 0.9));
+  border: 3px solid var(--ink);
+  box-shadow: 6px 6px 0 var(--ink);
+  transform: rotate(0.3deg);
+}
+
+.dk-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dk-field__label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.24em;
+  color: var(--ash);
+}
+
+/* 单人/双人：两个方块按钮。选中不给"蓝底"，而是橙描边 + 内侧墨块。 */
+.dk-segment {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.dk-segment__item,
+.dk-threat__stop {
+  padding: 8px 6px;
+  border: 2px solid var(--ink);
+  background: rgba(216, 207, 186, 0.07);
+  box-shadow: 3px 3px 0 var(--ink);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  letter-spacing: 0.14em;
+  color: var(--ash);
+  cursor: pointer;
+  transition: transform 80ms steps(2, end), box-shadow 80ms steps(2, end), color 130ms linear, background 130ms linear;
+}
+
+.dk-segment__item:hover,
+.dk-threat__stop:hover {
+  color: var(--bone);
+  background: rgba(216, 207, 186, 0.14);
+}
+
+.dk-segment__item:active,
+.dk-threat__stop:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.dk-segment__item.is-selected,
+.dk-threat__stop.is-selected {
+  color: var(--ink);
+  background: var(--amber);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+/* 威胁等级：三段滑轨 + 一块会平移的滑块。
+   比三个独立按钮更像"选择器"，也让"当前档位"有物理位置感。 */
+.dk-threat {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 3px;
+  border: 3px solid var(--ink);
+  background: rgba(12, 11, 10, 0.86);
+}
+
+.dk-threat__stop {
+  position: relative;
+  z-index: 1;
+  padding: 7px 4px;
+  border: 0;
+  box-shadow: none;
+  background: none;
+  font-size: 12px;
+}
+
+.dk-threat__stop.is-selected {
+  background: none;
+}
+
+.dk-threat__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: calc((100% - 14px) / 3);
+  height: calc(100% - 6px);
+  background: linear-gradient(to bottom, var(--amber), #a86f2f);
+  box-shadow: inset 0 0 0 2px var(--ink);
+  transition: transform 260ms cubic-bezier(0.22, 0.86, 0.26, 1), background 200ms linear;
+  pointer-events: none;
+}
+
+/* 高威胁档位把滑块染红：同一块滑轨，颜色就是"危险程度"的读数。
+   （滑块是滑轨的第一个子节点，写在按钮后面的兄弟选择器永远匹配不到，
+   所以"危险"这个状态由 menu.ts 直接挂在滑块上加 is-hot。） */
+.dk-threat__thumb.is-hot {
+  background: linear-gradient(to bottom, #a8392b, var(--blood));
+}
+
+.dk-input {
+  width: 100%;
+  padding: 7px 9px;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  background: rgba(216, 207, 186, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(216, 207, 186, 0.12);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--bone);
+}
+
+.dk-input::placeholder {
+  color: rgba(141, 133, 120, 0.62);
+}
+
+.dk-input:focus {
+  background: rgba(216, 207, 186, 0.16);
+  box-shadow: inset 0 0 0 1px var(--amber);
+}
+
+/* 主 CTA：琥珀平涂 + 厚墨边 + 硬投影。按下时整体位移到投影的位置，
+   于是"投影消失"本身就是按下去的读数 —— 比缩放更硬、更机械。 */
+.dk-cta {
+  margin-top: 2px;
+  padding: 13px 16px;
+  border: 3px solid var(--ink);
+  border-radius: 0;
+  background: var(--amber);
+  box-shadow: 6px 6px 0 var(--ink);
+  font-family: var(--font-display);
+  font-size: clamp(14px, 1.3vw, 18px);
+  letter-spacing: 0.24em;
+  color: var(--ink);
+  cursor: pointer;
+  transform: rotate(-0.4deg);
+  transition: transform 80ms steps(2, end), box-shadow 80ms steps(2, end), background 160ms linear;
+}
+
+.dk-cta:hover:not(:disabled) {
+  background: #e8ab5c;
+  transform: translate(-1px, -1px) rotate(-0.4deg);
+  box-shadow: 8px 8px 0 var(--ink);
+}
+
+.dk-cta:active:not(:disabled) {
+  transform: translate(4px, 4px) rotate(-0.4deg);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.dk-cta:disabled {
+  cursor: default;
+  background: #6d5637;
+  color: rgba(12, 11, 10, 0.55);
+  box-shadow: 3px 3px 0 var(--ink);
+  transform: translate(3px, 3px) rotate(-0.4deg);
+}
+
+.dk-deploy__hint {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1.7;
+  letter-spacing: 0.04em;
+  color: rgba(141, 133, 120, 0.8);
+}
+
+/* 主武器选择：跨满出击页两列贴底，和下棋一样"先挑枪再挑图"都不挡按钮 */
+
+.dk-primary {
+  grid-column: 1 / -1;
+  padding: 12px 14px 14px;
+}
+
+.dk-primary .dk-section-head {
+  margin-bottom: 9px;
+}
+
+.dk-weapons {
+  display: grid;
+  /* 120px 是"五张卡永远排成一行"的下限：左列最窄只剩 663px 时（1280 宽屏，
+     菜单本体比视口窄一圈），150px 会把第五张挤到第二行，整列凭空长高 120px。 */
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: clamp(6px, 0.7vw, 10px);
+}
+
+.dk-weapon {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 9px 10px 8px;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  background: rgba(12, 11, 10, 0.62);
+  box-shadow: 3px 3px 0 var(--ink);
+  font-family: var(--font-ui);
+  text-align: left;
+  /* 未选中整卡压到灰烬色，选中才升到骨白 —— 一眼能看出"现在带的是哪把" */
+  color: var(--ash);
+  cursor: pointer;
+  transition: transform 80ms steps(2, end), box-shadow 80ms steps(2, end),
+    background 140ms linear, border-color 140ms linear, color 140ms linear;
+}
+
+.dk-weapon:hover {
+  color: var(--bone);
+  border-color: rgba(216, 207, 186, 0.55);
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.dk-weapon:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.dk-weapon:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+.dk-weapon.is-selected {
+  color: var(--bone);
+  border-color: var(--amber);
+  background: linear-gradient(100deg, rgba(217, 154, 74, 0.2), rgba(12, 11, 10, 0.72));
+  box-shadow: 4px 4px 0 var(--ink), 0 0 0 2px rgba(217, 154, 74, 0.28);
+}
+
+.dk-weapon__tick {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  /* 角标故意越过卡片边缘；z-index 保证相邻卡片的底色不会盖住它 */
+  z-index: 1;
+  padding: 1px 4px;
+  border: 2px solid var(--ink);
+  background: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1.4;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+  opacity: 0;
+  transition: opacity 120ms linear;
+}
+
+.dk-weapon.is-selected .dk-weapon__tick {
+  opacity: 1;
+}
+
+.dk-weapon__name {
+  font-family: var(--font-display);
+  font-size: clamp(10.5px, 0.85vw, 12.5px);
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  color: inherit;
+}
+
+.dk-weapon__kind {
+  padding: 0 5px;
+  border: 1.5px solid var(--ink);
+  background: rgba(154, 168, 69, 0.38);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  opacity: 0.78;
+}
+
+.dk-weapon.is-selected .dk-weapon__kind {
+  opacity: 1;
+}
+
+.dk-weapon__stats {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-top: 1px;
+}
+
+.dk-weapon__stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.dk-weapon__stat-key {
+  letter-spacing: 0.12em;
+  color: rgba(141, 133, 120, 0.85);
+}
+
+.dk-weapon__stat-val {
+  color: var(--bone);
+  font-variant-numeric: tabular-nums;
+}
+
+.dk-weapon.is-selected .dk-weapon__stat-val {
+  color: var(--amber);
+}
+
+.dk-weapon__switch {
+  margin-top: 1px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  color: rgba(141, 133, 120, 0.75);
+}
+
+.dk-weapon.is-selected .dk-weapon__switch {
+  color: rgba(217, 154, 74, 0.85);
+}
+
+/* 出击按钮正上方的当前配枪读数，和下方 hint 一样走等宽小字 */
+.dk-deploy__primary {
+  margin: 0;
+  padding-top: 8px;
+  border-top: 2px solid rgba(12, 11, 10, 0.9);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--bone);
+}
+
+/* --------------------------------------------------------------- 天赋（TRAITS） */
+/*
+  十张横排卡片，最多带三条；每条另有 3 级，用金币解锁 / 升级。
+  视觉语言完全沿用上面的枪架：2px 墨边框 + 3px 硬阴影 + 零圆角零模糊 —— 天赋和武器
+  是同一层决策，长得像两个系统的 UI 会让人以为是两套规则。
+  卡片里那颗徽记是活的（traits.css 的三层动效），所以卡片内边距要留够，
+  不然描线动画放大时会被 border 切掉。
+*/
+
+.dk-traits {
+  grid-column: 1 / -1;
+  padding: 12px 14px 14px;
+}
+
+.dk-traits .dk-section-head {
+  margin-bottom: 9px;
+}
+
+/* 金币余额：实心琥珀小牌，和"已选 n/3"一起停在标题行右侧。
+   rule 是 flex:1，所以这里把余额顶到最右，计数跟在它后面。 */
+.dk-coins {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 2px solid var(--ink);
+  background: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.dk-traits__count {
+  margin-left: 10px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--ash);
+  white-space: nowrap;
+}
+
+.dk-trait-row {
+  display: grid;
+  /* 十张卡：176px 是一张卡"名字 + 三个等级方块 + 金币按钮"不再挤成两行的下限。
+     窄菜单下自会折成 5+5 或 4+4+2，整行整行地加，不会出现半张卡。 */
+  grid-template-columns: repeat(auto-fit, minmax(176px, 1fr));
+  gap: clamp(6px, 0.7vw, 10px);
+}
+
+.dk-trait {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  /* 徽记 / 名字、等级方块、效果文案、金币按钮各占一行；文案与按钮跨两列 */
+  grid-template-rows: auto auto 1fr auto;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 9px 10px;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  background: rgba(12, 11, 10, 0.62);
+  box-shadow: 3px 3px 0 var(--ink);
+  font-family: var(--font-ui);
+  text-align: left;
+  color: var(--ash);
+  cursor: pointer;
+  transition: transform 80ms steps(2, end), box-shadow 80ms steps(2, end),
+    background 140ms linear, border-color 140ms linear, color 140ms linear,
+    opacity 140ms linear;
+}
+
+.dk-trait:hover {
+  color: var(--bone);
+  border-color: rgba(216, 207, 186, 0.55);
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.dk-trait:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.dk-trait:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* 选中态和 .dk-weapon.is-selected 完全一致（同边框同阴影同底色）：
+   玩家已经学会"琥珀描边的卡 = 这局带着"，这里不能另起一套语言。 */
+.dk-trait.is-selected {
+  color: var(--bone);
+  border-color: var(--amber);
+  background: linear-gradient(100deg, rgba(217, 154, 74, 0.2), rgba(12, 11, 10, 0.72));
+  box-shadow: 4px 4px 0 var(--ink), 0 0 0 2px rgba(217, 154, 74, 0.28);
+}
+
+/* 0 级 = 还没解锁：整卡降透明度，但仍然可点 —— 点它是唯一"告诉玩家怎么解锁"的机会。
+   JS 里点它只抖一下并提示"需要先解锁"，不会写状态。 */
+.dk-trait.is-locked {
+  opacity: 0.55;
+}
+
+/* 带满三条后剩下来的卡压暗：还能点（点了抖一下提示），但不该再吸引注意力。 */
+.dk-trait.is-full {
+  opacity: 0.42;
+}
+
+/* 序号常驻而不是"选中才出现"：十张卡不编号，玩家记不住自己在看哪一张。 */
+.dk-trait__tick {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  z-index: 1;
+  padding: 1px 4px;
+  border: 2px solid var(--ink);
+  background: rgba(12, 11, 10, 0.92);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1.4;
+  letter-spacing: 0.1em;
+  color: var(--ash);
+  transition: background 120ms linear, color 120ms linear;
+}
+
+.dk-trait.is-selected .dk-trait__tick {
+  background: var(--amber);
+  color: var(--ink);
+}
+
+/* 徽记占第一列前两行：名字和等级方块加起来的高度不会被图标尺寸撑开。 */
+.dk-trait__icon {
+  grid-row: 1 / span 2;
+  display: block;
+  width: 30px;
+  height: 30px;
+  color: currentColor;
+  line-height: 0;
+}
+
+.dk-trait__icon svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.dk-trait.is-selected .dk-trait__icon {
+  color: var(--amber);
+}
+
+.dk-trait__body {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dk-trait__name {
+  font-family: var(--font-display);
+  font-size: clamp(10.5px, 0.85vw, 12.5px);
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.dk-trait__en {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  color: rgba(141, 133, 120, 0.8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 三个方块，点亮几个就是几级：方块能一眼数出"还差几级满"，"Lv.2" 不能。 */
+.dk-trait__levels {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.dk-trait__level {
+  display: block;
+  width: 14px;
+  height: 6px;
+  border: 2px solid var(--ink);
+  background: rgba(141, 133, 120, 0.22);
+  transition: background 120ms linear;
+}
+
+.dk-trait__level.is-on {
+  background: var(--amber);
+}
+
+/* 效果文案永远占位：0 级也显示一级效果，靠 is-locked 说明"还没生效"。
+   空着等于把"这 120 金币能买到什么"藏起来。 */
+.dk-trait__desc {
+  grid-column: 1 / -1;
+  align-self: start;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.45;
+  color: var(--ash);
+}
+
+.dk-trait__desc.is-locked {
+  color: rgba(141, 133, 120, 0.68);
+}
+
+.dk-trait.is-selected .dk-trait__desc {
+  color: rgba(216, 207, 186, 0.88);
+}
+
+.dk-trait.is-selected .dk-trait__desc.is-locked {
+  color: rgba(216, 207, 186, 0.55);
+}
+
+/* 金币按钮：实心琥珀，和卡本体明确分层 —— 点卡 = 带 / 卸，点这里 = 花钱。
+   两种操作的后果差很远，长得不一样才不会点错。 */
+.dk-trait__buy {
+  grid-column: 1 / -1;
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  padding: 3px 6px;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  background: var(--amber);
+  box-shadow: 2px 2px 0 var(--ink);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.3;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+  text-align: center;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: transform 80ms steps(2, end), box-shadow 80ms steps(2, end),
+    background 140ms linear;
+}
+
+.dk-trait__buy:hover:not(:disabled) {
+  background: #eab061;
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.dk-trait__buy:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.dk-trait__buy:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* 满级：按钮退成"标签"，不给任何"还能点"的暗示。 */
+.dk-trait__buy:disabled {
+  background: rgba(141, 133, 120, 0.24);
+  box-shadow: none;
+  color: rgba(141, 133, 120, 0.9);
+  cursor: default;
+}
+
+/* "金币不足 / 需要先解锁 / 最多带三条"的落点：常驻 DOM、只由 is-denied 显形，
+   出错时不插节点，卡也就不会跳版。压在金币按钮上而不是另开一行。 */
+.dk-trait__deny {
+  position: absolute;
+  right: 10px;
+  bottom: 9px;
+  z-index: 2;
+  padding: 1px 5px;
+  border: 2px solid var(--ink);
+  background: var(--blood);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  line-height: 1.4;
+  letter-spacing: 0.08em;
+  color: var(--bone);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms linear;
+}
+
+.dk-trait.is-denied .dk-trait__deny {
+  opacity: 1;
+}
+
+/* 抖动 = "这一下没成"。位移不超过 3px、只有横向、420ms 收住：
+   足够被看见，又不会把整片卡片区带得乱晃。 */
+.dk-trait.is-deny,
+.dk-trait__buy.is-deny {
+  animation: dk-trait-deny 420ms linear;
+}
+
+@keyframes dk-trait-deny {
+  0% { transform: translateX(0); }
+  15% { transform: translateX(-3px); }
+  30% { transform: translateX(3px); }
+  45% { transform: translateX(-2px); }
+  60% { transform: translateX(2px); }
+  75% { transform: translateX(-1px); }
+  100% { transform: translateX(0); }
+}
+
+/* 出击栏里的天赋摘要：和 .dk-deploy__primary 同一层读数，等宽小字。 */
+.dk-trait-summary {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.12em;
+  color: rgba(216, 207, 186, 0.82);
+}
+
+/* ------------------------------------------------------------------ 猎人 */
+
+.dk-hunter {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: clamp(12px, 1.6vw, 22px);
+  align-items: start;
+}
+
+.dk-hunter__card,
+.dk-hunter__gear {
+  min-width: 0;
+}
+
+.dk-profile {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+}
+
+/* 头像位：内联 SVG 剪影。角上那两笔黄绿短线是"感光纸夹"，
+   没有它们就只是个圆形色块。 */
+.dk-avatar {
+  position: relative;
+  aspect-ratio: 1;
+  border: 3px solid var(--ink);
+  background: radial-gradient(circle at 50% 40%, rgba(217, 154, 74, 0.16), rgba(12, 11, 10, 0.95) 72%);
+  box-shadow: 4px 4px 0 var(--ink);
+  overflow: hidden;
+}
+
+.dk-avatar::before,
+.dk-avatar::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 3px;
+  background: var(--bile);
+  opacity: 0.85;
+}
+
+.dk-avatar::before { left: 5px; top: 5px; }
+.dk-avatar::after { right: 5px; bottom: 5px; }
+
+.dk-avatar__art {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.dk-profile__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.dk-profile__name {
+  font-family: var(--font-display);
+  font-size: clamp(15px, 1.4vw, 19px);
+  letter-spacing: 0.06em;
+  text-shadow: 2px 2px 0 var(--ink);
+}
+
+.dk-profile__sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ash);
+}
+
+.dk-bloodline {
+  margin-top: 4px;
+}
+
+.dk-bloodline__top {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: var(--ash);
+}
+
+.dk-bloodline__value {
+  color: var(--amber);
+}
+
+.dk-bloodline__label {
+  letter-spacing: 0.2em;
+  color: var(--ash);
+}
+
+/* 进度条：底槽是内凹的墨槽，填充块用黄绿/琥珀 —— 巴里条永远不用亮色。 */
+.dk-bar-track {
+  position: relative;
+  height: 9px;
+  background: rgba(12, 11, 10, 0.86);
+  box-shadow: inset 0 0 0 2px var(--ink);
+  overflow: hidden;
+}
+
+.dk-bar-fill {
+  display: block;
+  height: 100%;
+  background: repeating-linear-gradient(
+    108deg,
+    rgba(154, 168, 69, 0.95) 0 5px,
+    rgba(154, 168, 69, 0.72) 5px 9px
+  );
+  transform-origin: left center;
+  animation: dk-bar-fill-grow 520ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.dk-bar-fill--amber {
+  background: repeating-linear-gradient(
+    108deg,
+    rgba(217, 154, 74, 0.95) 0 5px,
+    rgba(217, 154, 74, 0.7) 5px 9px
+  );
+}
+
+@keyframes dk-bar-fill-grow {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+.dk-attrs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dk-attr {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 10px;
+  align-items: center;
+}
+
+.dk-attr__label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dk-attr__cn {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--bone);
+}
+
+.dk-attr__en {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  color: rgba(141, 133, 120, 0.7);
+}
+
+.dk-attr__num {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-align: right;
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 装备槽：左侧方形图标位 + 右侧名称，槽位标签用竖排小字压边。 */
+.dk-slots {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+
+.dk-slot {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  padding: 8px;
+  border: 2px solid var(--ink);
+  background: linear-gradient(140deg, rgba(42, 49, 56, 0.7), rgba(12, 11, 10, 0.9));
+  box-shadow: 3px 3px 0 var(--ink);
+  transform: rotate(-0.3deg);
+}
+
+.dk-slot:nth-child(even) { transform: rotate(0.35deg); }
+
+.dk-slot__icon {
+  display: grid;
+  place-items: center;
+  height: 38px;
+  border: 2px solid var(--ink);
+  background: rgba(217, 154, 74, 0.14);
+  font-family: var(--font-display);
+  font-size: 15px;
+  color: var(--amber);
+}
+
+.dk-slot__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.dk-slot__slot {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  color: var(--ash);
+}
+
+.dk-slot__name {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--bone);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dk-slot__note {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: rgba(141, 133, 120, 0.75);
+}
+
+/* ------------------------------------------------------------------ 军械库 */
+
+.dk-arsenal {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.65fr);
+  gap: clamp(12px, 1.6vw, 22px);
+  align-items: start;
+}
+
+.dk-arsenal__list {
+  min-width: 0;
+}
+
+.dk-arsenal__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 武器行：名称 + 三条归一化条形图。条形图长度按"当前武器/全场最高"算，
+   所以最长的那个条永远贴满 —— 玩家一眼能比出相对强弱。 */
+.dk-wrow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 2px solid var(--ink);
+  background: rgba(12, 11, 10, 0.62);
+  box-shadow: 3px 3px 0 var(--ink);
+  cursor: pointer;
+  text-align: left;
+  color: var(--bone);
+  transition: transform 80ms steps(2, end), background 120ms linear, box-shadow 80ms steps(2, end);
+}
+
+.dk-wrow:hover {
+  background: rgba(42, 49, 56, 0.72);
+  transform: translateX(2px);
+}
+
+.dk-wrow.is-selected {
+  background: linear-gradient(100deg, rgba(217, 154, 74, 0.2), rgba(12, 11, 10, 0.72));
+  border-color: var(--amber);
+  box-shadow: 4px 4px 0 var(--ink), 0 0 0 2px rgba(217, 154, 74, 0.28);
+}
+
+.dk-wrow__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dk-wrow__name {
+  font-size: 12.5px;
+  letter-spacing: 0.05em;
+}
+
+.dk-wrow__class {
+  flex: none;
+  padding: 0 5px;
+  border: 1.5px solid var(--ink);
+  background: rgba(154, 168, 69, 0.38);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  color: var(--ink);
+}
+
+.dk-wrow__bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dk-wbar {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+}
+
+.dk-wbar__label {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  color: var(--ash);
+}
+
+.dk-wbar__track {
+  display: block;
+  height: 5px;
+  background: rgba(216, 207, 186, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(12, 11, 10, 0.9);
+}
+
+.dk-wbar__fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(to right, rgba(217, 154, 74, 0.85), rgba(154, 168, 69, 0.9));
+  animation: dk-bar-grow 420ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+/* 详情卡：贴在滚动区顶部，选中哪把武器都停在同一位置，
+   免得玩家点了下面几行之后要往回滚才看得到数值。 */
+.dk-arsenal__detail {
+  position: sticky;
+  top: 0;
+}
+
+.dk-detail__title {
+  margin: 0 0 3px;
+  font-family: var(--font-display);
+  font-size: clamp(14px, 1.3vw, 18px);
+  line-height: 1.15;
+  letter-spacing: 0.04em;
+  color: var(--bone);
+  text-shadow: 2px 2px 0 var(--ink);
+}
+
+.dk-detail__sub {
+  margin: 0 0 11px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--amber);
+}
+
+.dk-detail__stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+}
+
+.dk-stat {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dotted rgba(216, 207, 186, 0.16);
+}
+
+.dk-stat:last-child {
+  border-bottom: 0;
+}
+
+.dk-stat__key {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ash);
+}
+
+.dk-stat__val {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-align: right;
+  color: var(--bone);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ 传奇 */
+
+/* 战绩表只占面板上部，下面留白是刻意的：以后接服务端会在这里塞
+   "翻页/刷新"一行，现在留出位置免得以后整块重排。 */
+.dk-records {
+  padding-bottom: 22px;
+}
+
+.dk-table {
+  display: flex;
+  flex-direction: column;
+}
+
+.dk-table__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) 0.7fr 1fr 0.8fr;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 8px;
+  border-bottom: 1px solid rgba(216, 207, 186, 0.12);
+}
+
+.dk-table__row:nth-child(even) {
+  background: rgba(216, 207, 186, 0.035);
+}
+
+.dk-table__row--head {
+  border-bottom: 2px solid var(--ink);
+  background: rgba(12, 11, 10, 0.72);
+}
+
+.dk-table__row--head .dk-table__cell {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  color: var(--ash);
+}
+
+.dk-table__cell {
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: var(--bone);
+}
+
+.dk-table__cell--result {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  letter-spacing: 0.1em;
+  color: var(--bile);
+}
+
+/* 阵亡行整行压红：扫一眼列表就能看出"哪几场是白跑"。 */
+.dk-table__row.is-lost .dk-table__cell--result {
+  color: var(--blood);
+}
+
+.dk-table__row.is-lost {
+  background: rgba(125, 43, 34, 0.12);
+}
+
+.dk-table__cell--num,
+.dk-table__cell--mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.dk-table__cell--num {
+  color: var(--amber);
+}
+
+/* ------------------------------------------------------------------ 设置 */
+
+.dk-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 620px;
+}
+
+.dk-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 0 10px;
+  border-bottom: 1px dotted rgba(216, 207, 186, 0.14);
+}
+
+.dk-slider__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dk-slider__label {
+  font-size: 12.5px;
+  letter-spacing: 0.1em;
+  color: var(--bone);
+}
+
+.dk-slider__value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+
+.dk-slider__hint {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: rgba(141, 133, 120, 0.78);
+}
+
+/* range 的默认外观是苹果味的圆角胶囊，跟整套硬边风格完全冲突，
+   所以轨道和滑块全部重画：轨道 = 内凹墨槽用 box-shadow 造出来（0 高度元素做不了粗边），
+   滑块 = 一个方形墨块。 */
+.dk-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  margin: 3px 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.dk-range::-webkit-slider-runnable-track {
+  height: 6px;
+  background: rgba(12, 11, 10, 0.9);
+  box-shadow: inset 0 0 0 2px var(--ink), inset 0 -6px 0 -4px rgba(217, 154, 74, 0.4);
+}
+
+.dk-range::-moz-range-track {
+  height: 6px;
+  background: rgba(12, 11, 10, 0.9);
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.dk-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 18px;
+  margin-top: -6px;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  background: var(--amber);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.dk-range::-moz-range-thumb {
+  width: 12px;
+  height: 18px;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  background: var(--amber);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+.dk-range:focus-visible {
+  outline: 3px solid var(--bile);
+  outline-offset: 2px;
+}
+
+.dk-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0 10px;
+}
+
+.dk-toggle-row__text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* 开关：轨道 + 方形滑块。滑块用 translate 位移，
+   transition 走 steps()，于是切换是"咔哒"一声而不是丝绸滑行。 */
+.dk-toggle {
+  position: relative;
+  flex: none;
+  width: 54px;
+  height: 26px;
+  padding: 0;
+  border: 3px solid var(--ink);
+  border-radius: 0;
+  background: rgba(12, 11, 10, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(216, 207, 186, 0.12);
+  cursor: pointer;
+}
+
+.dk-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: var(--ash);
+  box-shadow: 2px 2px 0 var(--ink);
+  transition: transform 120ms steps(2, end), background 140ms linear;
+}
+
+.dk-toggle.is-on {
+  background: rgba(125, 43, 34, 0.5);
+}
+
+.dk-toggle.is-on::after {
+  transform: translateX(26px);
+  background: var(--amber);
+}
+
+/* ------------------------------------------------------------------ 底栏 */
+
+.dk-bottom {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 9px clamp(18px, 3vw, 44px);
+  border-top: 2px solid rgba(12, 11, 10, 0.9);
+  background: linear-gradient(to top, rgba(12, 11, 10, 0.92), rgba(12, 11, 10, 0.42));
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: rgba(141, 133, 120, 0.9);
+}
+
+/* 版本号那一侧要能被压缩：窄屏时先牺牲它，保住右侧的状态提示。 */
+.dk-bottom__build {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(141, 133, 120, 0.78);
+}
+
+.dk-bottom__status {
+  color: var(--amber);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dk-bottom__status.is-empty::before {
+  content: '— 待命 —';
+  color: rgba(141, 133, 120, 0.55);
+}
+
+/* ------------------------------------------------------------------ 转场 */
+
+/* 出击的三段演出（全部只碰 transform / opacity，合成器一个人干完）：
+     0 → 320ms    上下 letterbox 黑条从画面外滑进来，落成 14vh 的遮幅
+     240 → 450ms  骨白闪一下（steps 硬闪：90 年代是跳格，不是网页渐隐）
+     300 → 820ms  黑场以圆形 iris 从中心扩散，最终吞掉整屏
+     780 → 1200ms 黑场里浮出地图标题卡
+   重点：到这里为止没有一步依赖"加载用了多久"。屏幕在 820ms 就全黑了，
+   标题挂着不影响游戏在幕后初始化；真正的揭开由 menu.setVisible(false) 驱动
+   （main.ts 里它紧跟在 await game.start() 之后 = 真实加载完成的唯一信号）。
+   加载慢，玩家就多读一会儿地图文案；加载快，也不会把标题一闪而过。 */
+
+.dk-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 8;
+  height: 14vh;
+  background: var(--ink);
+  pointer-events: none;
+  will-change: transform;
+}
+
+/* 黑条平时停在画面外（负方向 = 屏幕上边缘之外），出击时滑到边缘处。
+   动 transform 而不是 height：height 每帧都要重排。 */
+.dk-bar--top {
+  top: 0;
+  transform: translate3d(0, -100%, 0);
+}
+
+.dk-bar--bottom {
+  bottom: 0;
+  transform: translate3d(0, 100%, 0);
+}
+
+/* 出击瞬间的"快门"：骨白满屏在 0.82 不透明度下不是闪光，是白屏事故 ——
+   截图里整块 UI 被洗成米色，玩家第一反应是渲染坏了。改成中心暖光斑：
+   screen 混合下只提亮画面中央，四角仍然是黑的，读起来像灯被点亮又掐灭。 */
+.dk-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  opacity: 0;
+  background: radial-gradient(
+    circle at 50% 46%,
+    rgba(244, 206, 150, 0.92) 0%,
+    rgba(217, 154, 74, 0.6) 26%,
+    rgba(125, 43, 34, 0.32) 54%,
+    rgba(12, 11, 10, 0) 80%
+  );
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+/* 黑场 = 一个直径 200vmax 的圆。从 scale(0.01) 扩到 scale(1) 就是 iris 扩散：
+   半对角最长约 70vmax，100vmax 的半径在任何宽高比下都能盖满四角。
+   border-radius + transform 全在合成层里，不需要每帧重画一张遮罩。 */
+.dk-veil {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 9;
+  width: 200vmax;
+  height: 200vmax;
+  margin: -100vmax 0 0 -100vmax;
+  border-radius: 50%;
+  background: var(--ink);
+  visibility: hidden;
+  pointer-events: none;
+  will-change: transform;
+  transform: scale(0.01);
+}
+
+/* 黑场上的一层胶片颗粒：iris 收满之后到进图之间有 1~3s 的纯黑等待，
+   平涂 #0c0b0a 在 OLED 上就是"没信号"，加点颗粒才像一格底片。
+   颗粒跟着父层一起缩放，收拢时那一点放大反而像墨水在洇开。 */
+.dk-veil::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  opacity: 0.17;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='150' height='150'><filter id='v'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='150' height='150' filter='url(%23v)'/></svg>");
+  background-size: 150px 150px;
+}
+
+/* 标题卡：黑场里唯一亮着的东西。文案全部来自 MAP_ENTRIES，这里只管排版。 */
+.dk-stage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 10;
+  width: min(88vw, 760px);
+  opacity: 0;
+  text-align: center;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  will-change: transform, opacity;
+}
+
+.dk-stage__map {
+  margin-right: -0.14em;
+  font-family: var(--font-display);
+  font-size: clamp(34px, 6vw, 82px);
+  font-weight: 900;
+  line-height: 1.02;
+  letter-spacing: 0.14em;
+  color: var(--amber);
+  -webkit-text-stroke: 3px var(--ink);
+  text-shadow: 5px 5px 0 rgba(12, 11, 10, 0.92);
+}
+
+.dk-stage__en {
+  margin-top: 6px;
+  margin-right: -0.5em;
+  font-family: var(--font-ui);
+  font-size: clamp(10px, 1.1vw, 13px);
+  letter-spacing: 0.5em;
+  color: rgba(141, 133, 120, 0.9);
+}
+
+/* 一条手绘感的短横线：标题和文案之间需要一个分隔，但不能是规整的细线 */
+.dk-stage__rule {
+  display: block;
+  width: 74px;
+  height: 3px;
+  margin: 16px auto 14px;
+  background: var(--blood);
+  transform: rotate(-1.4deg);
+}
+
+.dk-stage__desc {
+  /* 30em 刚好让最长的那句（沉钟水道）也排成一行；真到窄屏上要折行时，
+     text-wrap: balance 会把两行拉平，不会掉出一个孤零零的「少。」 */
+  max-width: 30em;
+  text-wrap: balance;
+  margin: 0 auto;
+  font-family: var(--font-ui);
+  font-size: clamp(12px, 1.3vw, 15px);
+  line-height: 1.7;
+  letter-spacing: 0.06em;
+  color: var(--bone);
+  opacity: 0.86;
+}
+
+.dk-stage__state {
+  margin-top: 18px;
+  margin-right: -0.34em;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.34em;
+  color: rgba(141, 133, 120, 0.72);
+}
+
+.is-deploying .dk-bar--top {
+  animation: dk-bar-in-top 320ms cubic-bezier(0.34, 0.9, 0.3, 1) both;
+}
+
+.is-deploying .dk-bar--bottom {
+  animation: dk-bar-in-bottom 320ms cubic-bezier(0.34, 0.9, 0.3, 1) both;
+}
+
+.is-deploying .dk-flash {
+  animation: dk-flash 210ms 240ms steps(3, end) both;
+}
+
+.is-deploying .dk-veil {
+  visibility: visible;
+  animation: dk-iris-in 520ms 300ms cubic-bezier(0.22, 0.86, 0.26, 1) both;
+}
+
+.is-deploying .dk-stage {
+  animation: dk-stage-in 420ms 780ms cubic-bezier(0.16, 0.9, 0.22, 1) both;
+}
+
+@keyframes dk-bar-in-top {
+  from { transform: translate3d(0, -100%, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+
+@keyframes dk-bar-in-bottom {
+  from { transform: translate3d(0, 100%, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+
+@keyframes dk-flash {
+  0% { opacity: 0; }
+  30% { opacity: 0.8; }
+  100% { opacity: 0; }
+}
+
+@keyframes dk-iris-in {
+  from { transform: scale(0.01); }
+  to { transform: scale(1); }
+}
+
+@keyframes dk-stage-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -46%) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/* 背景推镜：iris 收拢的同一段时间里，3D 背景往镜头方向推 7%。
+   只动 transform，合成层跑，零重排；不在 WebGL 里真推相机是故意的 ——
+   那要动 Backdrop 的每帧矩阵，而这段动画只需要"画面在靠近"这一个观感。 */
+.is-deploying .dk-bg {
+  animation: dk-bg-push 900ms cubic-bezier(0.3, 0.08, 0.42, 1) both;
+}
+
+@keyframes dk-bg-push {
+  from { transform: scale(1); }
+  to { transform: scale(1.07); }
+}
+
+/* 标题卡分层入场：整块一起淡进来是一张 PPT，分层是"有人在念"。
+   节拍 820 → 1180ms，每层 80ms，最后落在 iris 落满（820ms）之后才读完，
+   所以玩家看到的不是"标题卡出现然后黑屏"，而是"黑屏里逐行浮出这张卡"。 */
+.is-deploying .dk-stage__map {
+  animation: dk-stage-item 380ms 820ms cubic-bezier(0.16, 0.9, 0.22, 1) both;
+}
+
+.is-deploying .dk-stage__en {
+  animation: dk-stage-item 360ms 900ms cubic-bezier(0.16, 0.9, 0.22, 1) both;
+}
+
+/* 红线从中间向两侧"划"出来：scaleX 从 0 起，原点在中心。 */
+.is-deploying .dk-stage__rule {
+  animation: dk-rule-in 420ms 980ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.is-deploying .dk-stage__desc {
+  animation: dk-stage-item 420ms 1060ms cubic-bezier(0.16, 0.9, 0.22, 1) both;
+}
+
+/* 状态行是"还在等"的证明，给它一层极慢的琥珀呼吸：静态文字读起来像卡死。 */
+.is-deploying .dk-stage__state {
+  animation:
+    dk-stage-item 360ms 1180ms cubic-bezier(0.16, 0.9, 0.22, 1) both,
+    dk-state-glow 2s 1400ms ease-in-out infinite;
+}
+
+@keyframes dk-stage-item {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes dk-rule-in {
+  from { transform: rotate(-1.4deg) scaleX(0); }
+  to { transform: rotate(-1.4deg) scaleX(1); }
+}
+
+@keyframes dk-state-glow {
+  0%, 100% { text-shadow: none; }
+  50% { text-shadow: 0 0 10px rgba(214, 161, 74, 0.45); }
+}
+
+/* ---- 揭开（menu.setVisible(false) 那一刻加 .is-launching）---------------
+   三条线一起收：黑条向外退出画面、标题卡硬闪几下消失、黑场反缩回中心。
+   黑场缩成一点时最后暗下去的正是标题的位置，读起来像"幕收拢"。
+   选择器写成 .is-deploying.is-launching（0,3,0）是为了压过上面 0,2,0 的
+   出击动画 —— 直接删掉 is-deploying 会让黑条瞬间弹回画外、黑场瞬间消失，
+   等于把整段揭开吞掉。 */
+.is-deploying.is-launching .dk-bar--top {
+  animation: dk-bar-out-top 380ms cubic-bezier(0.5, 0, 0.4, 1) both;
+}
+
+.is-deploying.is-launching .dk-bar--bottom {
+  animation: dk-bar-out-bottom 380ms cubic-bezier(0.5, 0, 0.4, 1) both;
+}
+
+.is-deploying.is-launching .dk-stage {
+  animation: dk-stage-out 240ms steps(4, end) both;
+}
+
+.is-deploying.is-launching .dk-veil {
+  animation: dk-iris-out 620ms 120ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes dk-bar-out-top {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(0, -100%, 0); }
+}
+
+@keyframes dk-bar-out-bottom {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(0, 100%, 0); }
+}
+
+@keyframes dk-stage-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -54%);
+  }
+}
+
+@keyframes dk-iris-out {
+  from { transform: scale(1); }
+  to { transform: scale(0.01); }
+}
+
+/* ------------------------------------------------------------------ 响应式 */
+
+@media (max-width: 1080px) {
+  .dk-deploy,
+  .dk-hunter,
+  .dk-arsenal {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dk-arsenal__detail {
+    position: static;
+  }
+
+  .dk-maps {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .dk-main {
+    grid-template-columns: minmax(0, 1fr);
+    padding-top: 6px;
+  }
+
+  /* 窄屏把导航横过来：竖排导航在手机上半屏就吃光了内容区。 */
+  .dk-nav {
+    align-self: stretch;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 2px;
+    padding-bottom: 4px;
+  }
+
+  .dk-nav__ink {
+    display: none;
+  }
+
+  .dk-nav__item {
+    flex: none;
+    grid-template-columns: 1fr;
+    grid-template-areas: 'cn';
+    min-height: 34px;
+    padding: 6px 12px;
+    border: 2px solid var(--ink);
+    background: rgba(12, 11, 10, 0.6);
+  }
+
+  .dk-nav__item.is-active {
+    background: var(--amber);
+  }
+
+  .dk-nav__index,
+  .dk-nav__en {
+    display: none;
+  }
+
+  .dk-dossier__cell:nth-child(3) {
+    display: none;
+  }
+
+  .dk-slots {
+    grid-template-columns: 1fr;
+  }
+
+  .dk-profile {
+    grid-template-columns: 68px minmax(0, 1fr);
+  }
+
+  .dk-table__row {
+    grid-template-columns: minmax(0, 1.4fr) 0.6fr 0.9fr 0.7fr;
+    gap: 5px;
+    padding: 7px 4px;
+  }
+}
+
+/* ------------------------------------------------------------------ 降低动态 */
+
+/* 系统开了"减少动态"时：
+   1) 关掉所有装饰性循环动画（颗粒抖动、进度条生长）；
+   2) 入场动画只保留淡入，去掉位移与模糊 —— 位移是最容易诱发前庭不适的部分；
+   3) 三维运镜在 menu.ts 里直接不启动 raf（那里判断 matchMedia）。
+   注意不要用 animation: none 一刀切：那会让 .dk-pane.is-entering 之类
+   依赖 animationend 做清理的元素永远收不到事件，只剩一个 invisible 的残留层。 */
+@media (prefers-reduced-motion: reduce) {
+  .dk-grain {
+    animation: none;
+  }
+
+  /* 金币不足 / 需要解锁的抖动是纯错误提示，不是信息：reduced 下不抖，
+     提示语仍然按 is-denied 显形，玩家不会因此不知道发生了什么。 */
+  .dk-trait.is-deny,
+  .dk-trait__buy.is-deny {
+    animation: none;
+  }
+
+  .dk-trait:hover,
+  .dk-trait__buy:hover:not(:disabled) {
+    transform: none;
+  }
+
+  .dk-logo,
+  .dk-tagline,
+  .dk-dossier,
+  .dk-nav__item,
+  .dk-bar-fill,
+  .dk-wbar__fill {
+    animation: dk-fade-in 1ms linear both;
+    animation-delay: 0ms;
+  }
+
+  .dk-nav__item,
+  .dk-map,
+  .dk-slot,
+  .dk-wrow,
+  .dk-weapon,
+  .dk-weapon__tick,
+  .dk-trait,
+  .dk-trait__tick,
+  .dk-trait__level,
+  .dk-trait__deny,
+  .dk-trait__buy,
+  .dk-cta,
+  .dk-segment__item,
+  .dk-threat__stop,
+  .dk-toggle::after,
+  .dk-threat__thumb,
+  .dk-nav__ink,
+  .dk-menu {
+    transition-duration: 1ms;
+  }
+
+  .dk-pane.is-entering {
+    animation: dk-fade-in 1ms linear both;
+  }
+
+  .dk-pane.is-leaving {
+    animation: dk-fade-out 1ms linear both;
+  }
+
+  /* 转场：黑条不滑、iris 不扩，只保留"入黑 → 出黑"两次淡变。
+     reduced 下最要命的 bug 是"黑场进得去出不来"，所以揭开那一段显式再写一遍。 */
+  .is-deploying .dk-bar--top,
+  .is-deploying .dk-bar--bottom {
+    /* 静态值就是画外，这里不写 transform 即等于"黑条完全不出现" */
+    animation: none;
+  }
+
+  .is-deploying .dk-flash {
+    animation: dk-fade-in 1ms linear both;
+  }
+
+  .is-deploying .dk-veil {
+    visibility: visible;
+    animation: dk-fade-in 1ms linear both;
+  }
+
+  /* 标题卡是信息不是动效：位移去掉，保留 200ms 淡入（淡变对前庭无害） */
+  .is-deploying .dk-stage {
+    animation: dk-fade-in 200ms linear 60ms both;
+  }
+
+  .is-deploying.is-launching .dk-veil {
+    animation: dk-fade-out 160ms linear both;
+  }
+
+  .is-deploying.is-launching .dk-stage {
+    animation: dk-fade-out 120ms linear both;
+  }
+
+  /* 新增的分层入场与背景推镜一并取消：位移对前庭有影响，标题卡整体淡入已经够。 */
+  .is-deploying .dk-bg {
+    animation: none;
+  }
+
+  .is-deploying .dk-stage__map,
+  .is-deploying .dk-stage__en,
+  .is-deploying .dk-stage__rule,
+  .is-deploying .dk-stage__desc,
+  .is-deploying .dk-stage__state {
+    animation: none;
+  }
+}
+
+@keyframes dk-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* ---------------------------------------------------------------- 操作 / 键位 */
+.dk-keys__note {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  color: var(--ash);
+}
+
+.dk-keys__list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 28px;
+}
+
+.dk-key-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 38px;
+  padding: 4px 2px;
+  border-bottom: 1px dashed rgba(216, 207, 186, 0.14);
+}
+
+.dk-key-row__label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dk-key-row__cn {
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: var(--bone);
+}
+
+.dk-key-row__en {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--ash);
+}
+
+.dk-key-btn {
+  min-width: 92px;
+  padding: 5px 10px;
+  border: 1.5px solid rgba(216, 207, 186, 0.3);
+  background: rgba(12, 11, 10, 0.55);
+  color: var(--bone);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-align: center;
+  cursor: pointer;
+}
+
+.dk-key-btn:hover {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.dk-key-btn.is-capturing {
+  border-color: var(--amber);
+  color: var(--amber);
+  animation: dk-key-pulse 0.7s steps(2, end) infinite;
+}
+
+@keyframes dk-key-pulse {
+  50% { opacity: 0.45; }
+}
+
+.dk-key-btn--fixed {
+  cursor: default;
+  border-color: rgba(216, 207, 186, 0.12);
+  color: var(--ash);
+}
+
+@media (max-width: 900px) {
+  .dk-keys__list { grid-template-columns: 1fr; }
+}
+
+/* 准星颜色选择 */
+.dk-swatches { display: flex; gap: 8px; }
+.dk-swatch {
+  width: 34px;
+  height: 24px;
+  border: 2px solid rgba(12, 11, 10, 0.9);
+  box-shadow: 0 0 0 1px rgba(216, 207, 186, 0.25);
+  cursor: pointer;
+}
+.dk-swatch.is-selected {
+  box-shadow: 0 0 0 2px var(--amber), 0 0 0 4px rgba(12, 11, 10, 0.9);
+}
+
+/* 出击页：房间人数与本局剩余时间 */
+.dk-match-info {
+  margin: 8px 0 10px;
+  padding: 7px 9px;
+  border-left: 2px solid var(--amber);
+  background: rgba(12, 11, 10, 0.42);
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.06em;
+  color: var(--ash);
+}
+
+.dk-match-info.is-warning {
+  border-left-color: var(--blood);
+  color: #c98e84;
+}

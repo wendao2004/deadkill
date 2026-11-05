@@ -1,0 +1,1486 @@
+/* ============================================================================
+   目标 HUD —— 《猎杀：对决》的暗冷沼泽底色 + 《无主之地》的粗墨手绘勾边
+   ----------------------------------------------------------------------------
+   全部依赖 client/index.html 里已定义的设计变量（--ink/--bone/--ash/--amber/
+   --blood/--bile/--font-display/--shadow-hard），一个颜色都不新造：新造一套
+   就等于给"以后要改配色"埋两个入口。
+
+   工程约束（为什么不这么做）：
+   * 零模糊。所有投影都是 0 blur 的硬位移投影。任何 blur(>0) 立刻把画面拉回
+     通用 Web UI 的观感，feedback.ts 的头注释里已经写死这条。
+   * 动画只碰 transform / opacity。这两样走合成器，主线程不参与；一旦去动
+     width / background-position / box-shadow，小元素也会带出重排或重绘。
+   * 没有 url(...)：CSP 是 default-src 'self'，外链字体和图都进不来；毛边、
+     网点、火星全部用 repeating-*-gradient 现算，比解码一张贴图还便宜，也不用
+     跟 CSP 打架。
+   * 指针事件一律 none：HUD 铺满全屏，但绝不该吃掉一次点击。
+   ========================================================================== */
+
+.dko {
+  position: fixed;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+  /* 兜底字体：index.html 若还没定义变量也不会退回浏览器默认衬线 */
+  font-family: var(--font-ui, 'Segoe UI', system-ui, sans-serif);
+  color: var(--bone, #d8cfba);
+  /* 整层只做一次隔离：让内部的 z-index 不外溢，也不会跟 #hud 打架 */
+  isolation: isolate;
+}
+
+/* setVisible(false)：display:none 比 opacity:0 更彻底 —— 卸载合成层，
+   隐藏期间浏览器完全不用管这棵树。 */
+.dko.is-off {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- 通用件 */
+
+/* 平涂底 + 1px 墨边 + 硬投影：这是整个 HUD 的"纸片"语汇 */
+.dko-flag {
+  display: none;
+  margin-top: 6px;
+  padding: 3px 9px 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  background: var(--amber, #d99a4a);
+  color: var(--ink, #0c0b0a);
+  border: 2px solid var(--ink, #0c0b0a);
+  /* 0 blur 的硬投影，就是 ink.ts 里那套"纸片叠纸片"的观感 */
+  box-shadow: 3px 3px 0 0 rgba(12, 11, 10, 0.85);
+  /* 略带歪斜，手贴上去的标签不会正 */
+  transform: rotate(-1.2deg);
+}
+
+.dko-flag.is-on {
+  display: block;
+}
+
+.dko-flag--lair {
+  background: var(--amber, #d99a4a);
+}
+
+/* 赏金在逃：血红色 + 呼吸。呼吸只动 opacity，不动位移，避免和文字一起抖。 */
+.dko-flag--carrier {
+  background: var(--blood, #7d2b22);
+  color: var(--bone, #d8cfba);
+  transform: rotate(1.4deg);
+}
+
+.dko-flag--carrier.is-on {
+  animation: dko-breathe 1.8s steps(2, end) infinite;
+}
+
+/* ---------------------------------------------------------------- 左上：线索 */
+
+.dko-clues {
+  position: absolute;
+  left: 22px;
+  top: 18px;
+  /* 上限宽度：点阵本身不换行，靠 MAX_DOTS 保证不会撑破 */
+  max-width: 340px;
+}
+
+.dko-clues-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-display, 'Arial Black', Impact, sans-serif);
+  font-size: 17px;
+  letter-spacing: 0.16em;
+  color: var(--bone, #d8cfba);
+  /* 描边 + 硬投影，与横幅同一套"油墨压印"处理。
+     这一行只有 17px，1px 描边会把 1px 宽的竖笔画从两侧同时吃掉、整句糊成
+     一团深灰（0 号字号的时钟是 30px/2.5px，比例完全不同，不能照抄）。所以
+     描边减到 0.55px，轮廓交给两层 0 blur 的硬投影 —— 顺带把原来那层
+     3px 模糊拉回文件头"零模糊"的规矩。 */
+  -webkit-text-stroke: 0.55px var(--ink, #0c0b0a);
+  text-shadow:
+    1px 1px 0 rgba(12, 11, 10, 0.95),
+    2px 2px 0 rgba(12, 11, 10, 0.85);
+}
+
+.dko-clues-count {
+  font-family: var(--font-mono, 'Courier New', monospace);
+  font-size: 13px;
+  /* 等宽数字：0/3 → 1/3 时后面的点阵不会被推着走 */
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  color: var(--amber, #d99a4a);
+  /* 同上：13px 的字配 1.5px 描边 = 笔画被整根吃掉，"0/3" 糊成一团墨块。
+     描边只留 0.6px，轮廓靠 0 blur 的硬投影。 */
+  -webkit-text-stroke: 0.6px var(--ink, #0c0b0a);
+  text-shadow: 1px 1px 0 rgba(12, 11, 10, 0.95);
+}
+
+.dko-dots {
+  display: flex;
+  gap: 9px;
+  margin-top: 7px;
+  /* 点阵是高 14px 的菱形，留出旋转后的外接框，不被上方文字压到 */
+  height: 15px;
+  align-items: center;
+}
+
+/* 菱形墨点：用一个旋转 45deg 的方块做，而不是画 border 三角形 ——
+   方块能同时拥有描边和背景，找到后只要换 background 就够了。
+   JS 会在内联 transform 里覆写 rotate 角度（每个点略微不齐，手作感）。 */
+.dko-dot {
+  position: relative;
+  display: block;
+  width: 11px;
+  height: 11px;
+  transform: rotate(45deg);
+  background: transparent;
+  border: 2px solid var(--ash, #8d8578);
+  /* 未找到：空心 + ash 描边，比实心更"待办" */
+  box-shadow: 0 0 0 1px rgba(12, 11, 10, 0.55);
+  transition: background-color 140ms linear, border-color 140ms linear;
+}
+
+.dko-dot.is-found {
+  background: var(--amber, #d99a4a);
+  border-color: var(--ink, #0c0b0a);
+}
+
+/* "墨点溅开"：一次性的关键帧。挂在伪元素上而不是元素自身，
+   因为元素自身的 transform 已经被倾角占用（见上方注释）。
+   只动 transform / opacity：泼溅是纯合成，不参与布局。 */
+.dko-dot::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  background: var(--amber, #d99a4a);
+  /* 不规则墨点：三块硬边径向渐变的并集，比圆形更像甩上去的墨 */
+  background:
+    radial-gradient(circle at 30% 42%, var(--amber, #d99a4a) 0 46%, transparent 47%),
+    radial-gradient(circle at 68% 34%, var(--amber, #d99a4a) 0 30%, transparent 31%),
+    radial-gradient(circle at 62% 70%, var(--amber, #d99a4a) 0 34%, transparent 35%),
+    radial-gradient(circle at 22% 72%, var(--amber, #d99a4a) 0 18%, transparent 19%);
+  opacity: 0;
+  transform: scale(0.2) rotate(-15deg);
+  pointer-events: none;
+}
+
+.dko-dot.is-found::after {
+  animation: dko-splat 460ms cubic-bezier(0.16, 0.9, 0.24, 1) 1 both;
+}
+
+/* ---------------------------------------------------------------- 顶部：计时 */
+
+.dko-clock {
+  position: absolute;
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  text-align: center;
+  /* 计时器后面垫一层脏纸：不加的话亮天空背景下数字会糊掉 */
+  padding: 3px 16px 6px;
+  background:
+    repeating-linear-gradient(45deg, rgba(12, 11, 10, 0.16) 0 1px, transparent 1px 4px),
+    radial-gradient(ellipse at 50% 40%, rgba(12, 11, 10, 0.62) 0 62%, rgba(12, 11, 10, 0) 72%);
+}
+
+.dko-clock-num {
+  font-family: var(--font-display, 'Arial Black', Impact, sans-serif);
+  font-size: 30px;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  color: var(--bone, #d8cfba);
+  -webkit-text-stroke: 2.5px var(--ink, #0c0b0a);
+  text-shadow: 3px 3px 0 rgba(12, 11, 10, 0.92);
+}
+
+.dko-clock-sub {
+  margin-top: 2px;
+  font-size: 10px;
+  letter-spacing: 0.42em;
+  /* 字距把最后一个字也推开，手动左移半格让它视觉居中 */
+  margin-right: -0.42em;
+  color: var(--ash, #8d8578);
+}
+
+/* 顶部罗盘：固定宽度的窗口，只显示前方 180°。
+   背后目标会被 updateCompass 隐藏，避免左右边缘各出现一个镜像。 */
+.dko-compass {
+  position: absolute;
+  left: 50%;
+  top: 74px;
+  width: 340px;
+  height: 28px;
+  transform: translateX(-50%);
+  overflow: hidden;
+  background:
+    linear-gradient(to bottom, rgba(12, 11, 10, 0.62), rgba(12, 11, 10, 0.22)),
+    repeating-linear-gradient(90deg, rgba(216, 207, 186, 0.06) 0 1px, transparent 1px 20px);
+  border-top: 1px solid rgba(216, 207, 186, 0.16);
+  border-bottom: 1px solid rgba(216, 207, 186, 0.16);
+}
+
+.dko-compass-label {
+  position: absolute;
+  top: 4px;
+  transform: translateX(-50%);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ash, #8d8578);
+  text-shadow: 1px 1px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dko-compass-pip {
+  position: absolute;
+  top: 19px;
+  display: none;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  transform: rotate(45deg);
+  border: 1px solid rgba(12, 11, 10, 0.9);
+  box-shadow: 1px 1px 0 rgba(12, 11, 10, 0.6);
+}
+
+.dko-compass-pip--clue { background: var(--amber, #d99a4a); }
+.dko-compass-pip--lair { background: #9bb36a; }
+.dko-compass-pip--extract { background: var(--bone, #d8cfba); }
+
+.dko-compass-center {
+  position: absolute;
+  left: 50%;
+  top: -1px;
+  width: 0;
+  height: 0;
+  margin-left: -4px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid var(--amber, #d99a4a);
+  filter: drop-shadow(1px 1px 0 rgba(12, 11, 10, 0.8));
+}
+
+/* 携带赏金后的撤离点方位：三行，贴在计时器下方。
+   只有真正带着赏金的人看得到 —— 非携带者连出口在哪都不该知道。 */
+.dko-bearing {
+  position: absolute;
+  left: 50%;
+  top: 108px;
+  transform: translateX(-50%);
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 172px;
+  padding: 6px 12px 7px;
+  background: linear-gradient(to bottom, rgba(12, 11, 10, 0.72), rgba(12, 11, 10, 0.5));
+  border-left: 2px solid var(--amber, #d99a4a);
+  box-shadow: 3px 3px 0 rgba(12, 11, 10, 0.55);
+}
+
+.dko-bearing.is-on { display: flex; }
+
+.dko-bearing-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  line-height: 1.35;
+  color: var(--bone, #d8cfba);
+  text-shadow: 1px 1px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dko-bearing-name {
+  flex: 1;
+  color: var(--amber, #d99a4a);
+  white-space: nowrap;
+}
+
+.dko-bearing-dist {
+  color: var(--ash, #8d8578);
+  font-variant-numeric: tabular-nums;
+}
+
+.dko-bearing-arrow {
+  width: 14px;
+  text-align: center;
+  color: var(--amber, #d99a4a);
+  font-size: 14px;
+}
+
+/* 最后 60 秒：血红色 + 低频脉冲。
+   脉冲只动 opacity（合成器属性），不去动画 color —— 颜色动画会让这段文字
+   每秒重绘一次，虽然量小，但没有理由为它付钱。 */
+.dko-clock.is-critical .dko-clock-num {
+  color: var(--blood, #7d2b22);
+  /* 血字在黑描边上几乎看不见，所以加一层"骨白内衬"把字心提亮 */
+  text-shadow:
+    0 0 0 var(--bone, #d8cfba),
+    3px 3px 0 rgba(12, 11, 10, 0.92);
+  animation: dko-pulse 1.5s ease-in-out infinite;
+}
+
+.dko-clock.is-critical .dko-clock-sub {
+  color: var(--blood, #7d2b22);
+  animation: dko-pulse 1.5s ease-in-out infinite;
+}
+
+/* ---------------------------------------------------------------- 阶段横幅 */
+
+.dko-banner {
+  position: absolute;
+  left: 50%;
+  top: 24%;
+  /* JS 的入场关键帧里保留了 translateX(-50%)，两处必须一致 */
+  transform: translateX(-50%);
+  opacity: 0;
+  text-align: center;
+  white-space: nowrap;
+  /* 只让挂在上面的动画参与合成 */
+  will-change: opacity, transform;
+  /* 黑纱：横幅压在一场枪战画面上，没有底衬文字会被火光冲掉 */
+  padding: 8px 46px 10px;
+  background:
+    repeating-linear-gradient(-38deg, rgba(216, 207, 186, 0.05) 0 2px, transparent 2px 6px),
+    linear-gradient(90deg, rgba(12, 11, 10, 0) 0, rgba(12, 11, 10, 0.82) 12%, rgba(12, 11, 10, 0.82) 88%, rgba(12, 11, 10, 0) 100%);
+}
+
+.dko-banner-title {
+  position: relative;
+  z-index: 0;
+  font-family: var(--font-display, 'Arial Black', Impact, sans-serif);
+  font-size: 44px;
+  line-height: 1.04;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  /* 契约点名的 -webkit-text-stroke 墨边。3px 在 44px 字上正好是"手绘勾边" */
+  -webkit-text-stroke: 3px var(--ink, #0c0b0a);
+  color: var(--amber, #d99a4a);
+  text-shadow: 4px 4px 0 rgba(12, 11, 10, 0.9);
+  /* 字距多出的一格在右边，补掉让重影和主字对齐 */
+  margin-right: -0.1em;
+}
+
+/* 双色错版重影（misregistration）：模拟廉价印刷机套色偏了。
+   用 content: attr(data-text) 复制文案，DOM 里只写一次文本（昵称防 XSS）。
+   两片反向偏移、压在主字下方（z-index:-1），肉眼看到的是"红/黄两色没对齐"。 */
+.dko-banner-title::before,
+.dko-banner-title::after {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: -1;
+  -webkit-text-stroke: 0;
+  text-shadow: none;
+  pointer-events: none;
+}
+
+.dko-banner-title::before {
+  color: var(--blood, #7d2b22);
+  transform: translate(-3px, -2px);
+  opacity: 0.9;
+}
+
+.dko-banner-title::after {
+  color: var(--bile, #9aa845);
+  transform: translate(3px, 2px);
+  opacity: 0.75;
+}
+
+.dko-banner-sub {
+  position: relative;
+  margin-top: 6px;
+  /* 副标题小一号，字距放宽：压住标题的重量，读起来是"批注"而不是"第二行" */
+  font-size: 15px;
+  letter-spacing: 0.3em;
+  margin-right: -0.3em;
+  color: var(--ash, #8d8578);
+  text-shadow: 2px 2px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dko-banner--amber .dko-banner-title {
+  color: var(--amber, #d99a4a);
+}
+
+.dko-banner--blood .dko-banner-title {
+  color: var(--blood, #7d2b22);
+  /* 血字在暗底上太沉，把内衬提到骨白 */
+  text-shadow: 0 0 0 var(--bone, #d8cfba), 4px 4px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dko-banner--bile .dko-banner-title {
+  color: var(--bile, #9aa845);
+}
+
+/* ---------------------------------------------------------------- 放逐进度 */
+
+.dko-banish {
+  position: absolute;
+  left: 50%;
+  top: 78px;
+  transform: translateX(-50%) translateY(-6px);
+  width: 320px;
+  opacity: 0;
+  /* 隐藏态用 visibility 而不是 display:none：display 切换会打断内部伪元素
+     的无限循环动画，每次进放逐都要重启一次，观感像卡了一下。 */
+  visibility: hidden;
+  transition: opacity 200ms linear, transform 200ms ease-out;
+}
+
+.dko-banish.is-on {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+.dko-banish-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.dko-banish-label {
+  font-family: var(--font-display, 'Arial Black', Impact, sans-serif);
+  font-size: 13px;
+  letter-spacing: 0.34em;
+  color: var(--amber, #d99a4a);
+  -webkit-text-stroke: 1.5px var(--ink, #0c0b0a);
+}
+
+.dko-banish-pct {
+  font-family: var(--font-mono, 'Courier New', monospace);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--bone, #d8cfba);
+  text-shadow: 2px 2px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dko-banish-track {
+  position: relative;
+  height: 12px;
+  /* 底槽：暗 + 斜向排线，和 ink.ts 在 3D 材质上打的排线是同一套语汇 */
+  background:
+    repeating-linear-gradient(45deg, rgba(141, 133, 120, 0.22) 0 1px, transparent 1px 5px),
+    var(--ink, #0c0b0a);
+  border: 2px solid var(--ink, #0c0b0a);
+  box-shadow:
+    inset 0 0 0 1px rgba(141, 133, 120, 0.35),
+    3px 3px 0 0 rgba(12, 11, 10, 0.85);
+  /* 溢出裁掉：燃烧头与火星必须被槽体夹住，否则会飞出去 */
+  overflow: hidden;
+}
+
+.dko-banish-fill {
+  position: relative;
+  height: 100%;
+  width: 0%;
+  /* 宽度由 JS 写成百分比字符串，渐变本身按 100% 铺满再被父级裁掉，
+     这样进度变化时不用重建 background-image（那才是分配大户） */
+  background: linear-gradient(90deg, var(--blood, #7d2b22) 0, var(--amber, #d99a4a) 62%, #f0c07a 100%);
+  transition: width 120ms linear;
+}
+
+/* 燃烧头：贴在最右端的一团白热光。用 transform 做的闪烁不会重绘槽体。 */
+.dko-banish-fill::before {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: -3px;
+  bottom: -3px;
+  width: 10px;
+  background: radial-gradient(ellipse at 100% 50%, #fff3d0 0 26%, var(--amber, #d99a4a) 46%, transparent 74%);
+  animation: dko-flicker 260ms steps(3, end) infinite alternate;
+}
+
+/* 火星：一排硬边小点，整体缓慢上浮。
+   动的是 transform + opacity，所以这些点完全不参与重绘；用 canvas 反而要给
+   一个上下文、一帧一次 drawArrays，还得跟主渲染抢 GPU。
+   （伪元素只允许两个，所以火星与燃烧头各占一个，这点限制正好够用。） */
+.dko-banish-fill::after {
+  content: '';
+  position: absolute;
+  inset: -8px 0 -8px;
+  background:
+    radial-gradient(circle at 12% 78%, #ffd89a 0 0.9px, transparent 1.6px),
+    radial-gradient(circle at 34% 62%, #ffb85e 0 0.7px, transparent 1.4px),
+    radial-gradient(circle at 58% 84%, #fff0c8 0 1px, transparent 1.7px),
+    radial-gradient(circle at 74% 58%, #ffb85e 0 0.6px, transparent 1.3px),
+    radial-gradient(circle at 88% 74%, #ffd89a 0 0.8px, transparent 1.5px);
+  animation: dko-embers 1.6s steps(4, end) infinite;
+}
+
+/* ---------------------------------------------------------------- 撤离进度 */
+
+.dko-extract {
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  transform: translateX(-50%) translateY(8px);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 180ms linear, transform 180ms ease-out;
+}
+
+.dko-extract.is-on {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+.dko-extract-ring {
+  position: relative;
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  /* 底盘：环内是暗的，中央的百分比才读得出来 */
+  background: radial-gradient(circle at 50% 50%, rgba(12, 11, 10, 0.78) 0 66%, rgba(12, 11, 10, 0.28) 67% 100%);
+  /* 契约要求的默认值：JS 第一次写 --dkp 之前，conic-gradient 必须语法有效 */
+  --dkp: 0%;
+  /* 只动 filter 会重绘，所以环本身不加循环动画；脉冲交给父级透明度过渡 */
+}
+
+/* 进度环本体：conic-gradient 直接吃 --dkp 变量。
+   为什么不用 SVG 的 stroke-dasharray：那需要往 DOM 里塞一个 <svg>，还得在
+   update() 里算周长、写 pathLength，为一条弧形多养一个 DOM 子树不划算；
+   conic-gradient 换一个 CSS 变量就够了，浏览器自己按变量重画同一层。
+   mask 挖出内圈做出"环"，硬 stop 保证边缘不糊。 */
+.dko-extract-ring::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from -90deg,
+    var(--amber, #d99a4a) 0 var(--dkp),
+    rgba(141, 133, 120, 0.32) var(--dkp) 100%
+  );
+  -webkit-mask: radial-gradient(closest-side, transparent 67%, #000 68%);
+  mask: radial-gradient(closest-side, transparent 67%, #000 68%);
+}
+
+/* 外圈墨边：贴着一圈 2px 的硬描边，环才不是个"Web 进度条" */
+.dko-extract-ring::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 2px solid var(--ink, #0c0b0a);
+  box-shadow: 0 0 0 1px rgba(141, 133, 120, 0.4);
+}
+
+.dko-extract-pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, 'Courier New', monospace);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  color: var(--bone, #d8cfba);
+  text-shadow: 2px 2px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dko-extract-text {
+  text-align: left;
+}
+
+.dko-extract-name {
+  font-family: var(--font-display, 'Arial Black', Impact, sans-serif);
+  font-size: 21px;
+  letter-spacing: 0.08em;
+  color: var(--bile, #9aa845);
+  -webkit-text-stroke: 2px var(--ink, #0c0b0a);
+  text-shadow: 3px 3px 0 rgba(12, 11, 10, 0.9);
+  /* 撤离点名可能是一句长地名，超过就省略，不许把环挤歪 */
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dko-extract-sub {
+  margin-top: 3px;
+  font-size: 11px;
+  letter-spacing: 0.36em;
+  margin-right: -0.36em;
+  color: var(--ash, #8d8578);
+}
+
+/* ---------------------------------------------------------------- 收场演出 */
+
+.dko-outcome {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 泼溅：多块硬边径向渐变拼出的不规则墨团，中间再挖几处"飞白"。
+   形状写死在 CSS 里而不是用图：CSP 不容许外链，内联 data: 贴图又要多一次
+   解码，渐变是零成本现算的。 */
+.dko-outcome-splash {
+  position: absolute;
+  /* inset:0 + margin:auto 是绝对定位元素唯一不依赖 transform 的居中方式。
+     transform 被入场关键帧的 scale/rotate 占着，不能用 translate(-50%,-50%)。 */
+  inset: 0;
+  margin: auto;
+  width: 560px;
+  height: 380px;
+  opacity: 0;
+  background:
+    radial-gradient(circle at 38% 46%, currentColor 0 34%, transparent 35%),
+    radial-gradient(circle at 62% 38%, currentColor 0 21%, transparent 22%),
+    radial-gradient(circle at 57% 63%, currentColor 0 26%, transparent 27%),
+    radial-gradient(circle at 26% 62%, currentColor 0 13%, transparent 14%),
+    radial-gradient(circle at 74% 58%, currentColor 0 11%, transparent 12%),
+    radial-gradient(circle at 47% 24%, currentColor 0 7%, transparent 8%);
+}
+
+.dko-outcome.is-escaped .dko-outcome-splash {
+  /* 金色赏金：直接吃 amber，不另调色 —— 全 HUD 的金色只有一个来源。 */
+  color: var(--amber, #d99a4a);
+}
+
+.dko-outcome.is-dead .dko-outcome-splash {
+  color: var(--blood, #7d2b22);
+}
+
+.dko-outcome-mark {
+  position: relative;
+  z-index: 1;
+  font-family: var(--font-display, 'Arial Black', Impact, sans-serif);
+  font-size: 76px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  margin-right: -0.12em;
+  opacity: 0;
+  -webkit-text-stroke: 4px var(--ink, #0c0b0a);
+  text-shadow: 6px 6px 0 rgba(12, 11, 10, 0.9);
+}
+
+/* 收场大字同样套一层双色错版：和阶段横幅共用一套"印刷套偏"的语汇 */
+.dko-outcome-mark::before,
+.dko-outcome-mark::after {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: -1;
+  -webkit-text-stroke: 0;
+  text-shadow: none;
+}
+
+.dko-outcome-mark::before {
+  color: var(--blood, #7d2b22);
+  transform: translate(-4px, -3px);
+  opacity: 0.9;
+}
+
+.dko-outcome-mark::after {
+  color: var(--bile, #9aa845);
+  transform: translate(4px, 3px);
+  opacity: 0.7;
+}
+
+.dko-outcome.is-escaped .dko-outcome-mark {
+  color: var(--amber, #d99a4a);
+}
+
+.dko-outcome.is-dead .dko-outcome-mark {
+  color: var(--blood, #7d2b22);
+  /* 血字压在血墨团上会糊成一坨，用骨白内衬把字心挑出来 */
+  text-shadow: 0 0 0 var(--bone, #d8cfba), 6px 6px 0 rgba(12, 11, 10, 0.9);
+}
+
+/* ---------------------------------------------------------------- 关键帧 */
+
+/* 墨点溅开：先冲过头再收回，最后停在不可见 —— 停在 0 是不想让它一直占着
+   一团 amber，那会让"已找到"的点看起来比"未找到"的点大一号。 */
+@keyframes dko-splat {
+  0% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-15deg);
+  }
+  28% {
+    opacity: 1;
+    transform: scale(1.35) rotate(4deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.9) rotate(12deg);
+  }
+}
+
+/* 低频脉冲：只动 opacity，合成器完成，不重绘文字 */
+@keyframes dko-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.42;
+  }
+}
+
+/* 燃烧头闪烁：steps 让它像火焰而不是像灯泡呼吸 */
+@keyframes dko-flicker {
+  from {
+    opacity: 0.72;
+    transform: scaleY(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1.12);
+  }
+}
+
+/* 火星上浮：位移 + 透明度循环。位移量刻意小（-10px），
+   大了会看到火星穿透槽体，槽体的 overflow:hidden 也压不住。 */
+@keyframes dko-embers {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  30% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+
+/* 标签订阅呼吸 */
+@keyframes dko-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ---------------------------------------------------------------- 过场幕 */
+
+/* 幕：满屏四片遮幅 + 中央墨团 + 标题卡。
+   全部落在 transform / opacity 上 —— 合成器一个人干完，主线程 0 工作。
+   注意 .dko 本身带 pointer-events:none，所以幕存在的那一秒里鼠标点击、
+   射击、开镜一个都拦不住：演出绝不能变成"输入被吃掉"的借口。 */
+.dko-curtain {
+  --dko-tone: var(--amber);
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.dko-curtain.is-on {
+  opacity: 1;
+  visibility: visible;
+}
+
+.dko-curtain--amber {
+  --dko-tone: var(--amber);
+}
+
+.dko-curtain--blood {
+  --dko-tone: var(--blood);
+}
+
+.dko-curtain--bile {
+  --dko-tone: var(--bile);
+}
+
+.dko-curtain--bone {
+  --dko-tone: var(--bone);
+}
+
+/* 四片遮幅：上下各 60% 高、左右各 60% 宽，相邻两片重叠 20%，合起来是一块
+   无缝的满屏黑。重叠留厚一点是因为四片抽走时中央会出现一道硬边的缝：20% 让
+   这道缝晚约 60ms 才张开，正好错开「标题已入场、准星还没放开」的那一帧。
+   抽走时各自移出 101% 自身尺寸，等于「四边同时拉开」。 */
+.dko-curtain-panel {
+  position: absolute;
+  display: block;
+  background-color: var(--ink);
+  /* 纸纹理：网点 + 斜线，和 index.html 里 #grain 的配方同源。
+     幕这里不做混合模式 —— 幕要"实"，混合会让底下的画面透上来。 */
+  background-image:
+    radial-gradient(circle at 50% 50%, rgba(216, 207, 186, 0.05) 1px, transparent 1.3px),
+    repeating-linear-gradient(-38deg, rgba(216, 207, 186, 0.035) 0 2px, transparent 2px 7px);
+  background-size: 6px 6px, auto;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+}
+
+/* 内侧留一条极浅的亮边：不模糊（项目规矩是零模糊），只借 1px 的硬边
+   把"黑布"的厚度读出来，否则四片遮幅就是一整块死黑。 */
+.dko-curtain-panel--top {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 60%;
+  box-shadow: inset 0 -3px 0 rgba(216, 207, 186, 0.1);
+}
+
+.dko-curtain-panel--bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60%;
+  box-shadow: inset 0 3px 0 rgba(216, 207, 186, 0.1);
+}
+
+.dko-curtain-panel--left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 60%;
+  box-shadow: inset -3px 0 0 rgba(216, 207, 186, 0.1);
+}
+
+.dko-curtain-panel--right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 60%;
+  box-shadow: inset 3px 0 0 rgba(216, 207, 186, 0.1);
+}
+
+/* 墨团：几团硬边圆（色标在 92% 处直接跳到透明，没有过渡）拼成泼溅。
+   它正压在准星上，所以 JS 里只给它 360ms 的寿命 —— 比 0.4s 的硬指标更短。 */
+.dko-curtain-ink {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: block;
+  width: 96vmax;
+  height: 62vmax;
+  opacity: 0;
+  color: var(--dko-tone);
+  transform: translate(-50%, -50%) scale(0.3);
+  will-change: transform, opacity;
+  background-image:
+    radial-gradient(circle at 48% 46%, currentColor 0 26%, transparent 26.6%),
+    radial-gradient(circle at 66% 52%, currentColor 0 17%, transparent 17.6%),
+    radial-gradient(circle at 34% 58%, currentColor 0 14%, transparent 14.6%),
+    radial-gradient(circle at 58% 62%, currentColor 0 11%, transparent 11.6%),
+    radial-gradient(circle at 26% 40%, currentColor 0 7%, transparent 7.6%),
+    radial-gradient(circle at 74% 36%, currentColor 0 6%, transparent 6.6%);
+}
+
+/* 标题卡：位置在 38% 高度而不是正中。准星在 50%，把字压上去等于在
+   最需要瞄准的那半秒里挡住准心；抬到 38% 之后卡片能留满 1 秒还不碍事。 */
+.dko-curtain-card {
+  position: absolute;
+  left: 50%;
+  top: 38%;
+  opacity: 0;
+  padding: 10px 54px 12px;
+  text-align: center;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  will-change: transform, opacity;
+  background-image:
+    repeating-linear-gradient(-38deg, rgba(216, 207, 186, 0.05) 0 2px, transparent 2px 6px),
+    linear-gradient(
+      90deg,
+      transparent 0,
+      rgba(12, 11, 10, 0.9) 14%,
+      rgba(12, 11, 10, 0.9) 86%,
+      transparent 100%
+    );
+}
+
+.dko-curtain-title {
+  position: relative;
+  z-index: 1;
+  margin-right: -0.12em;
+  font-family: var(--font-display);
+  font-size: clamp(36px, 6.6vw, 92px);
+  font-weight: 900;
+  line-height: 1.06;
+  letter-spacing: 0.12em;
+  color: var(--dko-tone);
+  -webkit-text-stroke: 3px var(--ink);
+  text-shadow: 5px 5px 0 rgba(12, 11, 10, 0.9);
+}
+
+/* 错版重影：用 attr(data-text) 复制一份，DOM 里文本只写一次 */
+.dko-curtain-title::before,
+.dko-curtain-title::after {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  -webkit-text-stroke: 0;
+  pointer-events: none;
+}
+
+.dko-curtain-title::before {
+  color: var(--blood);
+  transform: translate(-4px, 3px);
+}
+
+.dko-curtain-title::after {
+  color: var(--bone);
+  opacity: 0.3;
+  transform: translate(4px, -2px);
+}
+
+.dko-curtain-sub {
+  margin-top: 7px;
+  margin-right: -0.3em;
+  font-family: var(--font-ui);
+  font-size: clamp(12px, 1.3vw, 16px);
+  letter-spacing: 0.32em;
+  color: var(--bone);
+  opacity: 0.84;
+  text-shadow: 2px 2px 0 rgba(12, 11, 10, 0.9);
+}
+
+/* ---------------------------------------------------------------- 武器槽位 */
+
+/* 三个格子压在 #ammo 大数字的上方：#ammo 是 main.ts 的契约（它每帧写
+   textContent），所以槽位不进去插队，自己贴右下。 */
+.dko-slots {
+  position: absolute;
+  right: 26px;
+  bottom: 104px;
+  display: none;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.dko-slots.is-on {
+  display: flex;
+}
+
+.dko-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  padding: 3px 7px 4px;
+  background: rgba(12, 11, 10, 0.74);
+  border: 2px solid var(--ink);
+  box-shadow: 3px 3px 0 rgba(12, 11, 10, 0.72);
+  color: var(--ash);
+  transform: rotate(-1deg);
+  will-change: transform;
+}
+
+.dko-slot-name {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.18em;
+}
+
+.dko-slot-num {
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--bone);
+}
+
+/* 当前槽：整格翻成琥珀底 + 墨字。硬切、不渐变 —— 90 年代 UI 没有过渡帧。 */
+.dko-slot.is-active {
+  background: var(--amber);
+  box-shadow: 3px 3px 0 rgba(12, 11, 10, 0.92);
+}
+
+.dko-slot.is-active .dko-slot-name {
+  color: rgba(12, 11, 10, 0.66);
+}
+
+.dko-slot.is-active .dko-slot-num {
+  color: var(--ink);
+}
+
+/* 槽位存在但没装备（刀没捡）：留位压暗，玩家一眼看出"这一格是空的" */
+.dko-slot.is-empty {
+  opacity: 0.34;
+}
+
+/* 换弹抖动只挂在当前槽的数字上，和 #ammo 的 is-reloading 是同一套语义，
+   但 keyframes 在本文件内自己定义 —— 拆到别的文件里靠名字偶然撞上，
+   哪天 index.html 改了名字这边就会静默失效。 */
+.dko-slot.is-reloading .dko-slot-num {
+  animation: dko-slot-shake 0.24s steps(3) infinite;
+}
+
+@keyframes dko-slot-shake {
+  0% {
+    transform: rotate(1deg) translateY(0);
+  }
+  50% {
+    transform: rotate(-1.5deg) translateY(-2px);
+  }
+  100% {
+    transform: rotate(1deg) translateY(0);
+  }
+}
+
+/* 刀：一条斜置带尖的刃 + 一块护手，全部用 clip-path 拼。
+   不用图标字体、不发请求（CSP 的 img-src 只放行 self 与 data:）。 */
+.dko-slot-blade {
+  position: relative;
+  display: block;
+  width: 18px;
+  height: 18px;
+  color: currentColor;
+}
+
+.dko-slot-blade::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 4px;
+  width: 15px;
+  height: 5px;
+  background: currentColor;
+  clip-path: polygon(0 50%, 26% 0, 100% 22%, 100% 78%, 26% 100%);
+  transform: rotate(-40deg);
+  transform-origin: left center;
+}
+
+.dko-slot-blade::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  bottom: 2px;
+  width: 7px;
+  height: 7px;
+  background: currentColor;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+/* ---------------------------------------------------------------- 死亡层 */
+
+/* 这两层必须是 body 的直接子节点，不能放进 .dko / #dead：
+   mix-blend-mode 只跟"同一个层叠上下文里的下层"混合，而 .dko / #dead 都带
+   position + z-index，会把混合隔离在自己那一组里 —— 结果是屏幕上多一块
+   灰色板子，而不是把画面变灰。 */
+.dko-death-wash {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: block;
+  background: #7c7c7c;
+  mix-blend-mode: saturation;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  will-change: opacity;
+  transition:
+    opacity 180ms steps(3, end),
+    visibility 0s linear 180ms;
+}
+
+.dko-death-wash.is-on {
+  opacity: 0.88;
+  visibility: visible;
+  transition:
+    opacity 180ms steps(3, end),
+    visibility 0s;
+}
+
+/* 死亡 UI 层：红暗角 + 「倒 下」卡 + 倒计时 + 复活闪白 */
+.dko-death-ui {
+  position: fixed;
+  inset: 0;
+  z-index: 12;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  font-family: var(--font-ui);
+  color: var(--bone);
+  will-change: opacity;
+  transition:
+    opacity 180ms steps(3, end),
+    visibility 0s linear 180ms;
+}
+
+.dko-death-ui.is-on {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 180ms steps(3, end),
+    visibility 0s;
+}
+
+/* 死了就没准星：那四个小白点正压在「倒 下」两个字中间，而且这时候枪口
+   朝哪已经不重要了。用 :has 让它跟着死亡层自动来去，不必让 JS 去写
+   #crosshair 的 style（那是 index.html 的节点，hud.ts 只读不写）。
+   注意必须先 animation: none —— #crosshair 上挂着 crosshairBreath，那条
+   动画每一帧都在写 opacity，光声明 opacity: 0 会被动画值直接盖掉。 */
+body:has(> .dko-death-ui.is-on) #crosshair {
+  animation: none;
+  opacity: 0;
+}
+
+/* 红色暗角：中心保持透明 —— 死了也还看得见是谁在补枪、队友往哪撤，
+   观战是这类游戏的一部分，不该被一块红布全吃掉。 */
+.dko-death-vignette {
+  position: absolute;
+  inset: 0;
+  display: block;
+  background-image:
+    radial-gradient(
+      ellipse at 50% 50%,
+      transparent 40%,
+      rgba(125, 43, 34, 0.45) 76%,
+      rgba(52, 10, 7, 0.9) 100%
+    ),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.12) 0 2px, transparent 2px 4px);
+}
+
+.dko-death-card {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  text-align: center;
+  transform: translate(-50%, -50%) rotate(-1deg);
+  will-change: transform;
+}
+
+.dko-death-title {
+  margin-right: -0.18em;
+  font-family: var(--font-display);
+  font-size: clamp(46px, 8.6vw, 112px);
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.18em;
+  color: var(--blood);
+  -webkit-text-stroke: 4px var(--ink);
+  text-shadow: 6px 6px 0 rgba(12, 11, 10, 0.92);
+}
+
+.dko-death-sub {
+  margin-top: 12px;
+  margin-right: -0.34em;
+  font-size: 13px;
+  letter-spacing: 0.34em;
+  color: var(--ash);
+  text-shadow: 2px 2px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dko-death-count {
+  margin-top: 18px;
+  font-family: var(--font-mono);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--amber);
+  text-shadow: 3px 3px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dko-death-hint {
+  margin-top: 2px;
+  margin-right: -0.3em;
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  color: var(--ash);
+}
+
+/* 复活闪白：由 JS 的 WAAPI 驱动（steps(4) 硬闪），这里只给底子 */
+.dko-death-flash {
+  position: absolute;
+  inset: 0;
+  display: block;
+  background: var(--bone);
+  opacity: 0;
+  will-change: opacity;
+}
+
+/* ---------------------------------------------------------------- 无障碍 */
+
+/* 减少动态：关掉一切位移与循环，只保留透明度 —— 淡入淡出对前庭系统无害，
+   而"墨迹划开 + 印章砸下"这类大位移正是需要被关掉的东西。
+   注意 JS 里有一套同样的判断（document.defaultView.matchMedia），
+   因为 WAAPI 关键帧不受这里的选择器管辖。 */
+@media (prefers-reduced-motion: reduce) {
+  /* 作用域必须收在 .dko 内部：这里如果写裸 *，等于从 HUD 的样式表里
+     去改写 #menu / #dead / 反馈层的动画，跨文件污染是纪律里明令禁止的。 */
+  .dko *,
+  .dko *::before,
+  .dko *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+
+  /* 明确的语义覆盖：把循环类动画直接停掉，而不是压到 1ms 后狂闪 */
+  .dko-flag--carrier.is-on,
+  .dko-clock.is-critical .dko-clock-num,
+  .dko-clock.is-critical .dko-clock-sub,
+  .dko-banish-fill::before,
+  .dko-banish-fill::after {
+    animation: none !important;
+  }
+
+  /* 一次性动画保留淡出效果：把泼溅/脉冲改成纯透明度变化 */
+  .dko-dot.is-found::after {
+    animation-name: dko-fade-only !important;
+    animation-duration: 320ms !important;
+  }
+
+  /* 位移类过渡全部取消，只留透明度；同时把 translateY 归零，
+     否则入场那一小段位移仍会被保留在静态样式里。 */
+  .dko-banish,
+  .dko-banish.is-on,
+  .dko-extract,
+  .dko-extract.is-on {
+    transition-property: opacity;
+    transform: translateX(-50%);
+  }
+
+  /* 换弹抖动是无限循环，停掉；格子里还有数字颜色在说明状态 */
+  .dko-slot.is-reloading .dko-slot-num {
+    animation: none !important;
+  }
+
+  /* 死亡层是 body 的直接子节点（去饱和必须躲开 .dko 的层叠上下文），
+     上面 .dko * 的选择器覆盖不到它们，只能在这里补一遍。 */
+  .dko-death-wash,
+  .dko-death-ui {
+    transition-duration: 1ms !important;
+  }
+}
+
+@keyframes dko-fade-only {
+  0% {
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ---------------------------------------------------------------- M 键地图 */
+.dko-map {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 45%, rgba(8, 10, 9, 0.55), rgba(4, 5, 4, 0.82));
+  pointer-events: none;
+}
+
+.dko-map.is-on { display: flex; }
+
+.dko-map__card {
+  width: min(84vw, 84vh, 880px);
+  padding: 10px 12px 12px;
+  background: linear-gradient(to bottom, rgba(31, 34, 28, 0.97), rgba(12, 12, 10, 0.98));
+  border: 2px solid var(--ink, #0c0b0a);
+  box-shadow: 8px 8px 0 rgba(12, 11, 10, 0.65), 0 30px 80px rgba(0, 0, 0, 0.6);
+}
+
+.dko-map__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0 2px 8px;
+  border-bottom: 1px solid rgba(216, 207, 186, 0.16);
+}
+
+.dko-map__title {
+  font-family: var(--font-display, serif);
+  font-size: 18px;
+  letter-spacing: 0.26em;
+  color: var(--bone, #d8cfba);
+}
+
+.dko-map__hint {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ash, #8d8578);
+}
+
+.dko-map__wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  margin-top: 8px;
+  background: #101310;
+  border: 1px solid rgba(216, 207, 186, 0.18);
+  overflow: hidden;
+}
+
+.dko-map__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.dko-map__legend {
+  display: flex;
+  gap: 18px;
+  padding-top: 8px;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ash, #8d8578);
+}
+
+.dko-map__key--clue { color: var(--amber, #d99a4a); }
+.dko-map__key--lair { color: #9bb36a; }
+.dko-map__key--extract { color: var(--bone, #d8cfba); }
+.dko-map__key--self { color: #f0c063; }
+
+/* ---------------------------------------------------------------- Esc 暂停 */
+.dk-pause {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 45%, rgba(8, 10, 9, 0.6), rgba(4, 5, 4, 0.86));
+  pointer-events: auto;
+}
+
+.dk-pause.is-on { display: flex; }
+
+.dk-pause__card {
+  width: min(380px, 86vw);
+  padding: 26px 28px 24px;
+  background: linear-gradient(to bottom, rgba(31, 34, 28, 0.98), rgba(12, 12, 10, 0.99));
+  border: 2px solid var(--ink, #0c0b0a);
+  border-top: 3px solid var(--amber, #d99a4a);
+  box-shadow: 8px 8px 0 rgba(12, 11, 10, 0.7), 0 30px 80px rgba(0, 0, 0, 0.65);
+  text-align: center;
+}
+
+.dk-pause__title {
+  font-family: var(--font-display, serif);
+  font-size: 30px;
+  letter-spacing: 0.3em;
+  color: var(--bone, #d8cfba);
+}
+
+.dk-pause__sub {
+  margin-top: 10px;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--blood, #b25a4e);
+}
+
+.dk-pause__hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.7;
+  letter-spacing: 0.06em;
+  color: var(--ash, #8d8578);
+}
+
+.dk-pause__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 20px;
+}
+
+.dk-pause__btn {
+  min-width: 118px;
+  padding: 9px 14px;
+  border: 1.5px solid rgba(216, 207, 186, 0.3);
+  background: rgba(12, 11, 10, 0.55);
+  color: var(--bone, #d8cfba);
+  font-family: var(--font-ui, sans-serif);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  cursor: pointer;
+}
+
+.dk-pause__btn--primary {
+  border-color: var(--amber, #d99a4a);
+  color: #f0c063;
+}
+
+.dk-pause__btn:hover {
+  border-color: var(--amber, #d99a4a);
+  color: #f0c063;
+}
+
+/* ---------------------------------------------------------------- 首局操作卡 */
+.dk-controls-card {
+  position: fixed;
+  left: 50%;
+  bottom: 14%;
+  z-index: 35;
+  transform: translateX(-50%);
+  width: min(500px, 88vw);
+  padding: 14px 18px 13px;
+  background: linear-gradient(to bottom, rgba(31, 34, 28, 0.96), rgba(12, 12, 10, 0.97));
+  border: 1.5px solid rgba(216, 207, 186, 0.24);
+  border-left: 3px solid var(--amber, #d99a4a);
+  box-shadow: 5px 5px 0 rgba(12, 11, 10, 0.6), 0 20px 60px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.dk-controls-card__title {
+  font-family: var(--font-display, serif);
+  font-size: 17px;
+  letter-spacing: 0.28em;
+  color: var(--bone, #d8cfba);
+}
+
+.dk-controls-card__hint {
+  margin-top: 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--ash, #8d8578);
+}
+
+.dk-controls-card__list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 22px;
+  margin-top: 10px;
+}
+
+.dk-controls-card__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  border-bottom: 1px dashed rgba(216, 207, 186, 0.12);
+  font-size: 11.5px;
+  color: var(--ash, #8d8578);
+}
+
+.dk-controls-card__row b {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: var(--bone, #d8cfba);
+  letter-spacing: 0.08em;
+}

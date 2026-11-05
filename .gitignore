@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+# 调研期的原始抓取文本（几 MB 的网页/源码快照），不进版本库
+.research/
