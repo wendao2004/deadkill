@@ -2464,7 +2464,9 @@ export class World {
         if (d < nearest) nearest = d
       }
       // 没有其他玩家时 nearest 仍是 Infinity，加随机扰动把选择打散。
-      const score = (nearest === Infinity ? 1e6 : nearest) + Math.random() * 4
+      // 扰动走世界自己的种子流，不用 Math.random：选点曾经是全仓唯一一处
+      // 绕过种子的权威随机，只要它在，回放就不可能逐帧复现。
+      const score = (nearest === Infinity ? 1e6 : nearest) + this.rng() * 4
       if (score > bestScore) {
         bestScore = score
         best = spawn
