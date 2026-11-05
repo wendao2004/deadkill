@@ -279,7 +279,14 @@ const LOOT_RATE = 10
  */
 const BOSS_ID_OFFSET = 0x0800
 
-interface Player {
+/**
+ * 连接层的身份与收发状态。
+ *
+ * 与玩法状态分开：断线重连只该动 session（保留 grace 计时、保留队列），
+ * 死亡/重生只该动 state。两者拧在一个 45 字段的结构里时，"重连要不要清血量"
+ * 这种问题只能靠在每个分支里记口诀。
+ */
+interface PlayerSession {
   id: number
   nickname: string
   socket: WebSocket
@@ -287,6 +294,21 @@ interface Player {
   userId: string
   /** 0 = 在线；>0 = 断线保留开始的 Date.now()。 */
   detachedAt: number
+  /** 已应用到的最新输入序号，快照回给客户端做预测校正。 */
+  ackSeq: number
+  /** 客户端最近一次收到的快照 tick，延迟补偿据此回滚。 */
+  ackedTick: number
+  /** 待消费输入队列（客户端会小批量补发）。 */
+  queue: PlayerInput[]
+}
+
+/**
+ * 玩法状态：角色、血量、装备、交互进度。
+ *
+ * 这里的一切都会进快照或参与判定；session 里的东西一律不上线
+ * （`socket` 更不行）。
+ */
+interface PlayerState {
   character: Character
   /** 最近一次输入里的视角，快照与射击都用它。 */
   yaw: number
@@ -306,12 +328,6 @@ interface Player {
    * 还剩多少"，而不是"手上这把枪还剩多少"。
    */
   loadout: LoadoutState
-  /** 已应用到的最新输入序号，快照回给客户端做预测校正。 */
-  ackSeq: number
-  /** 客户端最近一次收到的快照 tick，延迟补偿据此回滚。 */
-  ackedTick: number
-  /** 待消费输入队列（客户端会小批量补发）。 */
-  queue: PlayerInput[]
   /** 本 tick 内累计的发弹计数，保证同一 tick 内多发弹的散布不重复。 */
   shotCounter: number
   /**
@@ -361,6 +377,16 @@ interface Player {
   /** 上次发出去的战利品包字节，用来"只在内容变化时发"（见 publishLoot）。 */
   lastLoot: Uint8Array | null
 }
+
+/**
+ * 场上的一个玩家 = 连接身份 + 玩法状态。
+ *
+ * 扁平合并而不是嵌套 `{ session, state }`：这个结构有 45 个字段、两百多处
+ * 读写，嵌套只是为了"看起来分了层"，却要给每一处都加一层前缀。分成两个
+ * 接口是给**函数签名**用的 —— `send(session)`、`respawn(state)` 一眼能看出
+ * 这个方法碰不碰网络。
+ */
+interface Player extends PlayerSession, PlayerState {}
 
 export interface WorldOptions {
   id: string
@@ -1622,11 +1648,11 @@ export class World {
     if ((input.buttons & Buttons.Fire) !== 0) this.tryFire(player)
   }
 
-  private characterStep(player: Player, input: PlayerInput): void {
+  private characterStep(player: PlayerState, input: PlayerInput): void {
     player.character.step(this.physics, input, TICK_DT)
   }
 
-  private tickTimers(player: Player): void {
+  private tickTimers(player: PlayerState): void {
     if (player.reloading && this.tick >= player.reloadDoneTick) {
       player.reloading = false
       refillSlot(player.loadout)
@@ -1791,7 +1817,7 @@ export class World {
   }
 
   /** 丢掉这一轮进度。松手、走开、死亡、搜完都走这里，保证不会漏清某个字段。 */
-  private abortSearch(player: Player): void {
+  private abortSearch(player: PlayerState): void {
     player.searchMs = 0
     player.searchSpotId = SPOT_ID_NONE
     player.searchAnchor = null
@@ -1800,22 +1826,22 @@ export class World {
   // ------------------------------------------------------------ 包扎（打药）
 
   /** 搜完一个点要多久。快手把 1.4 秒打成 0.98 秒。 */
-  private searchNeed(player: Player): number {
+  private searchNeed(player: PlayerState): number {
     return SEARCH_MS * actionScale(player.traits)
   }
 
   /** 扎一条绷带要多久。 */
-  private healNeed(player: Player): number {
+  private healNeed(player: PlayerState): number {
     return HEAL_MS * actionScale(player.traits)
   }
 
   /** 背包里某件物品还有几个。没有就是 0 —— 调用方不用先判 undefined。 */
-  private itemCount(player: Player, id: number): number {
+  private itemCount(player: PlayerState, id: number): number {
     return player.loot.find((entry) => entry.id === id)?.count ?? 0
   }
 
   /** 扣掉一件物品，扣到 0 就从背包里删掉（结算列表不该出现 ×0）。 */
-  private consumeItem(player: Player, id: number, count: number): void {
+  private consumeItem(player: PlayerState, id: number, count: number): void {
     const entry = player.loot.find((item) => item.id === id)
     if (!entry) return
     entry.count -= count
@@ -1866,7 +1892,7 @@ export class World {
   }
 
   /** 丢掉这一轮包扎。松手、走开、开枪、换枪、死亡都走这里。 */
-  private abortHeal(player: Player): void {
+  private abortHeal(player: PlayerState): void {
     player.healMs = 0
     player.healAnchor = null
   }
@@ -1901,7 +1927,7 @@ export class World {
   }
 
   /** 给单个玩家的系统提示（复用 Msg.Text，不并进广播快照）。 */
-  private sendText(player: Player, text: string): void {
+  private sendText(player: PlayerSession, text: string): void {
     this.send(player, encodeText(text))
   }
 
@@ -2431,7 +2457,7 @@ export class World {
     this.pendingEvents = []
   }
 
-  private send(player: Player, buffer: ArrayBuffer): void {
+  private send(player: PlayerSession, buffer: ArrayBuffer): void {
     // readyState 1 = OPEN。玩家可能刚好在这一 tick 掉线。
     if (player.socket.readyState !== 1) return
     player.socket.send(buffer)
