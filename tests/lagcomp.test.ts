@@ -9,9 +9,10 @@
 import { strict as assert } from 'node:assert'
 import test from 'node:test'
 
-import { MAX_HEALTH } from '../shared/src/constants.ts'
+import { INTERP_DELAY_MS, MAX_HEALTH, MAX_REWIND_MS, PLAYER_HALF_HEIGHT, PLAYER_RADIUS } from '../shared/src/constants.ts'
 import { Buttons, TICK_MS } from '../shared/src/constants.ts'
 import { rayCapsule } from '../shared/src/hit.ts'
+import { rewindTargets, rewindTickFor } from '../shared/src/lagcomp.ts'
 import { DEFAULT_LEVEL_ID, LEVELS } from '../shared/src/level.ts'
 import { refillSlot } from '../shared/src/loadout.ts'
 import { initPhysics } from '../shared/src/worldbuild.ts'
@@ -25,7 +26,7 @@ const INTERP_TICKS = 5 // 90ms 插值延迟 ≈ 5 tick
 /**
  * 延迟补偿测试专用的空图。
  *
- * 默认沼泽图的出生点是随机的（pickSpawn 带 Math.random），其中一些点旁边
+ * 默认沼泽图的出生点是随机的（pickSpawn 带随机扰动），其中一些点旁边
  * 就有盒子；射线先撞静态几何，测试就会随机变成 0/4。这里去掉所有盒子/
  * 巢穴/线索，只留地面和原点出生点，让这条测试只验证"回滚位姿"本身。
  */
@@ -147,4 +148,41 @@ test('延迟补偿: 打历史位姿命中，打当下位姿打空', async () => 
   assert.equal(current, 0, '补偿开着却瞄当下位姿应 0/4，实际 ' + current)
 
   world.stop()
+})
+
+// ---------------------------------------------------------------- 纯函数
+
+test('延迟补偿：回滚 tick 受窗口上限夹住，未来 tick 不会被"提前"', () => {
+  const maxTicks = Math.floor(MAX_REWIND_MS / TICK_MS)
+  const interpTicks = Math.round(INTERP_DELAY_MS / TICK_MS)
+
+  // 正常的落后 2 tick：再减去客户端插值延迟。
+  assert.equal(rewindTickFor(1000, 1000 - 2), 1000 - 2 - interpTicks)
+  // 伪造一个很小的 ackedTick 想把对手拽到很久以前：被夹在回滚窗口下沿。
+  assert.equal(rewindTickFor(1000, 1), 1000 - maxTicks)
+  // ackedTick = 0 表示"还没收到过快照"，这时不补偿。
+  assert.equal(rewindTickFor(1000, 0), 1000)
+  // 超过当前 tick 的 ackedTick 不可能来自合法客户端，按当前 tick 处理。
+  assert.equal(rewindTickFor(1000, 2000), 1000)
+})
+
+test('延迟补偿：无历史帧时退化成当前位姿，且跳过自己与已死的人', () => {
+  const halfHeight = PLAYER_HALF_HEIGHT
+  const actors = [
+    { id: 1, alive: true, center: { x: 0, y: halfHeight, z: 0 }, feetY: 0 },
+    { id: 2, alive: false, center: { x: 5, y: halfHeight, z: 0 }, feetY: 0 },
+    { id: 3, alive: true, center: { x: 2, y: halfHeight, z: 0 }, feetY: 0 },
+  ]
+
+  const fallback = rewindTargets(undefined, actors, 1)
+  assert.deepEqual(fallback.map((t) => t.playerId), [3])
+  const h = Math.max(0.05, halfHeight - PLAYER_RADIUS)
+  assert.equal(fallback[0]!.a.y, halfHeight - h)
+  assert.equal(fallback[0]!.feetY, halfHeight - h - PLAYER_RADIUS)
+
+  // 有历史帧时，x/z 用历史值，半高仍取当前姿态（历史帧里没有脚底）。
+  const frame = { tick: 998, entries: [{ playerId: 3, bx: 10, by: halfHeight, bz: 4 }] }
+  const rewound = rewindTargets(frame, actors, 1)
+  assert.equal(rewound[0]!.a.x, 10)
+  assert.equal(rewound[0]!.a.z, 4)
 })

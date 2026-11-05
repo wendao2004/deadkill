@@ -26,7 +26,6 @@ import {
   DEFAULT_WEAPON_ID,
   EventKind,
   FixedClock,
-  INTERP_DELAY_MS,
   BODY_CACHE_TTL_MS,
   DISCONNECT_GRACE_MS,
   KILL_REWARD,
@@ -54,7 +53,6 @@ import {
   MAX_PLAYERS,
   HEAL_AMOUNT,
   HEAL_MS,
-  MAX_REWIND_MS,
   SEARCH_MS,
   SEARCH_RADIUS,
   PLAYER_CROUCH_HALF_HEIGHT,
@@ -98,6 +96,8 @@ import {
   MODIFIERS,
   monsterDamageScale,
   Rng,
+  rewindTargets as computeRewindTargets,
+  rewindTickFor as computeRewindTick,
   rollModifier,
   rollLoot,
   meleeStrike,
@@ -127,6 +127,10 @@ import {
   type PlayerInput,
   type GameEvent,
   type FrameTime,
+  type HistoryEntry,
+  type HistoryFrame,
+  type RewindActor,
+  type RewindTarget,
   type PlayerSnapshot,
   type MonsterSnapshot,
   type Monster,
@@ -154,19 +158,6 @@ interface WorldContext {
   readonly world: World
 }
 
-/** 历史帧里某个玩家的位姿，回滚用。 */
-interface HistoryEntry {
-  playerId: number
-  /** 刚体中心（回滚时写回刚体）。 */
-  bx: number
-  by: number
-  bz: number
-}
-
-interface HistoryFrame {
-  tick: number
-  entries: HistoryEntry[]
-}
 
 /**
  * 怪物实体：AI 数据 + 一个只为"被子弹打到"而存在的固定碰撞体。
@@ -2313,12 +2304,8 @@ export class World {
    * 就能把对手拽到五秒前的位置开枪，那是作弊而不是补偿。
    */
   private rewindTickFor(player: Player): number {
-    if (player.ackedTick <= 0) return this.tick
-    const maxRewindTicks = Math.floor(MAX_REWIND_MS / TICK_MS)
-    const floor = this.tick - maxRewindTicks
-    const interpTicks = Math.round(INTERP_DELAY_MS / TICK_MS)
-    const target = Math.max(player.ackedTick - interpTicks, floor)
-    return Math.min(target, this.tick)
+    // 算法在 shared/src/lagcomp.ts：客户端画"这一枪判的是哪一帧"要用同一份。
+    return computeRewindTick(this.tick, player.ackedTick)
   }
 
   /**
@@ -2327,35 +2314,19 @@ export class World {
    * 没有对应历史帧时退化成当下位姿 —— 等价于"不补偿"，比凭空少一个人安全：
    * 握手后的第一发、ackSeq 还是 0 的时候都会走到这里。
    */
-  private rewindTargets(
-    shooter: Player,
-    tick: number,
-  ): { playerId: number; a: Vec3; b: Vec3; feetY: number; headMinHeight: number }[] {
+  private rewindTargets(shooter: Player, tick: number): RewindTarget[] {
     const frame = this.history.find((f) => f.tick === tick)
-    const out: { playerId: number; a: Vec3; b: Vec3; feetY: number; headMinHeight: number }[] = []
+    // 只搬"当前"位姿：历史帧里没有的那几个用当前值兜底，规则在 shared 里。
+    const actors: RewindActor[] = []
     for (const other of this.players.values()) {
-      if (other.id === shooter.id || !other.alive) continue
-      const current = other.character.body.translation()
-      const entry = frame?.entries.find((e) => e.playerId === other.id)
-      const cx = entry ? entry.bx : current.x
-      const cy = entry ? entry.by : current.y
-      const cz = entry ? entry.bz : current.z
-      // 胶囊半高取"身体中心到脚底"再减半径：蹲下时这个值本来就小，不用另外判断姿态。
-      const halfHeight = Math.max(0.05, current.y - other.character.feet.y - PLAYER_RADIUS)
-      const top = cy + halfHeight + PLAYER_RADIUS
-      // 站立头顶 1.9 → 头部带 1.45；蹲下头顶 1.4 → 头部带 1.05。
-      // 用半高区分姿态，避免"蹲下永远打不到头"。
-      const mid = (PLAYER_HALF_HEIGHT + PLAYER_CROUCH_HALF_HEIGHT) / 2
-      const headMinHeight = top - (halfHeight < mid ? 0.35 : 0.45)
-      out.push({
-        playerId: other.id,
-        a: { x: cx, y: cy - halfHeight, z: cz },
-        b: { x: cx, y: cy + halfHeight, z: cz },
-        feetY: cy - halfHeight - PLAYER_RADIUS,
-        headMinHeight,
+      actors.push({
+        id: other.id,
+        alive: other.alive,
+        center: other.character.body.translation(),
+        feetY: other.character.feet.y,
       })
     }
-    return out
+    return computeRewindTargets(frame, actors, shooter.id)
   }
 
   private pushHistory(): void {
