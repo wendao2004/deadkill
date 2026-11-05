@@ -96,6 +96,9 @@ import {
   MODIFIERS,
   monsterDamageScale,
   Rng,
+  attachAck,
+  clearAck,
+  projectPlayer,
   rewindTargets as computeRewindTargets,
   rewindTickFor as computeRewindTick,
   rollModifier,
@@ -2342,28 +2345,38 @@ export class World {
   // ------------------------------------------------------------ 下行
 
   private broadcastSnapshot(): void {
-    const base: PlayerSnapshot[] = []
+    // flags 只和本人姿态有关，与接收者无关 —— 先算好，避免每个接收者重算一遍。
+    const view: PlayerSnapshot[] = []
     for (const player of this.players.values()) {
       const feet = player.character.feet
-      base.push({
-        id: player.id,
-        x: feet.x,
-        y: feet.y,
-        z: feet.z,
-        vx: player.character.vx,
-        vy: player.character.vy,
-        vz: player.character.vz,
-        yaw: player.yaw,
-        pitch: player.pitch,
-        health: player.health,
-        flags: 0,
-        weaponId: heldWeapon(player.loadout).id,
-        ammo: heldAmmo(player.loadout),
-        reserve: player.loadout.reserveBySlot[player.loadout.currentSlot] ?? 0,
-        slot: player.loadout.currentSlot,
-        ackSeq: 0,
-      })
+      view.push(
+        projectPlayer({
+          id: player.id,
+          x: feet.x,
+          y: feet.y,
+          z: feet.z,
+          vx: player.character.vx,
+          vy: player.character.vy,
+          vz: player.character.vz,
+          yaw: player.yaw,
+          pitch: player.pitch,
+          health: player.health,
+          flags: stateFlagsOf({
+            grounded: player.character.grounded,
+            crouching: player.character.crouching,
+            ads: player.ads,
+            alive: player.alive,
+            reloading: player.reloading,
+            switching: isSwitching(player.loadout, this.tick),
+          }),
+          weaponId: heldWeapon(player.loadout).id,
+          ammo: heldAmmo(player.loadout),
+          reserve: player.loadout.reserveBySlot[player.loadout.currentSlot] ?? 0,
+          slot: player.loadout.currentSlot,
+        }),
+      )
     }
+
     // 怪物段对所有人完全相同（没有隐藏信息），一套数组所有人共用。
     const monsterViews: MonsterSnapshot[] = []
     for (const entity of this.monsters) {
@@ -2382,27 +2395,14 @@ export class World {
 
     const nowMs = this.tick * TICK_MS
     for (const receiver of this.players.values()) {
-      // 每个人收到的快照只有 ackSeq 不同（自己的才非零）。
-      // 其余字段共用一个数组，避免每帧为每个接收者重新构造 16 个对象。
-      const view = base.map((p) => {
-        const owner = this.players.get(p.id)!
-        return {
-          ...p,
-          flags: stateFlagsOf({
-            grounded: owner.character.grounded,
-            crouching: owner.character.crouching,
-            ads: owner.ads,
-            alive: owner.alive,
-            reloading: owner.reloading,
-            switching: isSwitching(owner.loadout, this.tick),
-          }),
-          ackSeq: owner.id === receiver.id ? owner.ackSeq : 0,
-        }
-      })
+      // 每个人收到的快照只有 ackSeq 不同：就地贴、编完立刻复位，
+      // 不为每个接收者重建整份数组（见 shared/src/snapshotView.ts）。
+      const index = attachAck(view, receiver.id, receiver.ackSeq)
       this.send(
         receiver,
         encodeSnapshot({ tick: this.tick, serverTime: nowMs, players: view, monsters: monsterViews }),
       )
+      if (index >= 0) clearAck(view, index)
     }
   }
 
