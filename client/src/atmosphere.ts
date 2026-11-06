@@ -659,9 +659,11 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   shadowCam.far = 260
   shadowCam.updateProjectionMatrix()
   moon.shadow.bias = -0.0007
-  // normalBias 是这套卡通几何的必需品：所有盒子都是平面，没有法线贴图，
-  // 纯 bias 会在地面与墙的交界处留下漏光的细线。
-  moon.shadow.normalBias = 0.035
+  // normalBias 是这套几何的必需品：纯 bias 会在地面与墙的交界处留下漏光的细线。
+  // 写实档给关卡加了法线贴图后，0.035（按平面卡通几何调的）会让 PBR 表面
+  // 出现大片自阴影斑点（shadow acne）；0.12 是"墙脚不浮空、墙面不斑点"的
+  // 折中，仍要在独显上按实际 texel 尺寸复测。
+  moon.shadow.normalBias = 0.12
   moon.shadow.radius = 2.5
   root.add(moon)
   root.add(moon.target)

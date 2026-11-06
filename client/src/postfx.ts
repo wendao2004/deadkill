@@ -489,6 +489,7 @@ uniform sampler2D tDepth;
 uniform mat4 uInvProj;
 uniform mat4 uProj;
 uniform vec3 uLightView;
+uniform vec2 uTexel;
 uniform float uStrength;
 uniform float uRadius;
 uniform float uBias;
@@ -522,6 +523,21 @@ void main() {
   if (fade <= 0.001) {
     gl_FragColor = vec4(1.0);
     return;
+  }
+
+  // 背光面不参与接触阴影。屏幕空间射线在"月光在墙背后"的表面上会立刻
+  // 打到自己的深度，产生大片随机斑块；这类面本来就被主光判为背光，
+  // 交给光照/阴影图即可。法线由相邻深度的视图空间位置叉乘重建。
+  float dR = texture2D(tDepth, vUv + vec2(uTexel.x, 0.0)).x;
+  float dU = texture2D(tDepth, vUv + vec2(0.0, uTexel.y)).x;
+  if (dR < 0.99999 && dU < 0.99999) {
+    vec3 pR = viewPosition(vUv + vec2(uTexel.x, 0.0), dR);
+    vec3 pU = viewPosition(vUv + vec2(0.0, uTexel.y), dU);
+    vec3 n = normalize(cross(pR - origin, pU - origin));
+    if (dot(n, uLightView) < 0.08) {
+      gl_FragColor = vec4(1.0);
+      return;
+    }
   }
 
   // 用像素哈希抖动起点，把 8 步的阶梯状断层打散成细噪声；
@@ -704,9 +720,10 @@ export class PostFX {
         uInvProj: { value: null },
         uProj: { value: null },
         uLightView: { value: new Vector3(0, 1, 0) },
+        uTexel: { value: new Vector2(1 / 1280, 1 / 720) },
         uStrength: { value: 0.38 },
         uRadius: { value: 1.2 },
-        uBias: { value: 0.02 },
+        uBias: { value: 0.04 },
         uThickness: { value: 0.35 },
         uMaxDistance: { value: 18 },
       },
@@ -844,6 +861,7 @@ export class PostFX {
     u.uInvProj.value = camera.projectionMatrixInverse
     u.uProj.value = camera.projectionMatrix
     u.uLightView.value.copy(lightDirection).transformDirection(camera.matrixWorldInverse).normalize()
+    u.uTexel.value.copy(this.worldTexel)
     u.uStrength.value = this.contactStrength
     u.tDepth.value = this.worldDepth
     this.contactReady = true
