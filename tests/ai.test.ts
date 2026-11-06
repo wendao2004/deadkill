@@ -104,6 +104,30 @@ test('grunt 从 12 米外走进 attack，且在愣神走满之前一口都不咬
   assert.ok(hitTicks[0]! >= attackTick, '进 attack 之前不可能有伤害')
 })
 
+test('近战怪看不见目标时不会隔墙咬人', () => {
+  // 贴脸但视线被挡：旧逻辑只看距离，会在墙后每 1.1s 咬一口。
+  // 新逻辑必须切到 chase，直到真正看见人。
+  const monster = monsterAtPosition('grunt', HOME, 1)
+  const rng = mulberry32(11)
+  const player = standingStill(7, 0, 1.1)
+  let hits = 0
+  let sawChase = false
+
+  for (let tick = 1; tick <= 400; tick++) {
+    const result = stepMonster(
+      monster,
+      { players: [player], tick, dtMs: TICK_MS, visible: () => false },
+      rng,
+    )
+    if (result.hit) hits++
+    if (monster.state === 'chase') sawChase = true
+    integrate(monster)
+  }
+
+  assert.equal(hits, 0, '视线被挡住时不能产生近战伤害')
+  assert.ok(sawChase, '看不见目标时必须进入 chase，而不是站着挥空')
+})
+
 test('攻击冷却：两口伤害之间的间隔不小于 ceil(attackIntervalMs / TICK_MS) 个 tick', () => {
   for (const kind of ['grunt', 'hound'] as const) {
     const spec = MONSTER_SPECS[kind]

@@ -499,7 +499,7 @@ export function stepMonster(
     tick: number
     dtMs: number
     /**
-     * 视线判定，**只有远程怪会调用**（近战怪不关心你能不能看见它）。
+     * 视线判定：远程怪用它决定"能不能开枪"，近战怪用它决定"这一口咬不咬得到"。
      *
      * 由调用方用物理世界打一条射线实现；本模块保持纯函数，所以只能拿回调。
      * 不传就当作"全都看得见" —— 单元测试和单机调试不必为了开一枪去建一个
@@ -528,10 +528,10 @@ export function stepMonster(
   const wasAggro = monster.targetId !== 0
   const homeDist = Math.hypot(monster.x - monster.homeX, monster.z - monster.homeZ)
 
-  // 远程怪只能对"看得见的人"开火。近战怪不走这条路：它们循声/循味扑过来，
-  // 隔着一堵墙朝你那边挪是完全合理的行为，而隔着一堵墙开枪不是。
+  // 视线回调。远程怪用它筛目标/开火；近战怪只在"够得着"时用它决定
+  // 这一口咬不咬得到 —— 隔着一堵墙朝你那边挪是合理的，隔墙咬人不是。
   const ranged = spec.ranged
-  const see = ranged && senses.visible ? senses.visible : null
+  const see = senses.visible ?? null
   const canSee = (p: MonsterSenses): boolean => (see === null ? true : see(p))
 
   // 已经脱战（idle）且不在巢穴里：它现在只想回家，到家之前不再索敌。
@@ -570,7 +570,8 @@ export function stepMonster(
     const p = players[i]
     if (!p.alive) continue
     // 远程怪开火前必须看得见人；近战怪照旧（它们循声扑过来，隔墙也合理）。
-    if (see !== null && !canSee(p)) continue
+    // 近战的"看不见"只影响最后的咬击，不影响索敌/追击。
+    if (ranged !== undefined && see !== null && !canSee(p)) continue
     const d = Math.hypot(p.x - monster.x, p.z - monster.z)
     if (d > spec.aggroRange) continue
     if (d < bestDist) {
@@ -617,11 +618,13 @@ export function stepMonster(
     monster.aggroMs += dtMs
   }
 
-  // 目标此刻看得见吗？只对远程怪算：近战怪的决策里根本没有"视线"这回事。
+  // 目标此刻看得见吗？远近都算：远程怪没视线不开枪，近战怪没视线不咬人。
   // 锁定的目标**掉出视线也不立刻放弃**（上面选目标那一段不看视线），
   // 它会走到你最后露头的位置再重新找 —— 蹲在石头后面能拖时间，但拖不掉它。
   let targetVisible = false
-  if (ranged !== undefined && targetId !== 0) {
+  // 近战怪只在"已经够得着"时才打这条射线：每 tick 给每只远处的近战怪
+  // 也打一条视线，会在怪多的房间里白烧物理查询。
+  if (targetId !== 0 && (ranged !== undefined || targetDist <= spec.attackRange)) {
     for (let i = 0; i < players.length; i++) {
       const p = players[i]
       if (p.id !== targetId) continue
@@ -811,10 +814,19 @@ export function stepMonster(
             monster.nextAttackTick = tick + cooldownTicks(spec)
           }
         } else if (targetDist > spec.attackRange) {
+          // 还在够不着的地方：全速追。这里不判视线 —— 视线只在"够得着"
+          // 时才花一次射线去算。
           monster.state = 'chase'
           goalX = targetX
           goalZ = targetZ
           goalSpeed = spec.speed
+        } else if (!targetVisible) {
+          // 墙/箱子挡住了：别隔墙咬人。走到最后看见的位置再重新找角度。
+          // 近距离决策原本不判视线，结果玩家蹲在掩体后仍会莫名其妙掉血。
+          monster.state = 'chase'
+          goalX = targetX
+          goalZ = targetZ
+          goalSpeed = spec.speed * REPOSITION_SPEED_FACTOR
         } else {
           // 站定挥击，而不是继续顶着玩家往前挤 —— 否则它会把玩家从掩体后推走。
           monster.state = 'attack'
