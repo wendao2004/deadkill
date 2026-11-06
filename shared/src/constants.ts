@@ -518,6 +518,18 @@ export const DEFAULT_WEAPON_ID = 1
 /** 近战武器 id。Fire 的分支靠它（或 spec.kind）分流，而不是靠 magazine === 0 猜。 */
 export const MELEE_WEAPON_ID = 10
 
+/**
+ * 重刀（刀上右键）。
+ *
+ * 轻刀 70 伤害、380ms 一刀；重刀 2.2 倍伤害、900ms 一次，刀程与扇形都放大。
+ * 躯干一刀 154 > 满血 150，所以重刀是"贴脸一击必杀"，代价是挥空后近 1 秒
+ * 没有第二次机会。数值放 shared 里，客户端预测动画与服务端判定必须同源。
+ */
+export const KNIFE_HEAVY_INTERVAL_MS = 900
+export const KNIFE_HEAVY_DAMAGE_SCALE = 2.2
+export const KNIFE_HEAVY_RANGE = 2.9
+export const KNIFE_HEAVY_ARC = 1.15
+
 /** 默认副武器：转轮手枪掏枪最快、弹容最小，正好承担"主武器打空时的保险"。 */
 export const DEFAULT_SECONDARY_ID = 5
 

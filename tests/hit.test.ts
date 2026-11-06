@@ -3,7 +3,18 @@ import assert from 'node:assert/strict'
 
 // 相对路径导入：仓库根 node_modules 下没有 @dk/* 的 workspace 链接。
 // hit.ts 会 import Rapier，但只做类型/常量级的使用，运行时不触发 WASM 初始化。
-import { damageAt, mulberry32, totalDamage, WEAPONS, type WeaponSpec } from '../shared/src/index.ts'
+import {
+  KNIFE_HEAVY_ARC,
+  KNIFE_HEAVY_RANGE,
+  MELEE_WEAPON_ID,
+  damageAt,
+  meleeStrike,
+  mulberry32,
+  totalDamage,
+  WEAPONS,
+  type MeleeCandidate,
+  type WeaponSpec,
+} from '../shared/src/index.ts'
 
 const RIFLE: WeaponSpec = WEAPONS[1]!
 const SHOTGUN: WeaponSpec = WEAPONS[2]!
@@ -112,4 +123,26 @@ test('mulberry32: 取值恒在 [0, 1)', () => {
       assert.ok(!Number.isNaN(value), 'seed=' + seed + ' 产出 NaN')
     }
   }
+})
+
+
+test('meleeStrike: 重刀的刀程/扇形可以超出轻刀', () => {
+  const KNIFE = WEAPONS[MELEE_WEAPON_ID]!
+  const eye = { x: 0, y: 1.6, z: 0 }
+  const dir = { x: 0, y: 0, z: -1 }
+  const candidate: MeleeCandidate = {
+    id: 7,
+    lower: { x: 0, y: 0.9, z: -2.9 },
+    upper: { x: 0, y: 1.8, z: -2.9 },
+    radius: 0.35,
+    feetY: 0,
+    headMinHeight: 1.45,
+  }
+  assert.equal(meleeStrike(eye, dir, KNIFE, [candidate]), null, '2.9m 已超出轻刀 2.4m 刀程')
+  const heavy = meleeStrike(eye, dir, KNIFE, [candidate], {
+    range: KNIFE_HEAVY_RANGE,
+    arc: KNIFE_HEAVY_ARC,
+  })
+  assert.ok(heavy !== null, '重刀 2.9m 刀程必须够得到')
+  assert.equal(heavy.id, 7)
 })

@@ -322,9 +322,10 @@ export function meleeStrike(
   dir: Vec3,
   spec: WeaponSpec,
   candidates: Iterable<MeleeCandidate>,
+  overrides?: { range?: number; arc?: number },
 ): MeleeHit | null {
-  const range = spec.meleeRange ?? spec.effectiveRange
-  const cosArc = Math.cos(spec.meleeArc ?? 0)
+  const range = overrides?.range ?? spec.meleeRange ?? spec.effectiveRange
+  const cosArc = Math.cos(overrides?.arc ?? spec.meleeArc ?? 0)
   const aim = vecNormalize(dir)
   let best: MeleeHit | null = null
 
