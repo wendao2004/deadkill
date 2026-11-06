@@ -25,22 +25,20 @@
  * 侧向吃光，于是地上是暗的、立起来的东西是亮的 —— 这正是夜里唯一的光比
  * 关系，也是《猎杀：对决》那种"只能看见剪影"的读数方式。
  *
- * ## 为什么后期不用 EffectComposer
+ * ## 暗角/冷调搬到了 postfx
  *
- * renderer 是 NoToneMapping + SRGBColorSpace 直出。加一条 composer 就会多
- * 一张全屏 RenderTarget、几个 pass，以及"颜色空间/色调映射要不要在 pass 里
- * 重做"的一整套坑；而且 RenderTarget 是线性缓冲，卡通材质的 4 级色阶会在
- * 浮点缓冲里被来回转换，边缘出现一档色差。这里只要暗角 + 冷偏移，一个
- * MultiplyBlending 的全屏面片就够，零 RT、零额外 pass。
+ * 这里仍然保留那份 MultiplyBlending 的全屏面片，但 `visible = false`：
+ * 现在世界先进入 HDR 浮点 RT，暗角与冷调必须在线性光里、色调映射之前做，
+ * 才能让高光沿 AgX 的肩膀滚落。这里再乘一次只会把四角压成死黑。
  *
  * ## 性能红线（新增 draw call / 三角面）
  *
  * 天空球 1 call（星、月、云全在同一份 shader 里，不贴图）
  * 地面雾 1 call（六片 billboard 合成一个 BufferGeometry，实例化靠顶点属性）
  * 萤火虫 1 call（Points）
- * 后期面片 1 call
- * 合计 4 个 draw call、约 600 三角面，全部材质 castShadow/receiveShadow = false
- * （项目里 shadowMap.enabled 本来就是 false，这里再显式关一次，防止有人打开）。
+ * 后期面片 0 call（保留对象但 visible=false）
+ * 合计 3 个 draw call、约 600 三角面。所有这些材质显式关掉
+ * castShadow/receiveShadow —— 月光阴影已经打开，天空/雾/萤火虫不该参与。
  */
 
 import {
@@ -73,13 +71,13 @@ const MOON_COLOR = 0x93a7c4
  * 月光强度。默认场景实测中央区中位数只有 41–54/255，太暗；抬到 1.15 后
  * 仍保留"冷蓝夜色"，但暗部不再糊成一块。玩家可通过设置里的亮度再微调。
  */
-const MOON_INTENSITY = 1.15
+const MOON_INTENSITY = 1.3
 /** 月亮高度角（度）。理由见文件头。 */
 const MOON_ELEVATION = 18
 /** 天空散射补光：从月亮反方向、更高处来，模拟被月光照亮的半空散射。 */
 const SKY_FILL_COLOR = 0x3d5270
 /** 补光必须显著弱于主光，否则两个方向各照一半，光比没了，画面又平又亮。 */
-const SKY_FILL_INTENSITY = 0.5
+const SKY_FILL_INTENSITY = 0.58
 /** 边缘光：从摄像机后上方打，冷白，专门把轮廓从黑背景里勾出来。 */
 const RIM_COLOR = 0xc8dcff
 const RIM_INTENSITY = 0.55
@@ -146,6 +144,14 @@ export interface FireLight {
 export interface Atmosphere {
   readonly root: Group
   /**
+   * 主光（月光）。渲染器要用它开启实时阴影，并让阴影相机跟着玩家走。
+   * 暴露对象而不是复制一份方向：灯的 position/target 每帧由本模块维护，
+   * 外部只读。
+   */
+  readonly keyLight: DirectionalLight
+  /** 月光方向（单位向量，世界空间，指向光源）。给材质层的高光方向用。 */
+  readonly moonDirection: Vector3
+  /**
    * 每帧调用。
    *
    * dt 用来推进内部"状态型"动画（火光闪烁、雾片漂移的积分），time 用来驱动
@@ -155,6 +161,11 @@ export interface Atmosphere {
   update(dt: number, camera: PerspectiveCamera, time: number): void
   /** 关卡切换时把雾颜色/密度灌进来（同时把天空地平线对齐到同一颜色）。 */
   setLevel(fogColor: number, fogDensity: number): void
+  /**
+   * 实时阴影档位。0 = 关闭，1024/2048 = 贴图边长。
+   * 弱 GPU/核显上关掉阴影是提升帧率最直接的一档。
+   */
+  setShadowQuality(size: number): void
   /** 按关卡坐标摆一个火盆，返回可继续操作的句柄。color 默认 0xff9a45。 */
   addFireLight(pos: Vector3 | { x: number; y: number; z: number }, color?: number): FireLight
   dispose(): void
@@ -611,6 +622,9 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   post.renderOrder = 5000
   post.castShadow = false
   post.receiveShadow = false
+  // 暗角/冷调/抖动已经搬进 postfx.ts 的 HDR 合成（在线性光里做，高光滚落
+  // 才正确）。这里保留对象但不画：双重暗角会把已经偏暗的沼泽压成一团黑。
+  post.visible = false
   root.add(post)
   disposables.push(postGeometry, postMaterial)
 
@@ -620,7 +634,30 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   // 关的，开一个 shadow camera 只会白烧一个 pass。
   const moon = new DirectionalLight(MOON_COLOR, MOON_INTENSITY)
   moon.position.copy(moonDir).multiplyScalar(120)
-  moon.castShadow = false
+  // 实时阴影：一盏跟随玩家的紧密正交阴影相机，2048 覆盖约 100m。
+  //
+  // 以前 shadowMap 是关的，靠贴地黑片假装接触阴影。但在一个"看剪影"的夜战
+  // 游戏里，物体与地面的接触线是判断距离和掩体关系的主要线索 —— 没有它，
+  // 箱子和角色像贴纸一样浮在地上，画面再清晰也读不出空间。
+  //
+  // 阴影相机不覆盖整张 90m 地图，而是每帧跟着玩家（见 update 里 moon 的
+  // position/target 跟随）：2048 张 100m 是 5cm/texel，阴影边缘才有轮廓；
+  // 覆盖 200m 会糊成一片灰。方向不变，所以太阳角度/明暗关系仍然稳定。
+  moon.castShadow = true
+  moon.shadow.mapSize.set(2048, 2048)
+  const shadowCam = moon.shadow.camera
+  shadowCam.left = -52
+  shadowCam.right = 52
+  shadowCam.top = 52
+  shadowCam.bottom = -52
+  shadowCam.near = 1
+  shadowCam.far = 260
+  shadowCam.updateProjectionMatrix()
+  moon.shadow.bias = -0.0007
+  // normalBias 是这套卡通几何的必需品：所有盒子都是平面，没有法线贴图，
+  // 纯 bias 会在地面与墙的交界处留下漏光的细线。
+  moon.shadow.normalBias = 0.035
+  moon.shadow.radius = 2.5
   root.add(moon)
   root.add(moon.target)
 
@@ -644,7 +681,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   // 极低的环境光：只负责把"背光面"从纯黑抬到能看出轮廓，不参与形体的
   // 方向性（0.22 在四档 toon 里通常只抬最低一档）。没有它时，玩家正对
   // 的墙/箱子经常是一块纯黑，连掩体在哪都读不出来。
-  const ambient = new AmbientLight(0x2f4257, 0.22)
+  const ambient = new AmbientLight(0x2f4257, 0.28)
   root.add(ambient)
 
   // ------------------------------------------------------------------ 火光
@@ -729,6 +766,27 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       .multiplyScalar(1.55)
   }
 
+  function setShadowQuality(size: number): void {
+    const px = Math.max(0, Math.floor(size))
+    if (px <= 0) {
+      moon.castShadow = false
+      if (moon.shadow.map) {
+        moon.shadow.map.dispose()
+        moon.shadow.map = null
+      }
+      return
+    }
+    if (moon.shadow.mapSize.x !== px || moon.shadow.mapSize.y !== px) {
+      moon.shadow.mapSize.set(px, px)
+      // 改 mapSize 必须丢掉旧的 RenderTarget，否则 three 会继续复用旧尺寸。
+      if (moon.shadow.map) {
+        moon.shadow.map.dispose()
+        moon.shadow.map = null
+      }
+    }
+    moon.castShadow = true
+  }
+
   setLevel(0x232c35, 0.019)
 
   // ------------------------------------------------------------------ 每帧
@@ -741,6 +799,13 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   function update(dt: number, camera: PerspectiveCamera, time: number): void {
     const step = Math.min(Math.max(dt, 0), 0.1)
     clock += step
+
+    // 阴影相机跟着玩家：方向不变，只平移光源与目标。texel 对齐由 three 的
+    // 阴影矩阵完成；这里不额外 snap，因为角色移动是连续的，阴影边缘的
+    // 亚像素抖动会被 postfx 的 FXAA 与 2.5px PCF 半径吃掉。
+    moon.position.copy(camera.position).addScaledVector(moonDir, 120)
+    moon.target.position.copy(camera.position)
+    moon.target.updateMatrixWorld()
     // 外部 time 若不可用（比如某些测试里传 0），退化成内部时钟。
     const t = Number.isFinite(time) && time > 0 ? time : clock
 
@@ -798,8 +863,11 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
 
   return {
     root,
+    keyLight: moon,
+    moonDirection: moonDir,
     update,
     setLevel,
+    setShadowQuality,
     addFireLight,
     dispose,
   } satisfies Atmosphere

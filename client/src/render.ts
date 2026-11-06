@@ -13,16 +13,19 @@
  *    一圈背面外壳。关键那一步是外扩量乘了 pos.w，于是线宽在**屏幕上
  *    恒定**（远处不糊成一片，近处不粗成一坨），这正是手绘墨线的行为。
  * 3. **纸感**：index.html 的 #grain 覆盖层（CSP 禁止外部资源，所以噪音
- *    是内联 SVG data-URI）。不进后处理链，理由见文件末尾。
+ *    是内联 SVG data-URI）负责静态纸纹；动态颗粒与暗角在 postfx 的合成里。
  * 4. **线条沸腾（boiling line）**：描边宽度按 12fps 在 0.85~1.15 倍之间跳，
  *    模仿手绘动画每张略有差异。**只动描边宽度，绝不抖动碰撞几何** ——
  *    视觉抖动可以，判定抖动会让"明明打中了却穿过去"。
  *
- * ## 为什么仍然不上后处理链（EffectComposer）
+ * ## 为什么现在要后处理，但不用 EffectComposer
  *
- * 用户要的"2D 手绘"最贵的部分（描边）用背面外壳实现，只是多一遍 draw call；
- * 后处理链在集显上要多 2~4ms/帧 + 两张全屏 RT。纸纹与暗角用 CSS 覆盖层
- * 是 0 成本。等真需要体积雾/景深时再引 composer。
+ * 色阶和描边决定"看起来像不像手绘"，但决定"糊不糊"的是采样与高光：
+ * 世界必须先进一张 HDR + MSAA 的浮点 RT，武器再单独进一张全分辨率透明 RT，
+ * 然后才有地方做泛光、AgX 色调映射、降分辨率后的锐化和 FXAA。
+ * 这些在 examples/jsm 的 composer 里会被拆成十几次 RT 往返和一套自己的
+ * 色彩空间约定；这里用四个自写的全屏 pass（postfx.ts）就够，少一层抽象、
+ * 也少一处"颜色到底在哪转"的坑。
  */
 
 import {
@@ -33,6 +36,7 @@ import {
   Color,
   DataTexture,
   DirectionalLight,
+  DoubleSide,
   EdgesGeometry,
   Float32BufferAttribute,
   FogExp2,
@@ -47,6 +51,7 @@ import {
   MeshToonMaterial,
   NearestFilter,
   NoToneMapping,
+  PCFShadowMap,
   PerspectiveCamera,
   PointLight,
   RedFormat,
@@ -56,13 +61,20 @@ import {
   Vector3,
   WebGLRenderer,
   type Material,
+  type Object3D,
+  type Texture,
 } from 'three'
 // 关卡盒子合批要用它：944 个盒子逐个 Mesh + 墨线壳 + 棱线 = 约 2800 个 draw call，
 // 1080p 下掉到 31fps。按材质合并成一份几何体后降到 ~15 个。
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 
-import { applyComicInk } from './ink.ts'
+import { applyComicInk, setInkDetail, setInkKeyDirection, type ComicSurface } from './ink.ts'
 import { createOutlineMaterial, setOutlineBoil, setOutlineResolution } from './outline.ts'
+import { PostFX } from './postfx.ts'
+import { probeGpu, type GpuInfo } from './gpu.ts'
+import { createHunterMaterials, createHunterModel, type HunterMaterials, type HunterModel } from './hunter.ts'
+import { createHunterTextures, type HunterTextures } from './baked-textures.ts'
+import type { GraphicsQuality } from './settings.ts'
 import { buildProps, type Props } from './props.ts'
 import { createMonsterRenderer, type MonsterRenderer, type MonsterView } from './monsters.ts'
 import { createObjectiveMarkers, type ObjectiveMarkers, type ObjectiveView } from './markers.ts'
@@ -104,12 +116,19 @@ const MATERIAL_TINT: Record<string, { tint: number; amount: number }> = {
   foliage: { tint: 0x1d2a14, amount: 0.4 },
 }
 
-const MATERIALS: Record<string, { color: number }> = {
-  wood: { color: 0x8d7154 },
-  stone: { color: 0x5a6169 },
-  mud: { color: 0x746349 },
-  metal: { color: 0x7f8a95 },
-  foliage: { color: 0x5f7248 },
+/**
+ * 关卡五种基础材质的固有色 + 程序化细节家族。
+ *
+ * 固有色仍是"手绘上色时挑的那一管颜料"（卡通渲染里它就是最终色），新增的
+ * `surface` 只提供世界空间的固有色级细节：砖缝、木纹、拉丝、泥点、叶簇。
+ * 它不改变光照模型，所以 4 级色阶仍然是画面的结构。
+ */
+const MATERIALS: Record<string, { color: number; surface: ComicSurface; specular: number; rim: number }> = {
+  wood: { color: 0x8d7154, surface: 'wood', specular: 0.04, rim: 0.03 },
+  stone: { color: 0x5a6169, surface: 'stone', specular: 0.05, rim: 0.035 },
+  mud: { color: 0x746349, surface: 'mud', specular: 0.025, rim: 0.02 },
+  metal: { color: 0x7f8a95, surface: 'metal', specular: 0.38, rim: 0.1 },
+  foliage: { color: 0x5f7248, surface: 'foliage', specular: 0, rim: 0.02 },
 }
 
 /**
@@ -120,13 +139,13 @@ const MATERIALS: Record<string, { color: number }> = {
  * 它不换色，玩家就觉得"四张图是同一张"。
  * 三种都压得比掩体暗、比掩体脏：地面要退后，掩体与角色才能"跳"出来。
  */
-const GROUND_PALETTE: Record<string, { color: number; tint: number; tintAmount: number }> = {
+const GROUND_PALETTE: Record<string, { color: number; tint: number; tintAmount: number; surface: ComicSurface; specular: number }> = {
   /** 沼泽泥地：湿冷偏绿的深棕。 */
-  mud: { color: 0x51493a, tint: 0x2a2c1c, tintAmount: 0.5 },
+  mud: { color: 0x51493a, tint: 0x2a2c1c, tintAmount: 0.5, surface: 'mud', specular: 0.03 },
   /** 石地/采石场：冷灰，比泥地亮一档，碎石的亮面才站得住。 */
-  stone: { color: 0x63655e, tint: 0x232830, tintAmount: 0.44 },
+  stone: { color: 0x63655e, tint: 0x232830, tintAmount: 0.44, surface: 'stone', specular: 0.05 },
   /** 车站木栈：偏暖的旧木，尘埃感靠 tint 的暖棕。 */
-  wood: { color: 0x6b5942, tint: 0x33291a, tintAmount: 0.42 },
+  wood: { color: 0x6b5942, tint: 0x33291a, tintAmount: 0.42, surface: 'wood', specular: 0.04 },
 }
 
 /** 曳光弹存活时间（秒）。短于感知阈值会看不见，长了像激光。 */
@@ -161,8 +180,13 @@ const BOIL_HZ = 12
  */
 const BASE_FOV = 75
 
-/** 开镜时从基础视野收窄多少度。 */
-const ADS_FOV_PULL = 20
+/**
+ * 开镜时从基础视野收窄多少度。
+ *
+ * 从 20 提到 24：取消屏幕准星后，照门/准星必须成为唯一的瞄准基准；
+ * 稍近的视野让机械瞄具在 1080p 下更大、更容易对齐。
+ */
+const ADS_FOV_PULL = 24
 
 interface Tracer {
   line: Line
@@ -173,11 +197,13 @@ interface Tracer {
 /** 远端角色的可视化对象。 */
 interface RemoteAvatar {
   group: Group
-  body: Mesh
-  head: Mesh
-  /** 上一帧的插值结果，用来算朝向。 */
+  model: HunterModel
+  /** 上一帧的插值结果，用来算朝向与步行相位。 */
   lastX: number
   lastZ: number
+  /** 平滑后的水平速度（m/s），驱动腿摆。 */
+  speed: number
+  phase: number
 }
 
 /**
@@ -270,6 +296,23 @@ export class Renderer {
   readonly scene: Scene
   readonly camera: PerspectiveCamera
   private readonly gl: WebGLRenderer
+  /**
+   * 第一人称武器的独立场景与相机。
+   *
+   * 武器在 VIEW 空间里运动，世界相机矩阵描述不了它；塞进同一个场景还会带来
+   * 两个老问题：枪管插进墙里，以及世界降分辨率时枪跟着一起糊。单独渲染意味着
+   * 武器永远按**全分辨率 + MSAA**画，并且天然不会穿墙。
+   */
+  private readonly viewScene: Scene
+  private readonly viewCamera: PerspectiveCamera
+  /** HDR 后处理管线：世界 RT → 泛光 → 合成 → FXAA。 */
+  private readonly post: PostFX
+  /** 启动时探测到的 GPU；只用于自动画质与诊断，不参与渲染。 */
+  private readonly gpu: GpuInfo
+  /** 当前画质档允许自动降到的分辨率下限。 */
+  private minScale = 0.7
+  private cssWidth = 1
+  private cssHeight = 1
   private readonly levelGroup = new Group()
   private readonly avatars = new Map<number, RemoteAvatar>()
   /** 角色/怪物的接地阴影共用一张贴图和材质，避免每个角色一份。 */
@@ -300,14 +343,21 @@ export class Renderer {
     meleeProgress: 0,
     scoped: false,
     viewScale: 1,
+    wallBlock: 0,
   }
+  /** 枪口光：一份在武器场景里照亮枪身，一份在世界里照亮周围墙面。 */
   private readonly muzzle: PointLight
+  private readonly muzzleWorld: PointLight
   // 只要求有 dispose()：几何体、材质、贴图都要在这里统一释放，
   // 用联合类型会漏掉贴图（DataTexture 既不是 Material 也不是 BufferGeometry）。
   private readonly disposables: { dispose(): void }[] = []
 
   /** 共享的 4 级渐变图：所有卡通材质共用一张，省显存也保证分级一致。 */
   private readonly gradientMap: DataTexture
+  /** 浏览器内烘焙的布料/皮革细节贴图（只给远端猎人用，整局共享）。 */
+  private readonly hunterTextures: HunterTextures
+  /** 远端猎人材质（共享；几何每个玩家一份）。 */
+  private readonly hunterMaterials: HunterMaterials
   /** 非碰撞装饰（水、芦苇、栅栏、雾墙）。纯视觉，不参与任何判定。 */
   private readonly props: Props
   private readonly atmo: Atmosphere
@@ -373,6 +423,25 @@ export class Renderer {
     this.disposables.push(this.ink)
     this.disposables.push(this.shadowTexture, this.shadowMaterial)
 
+    // 角色材质：浏览器内烘焙一次的布料/皮革灰度细节 + 卡通/墨线着色器。
+    // 材质整局共享，只有几何是每个远端玩家一份。
+    this.hunterTextures = createHunterTextures()
+    this.hunterMaterials = createHunterMaterials(
+      {
+        toon: (color, options) =>
+          this.toonMaterial(color, {
+            hatch: options?.hatch,
+            hatchSpacing: options?.hatchSpacing,
+            surface: options?.surface,
+            specular: options?.specular,
+            rim: options?.rim,
+            map: options?.map,
+          }),
+        addInk: (mesh, pixels) => this.addInk(mesh, pixels),
+      },
+      this.hunterTextures,
+    )
+
     // antialias: false 是刻意的。
     //
     // 这个画面**本来就有描边壳**：每个物体的轮廓都由 outline.ts 的 BackSide
@@ -383,11 +452,33 @@ export class Renderer {
     // 限制 DPR：4K 屏上 DPR=2 会让像素数翻四倍，而卡通色块没有能受益的细节。
     this.gl.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.gl.setSize(container.clientWidth, container.clientHeight)
-    this.gl.shadowMap.enabled = false
-    // NoToneMapping 是卡通渲染的硬要求：ACES 会把 4 个色阶重新压成连续
-    // 渐变，分级就没了。宁可高光被削平 —— 手绘本来就不讲究高光滚落。
+    this.cssWidth = Math.max(1, container.clientWidth)
+    this.cssHeight = Math.max(1, container.clientHeight)
+    // 实时阴影：主光在 atmosphere.ts 里配置，这里只负责打开开关。
+    // PCF + normalBias 是平面卡通几何唯一不炸边的组合（见 atmosphere）。
+    this.gl.shadowMap.enabled = true
+    // three r186 已移除 PCFSoftShadowMap；PCFShadowMap + light.shadow.radius
+    // 是现在等价的那一档，继续传旧值只会每帧打一条回落警告。
+    this.gl.shadowMap.type = PCFShadowMap
+    // 每帧手动 reset：后处理最后一步是一次全屏 pass，如果让 three 自动 reset，
+    // 调试 HUD 会永远显示"1 个 draw call / 1 个三角形"，把真实开销藏掉。
+    this.gl.info.autoReset = false
+    // 场景照常画在**线性 HDR**里，色调映射/AgX 全部交给 postfx 的合成 pass。
+    // 在材质阶段做 tonemap 会先压掉色阶，再进 HDR 缓冲时只剩一小段动态范围。
     this.gl.toneMapping = NoToneMapping
     container.appendChild(this.gl.domElement)
+
+    // 探测 GPU。注意：网页**不能**选择显卡，powerPreference 只是提示；
+    // 这里认出来的结果只用来选画质档，以及把真实卡名挂到调试探针上。
+    this.gpu = probeGpu(this.gl)
+    console.info(
+      `[dead-kill] GPU: ${this.gpu.renderer || 'unknown'}${this.gpu.integrated ? ' (核显)' : ''}${this.gpu.software ? ' (软件渲染)' : ''}`,
+    )
+
+    // 后处理在知道尺寸后立刻建，避免第一帧用 0×0 的 RT。
+    // 初始 4x 只是占位；Game 会在第一帧前按 GPU/设置调用 setQuality。
+    this.post = new PostFX(this.gl, { samples: 4 })
+    this.post.setSize(this.cssWidth, this.cssHeight, Math.min(window.devicePixelRatio, 2), this.renderScale)
 
     this.scene = new Scene()
     // 背景色只在天空球没盖住的角落露出来（例如 SwiftShader 下球被裁掉），
@@ -403,12 +494,45 @@ export class Renderer {
     this.scene.add(this.camera)
     this.buildRain()
 
+    // 武器场景：相机固定在原点、朝 -Z，武器坐标本身就是相机局部坐标。
+    // 三盏固定的"棚拍灯"比让武器吃世界月光可靠得多：夜里整把枪会掉成
+    // 一团纯黑剪影，而玩家需要随时读出枪管/护木/机匣的分界。
+    this.viewScene = new Scene()
+    // 近平面 0.26：开镜时枪托/托底退到镜头后面被自然裁掉，同时不裁掉
+    // 扳机护圈/杠杆（它们在 0.30m 附近，0.3 会把它们切出缺口）。
+    this.viewCamera = new PerspectiveCamera(BASE_FOV, container.clientWidth / container.clientHeight, 0.26, 12)
+    this.viewScene.add(this.viewCamera)
+    // 枪身底色改成深发蓝钢/深胡桃木后，照度要相应抬高，否则夜里整把枪
+    // 退成一块黑剪影。总照度约 3.8，金属仍有足够的暗部，不会冲成塑料白。
+    this.viewScene.add(new AmbientLight(0x9fb4cc, 0.42))
+    const vmKey = new DirectionalLight(0xfff1da, 2.2)
+    vmKey.position.set(-0.7, 1.3, 0.9)
+    this.viewScene.add(vmKey)
+    const vmFill = new DirectionalLight(0x8fb2e0, 0.7)
+    vmFill.position.set(1.0, -0.3, 0.5)
+    this.viewScene.add(vmFill)
+    const vmRim = new DirectionalLight(0xcfe2ff, 0.85)
+    vmRim.position.set(0.7, 0.5, -1.6)
+    this.viewScene.add(vmRim)
+    // 正面补光：枪的可见面朝 +Z（镜头方向），主光从左后方来，右/正面只剩
+    // 环境光时整把枪会掉黑。一盏低强度正面光只抬可见面，不改变形体关系。
+    const vmFront = new DirectionalLight(0xdfe8ff, 1.1)
+    vmFront.position.set(0.1, 0.35, 1.4)
+    this.viewScene.add(vmFront)
+
     // 天空与光照整块交给 atmosphere.ts：夜空球（月亮/星点/云带/地平线余烬）、
     // 月光 + 天空散射 + 跟随镜头的边缘光、贴地低雾、萤火虫、暗角后期。
     // 原来这里的 buildSky/buildLights 已删除 —— 旧灯组合计强度 ≈5.2，
     // 两套灯叠在地上就还是白天，夜晚永远是"调暗一点"而不是另一种照明。
     this.atmo = createAtmosphere(this.scene)
     this.atmo.setLevel(level.fogColor, level.fogDensity)
+    // 假高光的方向 = 月光方向。世界材质用它；武器场景在 render() 里会临时
+    // 换成固定的"棚拍"方向（见 render 末尾），两套光照各自自洽。
+    setInkKeyDirection(
+      this.atmo.moonDirection.x,
+      this.atmo.moonDirection.y,
+      this.atmo.moonDirection.z,
+    )
     // 巢穴处各点一盏火：这是玩家唯一能"远远看出血巢在哪"的暖色光源，
     // 与青色线索光柱分属两套色温，在黑白剪影里也不会认错。
     for (const nest of level.nests ?? []) {
@@ -422,11 +546,24 @@ export class Renderer {
     // 生命周期，Renderer.dispose 里逐个释放，混进关卡组会和"重建关卡"纠缠。
     // 两者都要用同一张 gradientMap —— 各自再生成一份会让分级色阶出现细微
     // 差异，而卡通渲染里色阶不一致就是"这块石头看着不像这块石头"。
-    this.props = buildProps(this.scene, level)
+    // 核显/软件渲染时装饰密度减半：芦苇/断篱/枯树是纯视觉，不参与判定，
+    // 砍掉一半能实打实减少 draw call，而关卡的可读性几乎不受影响。
+    this.props = buildProps(this.scene, level, {
+      density: this.gpu.integrated || this.gpu.software ? 0.4 : 1,
+    })
     this.monsters = createMonsterRenderer(this.scene, {
       gradientMap: this.gradientMap,
       camera: this.camera,
+      // 核显/软件渲染把渲染距离压到 45m：夜雾里本来也看不清，省下的
+      // draw call 直接换成帧率。
+      maxDistance: this.gpu.integrated || this.gpu.software ? 45 : 70,
     })
+    // 装饰与怪物的阴影。只对不透明的卡通网格开：墨线外壳、水面、雾墙、
+    // 血条都是 ShaderMaterial/BasicMaterial 或双面片，投进阴影只会得到
+    // 一层噪点。草叶（DoubleSide）也跳过 —— 2048 的阴影图上它们比一个
+    // texel 还细。
+    this.enableCastingShadows(this.props.root)
+    this.enableCastingShadows(this.monsters.root)
 
     // 目标标记与特效同样挂在 scene 上。两者都不预测、不判定，只把服务端
     // 已经定下来的状态画出来 —— 任何"我先看到光柱"的本地推断都会让两个
@@ -439,20 +576,35 @@ export class Renderer {
     // 与场景渲染无关，所以整块搬到 viewmodel.ts；这里只给它一个"借用材质与
     // 墨线壳"的通道，材质仍由 Renderer 统一登记释放。
     this.viewmodel = createViewmodel({
-      // 夜里武器只吃月光 + 边缘光，半米外的枪身会掉成一团纯黑剪影（实测整把枪
-      // 只剩轮廓能看见）。给它一层低强度自发光（基色的 34%）：只是把材质从
-      // "黑"抬到"能读出枪管/护木/机匣的分界"，不会比环境亮。
+      // 武器有自己的棚拍灯（见构造函数上方），自发光只需要把最暗的一档从
+      // 纯黑抬起来一点，保留"夜里也能读出机匣分界"的功能，不再承担主照明。
       toon: (color, options) => {
-        const mat = this.toonMaterial(color, { fog: false, hatch: options?.hatch, hatchSpacing: options?.hatchSpacing })
-        mat.emissive = new Color(color).multiplyScalar(0.34)
-        return mat
+        return this.toonMaterial(color, {
+          fog: false,
+          hatch: options?.hatch,
+          hatchSpacing: options?.hatchSpacing,
+          surface: options?.surface,
+          specular: options?.specular,
+          rim: options?.rim,
+          emissive: options?.emissive ?? 0.3,
+          map: options?.map,
+        })
       },
       addInk: (mesh, pixels) => this.addInk(mesh, pixels),
+      textures: {
+        metal: this.hunterTextures.metal,
+        wood: this.hunterTextures.wood,
+        leather: this.hunterTextures.leather,
+      },
     })
-    this.camera.add(this.viewmodel.root)
+    this.viewCamera.add(this.viewmodel.root)
     this.muzzle = new PointLight(0xffd27a, 0, 9, 2)
     this.muzzle.position.set(0.18, -0.12, -0.55)
-    this.camera.add(this.muzzle)
+    this.viewCamera.add(this.muzzle)
+    // 世界里的那一份枪口光：照亮玩家面前的墙/箱子/角色。武器场景里的那份
+    // 只照枪本身，两者分开才能既看清枪、又有环境闪光。
+    this.muzzleWorld = new PointLight(0xffd27a, 0, 12, 2)
+    this.scene.add(this.muzzleWorld)
   }
 
   get canvas(): HTMLCanvasElement {
@@ -469,6 +621,10 @@ export class Renderer {
     this.baseFov = degrees
     this.camera.fov = degrees
     this.camera.updateProjectionMatrix()
+    // 武器相机在 updateCamera 里靠"fov 有没有变"来决定是否重建投影；
+    // 初始 FOV 在开局就写死，那一帧不会触发 diff，所以这里必须同步一次。
+    this.viewCamera.fov = degrees
+    this.viewCamera.updateProjectionMatrix()
   }
 
   /**
@@ -479,7 +635,10 @@ export class Renderer {
    */
   setBrightness(brightness: number): void {
     const value = Math.min(1.8, Math.max(0.8, brightness))
-    this.gl.domElement.style.filter = value === 1 ? '' : `brightness(${value.toFixed(2)})`
+    // 亮度现在作用在 HDR 合成的曝光上，而不是 CSS filter：
+    // 在高光已经进入 AgX 之后再加一层 brightness 只会把白压平；在线性光里
+    // 乘曝光，亮部会沿肩部滚落，暗部也不会被一起洗灰。
+    this.post.setSettings({ exposure: 1.22 * value })
   }
 
   /** 镜头晃动强度：1 完整 / 0.45 减弱 / 0 关闭。 */
@@ -497,17 +656,81 @@ export class Renderer {
    */
   setRenderScale(scale: number): void {
     this.renderScale = Math.min(Math.max(scale, 0.5), 1)
-    this.gl.setPixelRatio(Math.min(window.devicePixelRatio, 2) * this.renderScale)
+    // 画布始终按设备像素比原生分辨率；只缩小世界的 HDR target。
+    // 旧实现是缩小画布再让 CSS 拉满屏 —— 浏览器的双线性拉伸会把整个画面
+    // （包括 HUD 后面的所有像素）变糊，而且没有任何锐化机会。
+    this.post.setSize(this.cssWidth, this.cssHeight, Math.min(window.devicePixelRatio, 2), this.renderScale)
   }
 
   getScale(): number {
     return this.renderScale
   }
 
+  /** 启动画质探测结果（给调试探针/提示用）。 */
+  gpuInfo(): GpuInfo {
+    return this.gpu
+  }
+
+  /** 调试 HUD 用的短标签；不暴露完整驱动串，太长了。 */
+  gpuLabel(): string {
+    if (this.gpu.software) return '软件渲染'
+    if (this.gpu.integrated) return '核显'
+    if (this.gpu.discrete) return '独显'
+    return '未知GPU'
+  }
+
+  /** 当前画质档允许自动降到的分辨率下限。 */
+  getMinScale(): number {
+    return this.minScale
+  }
+
+  /**
+   * 切换画质档。
+   *
+   * 三档对应的开销：
+   * - performance：无 MSAA、无泛光、无实时阴影、关程序化细节；给核显/软件渲染；
+   * - balanced：2x MSAA、4 级泛光、1024 阴影、细节开；
+   * - quality：4x MSAA、5 级泛光、2048 阴影、细节开。
+   *
+   * auto 会按探测结果选起始档；之后的升降档由 Game 按实测帧时间做。
+   */
+  setQuality(quality: GraphicsQuality): void {
+    const resolved: Exclude<GraphicsQuality, 'auto'> =
+      quality === 'auto'
+        ? this.gpu.integrated || this.gpu.software
+          ? 'performance'
+          : 'balanced'
+        : quality
+
+    if (resolved === 'performance') {
+      // 无 MSAA、无泛光、无 FXAA、无实时阴影、无程序化细节；世界 0.65 起、
+      // 最低 0.5。描边/排线仍然在，所以画面不会变成"没做完的白模"。
+      this.post.setQuality({ samples: 0, bloomLevels: 3, bloom: false, fxaa: false })
+      this.atmo.setShadowQuality(0)
+      setInkDetail(false)
+      this.minScale = 0.5
+    } else if (resolved === 'balanced') {
+      this.post.setQuality({ samples: 2, bloomLevels: 4, bloom: true, fxaa: true })
+      this.atmo.setShadowQuality(1024)
+      setInkDetail(true)
+      this.minScale = 0.65
+    } else {
+      this.post.setQuality({ samples: 4, bloomLevels: 5, bloom: true, fxaa: true })
+      this.atmo.setShadowQuality(2048)
+      setInkDetail(true)
+      this.minScale = 0.75
+    }
+  }
+
   setSize(width: number, height: number): void {
-    this.gl.setSize(width, height)
-    this.camera.aspect = width / height
+    this.cssWidth = Math.max(1, width)
+    this.cssHeight = Math.max(1, height)
+    this.gl.setSize(this.cssWidth, this.cssHeight)
+    this.camera.aspect = this.cssWidth / this.cssHeight
     this.camera.updateProjectionMatrix()
+    this.viewCamera.aspect = this.camera.aspect
+    this.viewCamera.updateProjectionMatrix()
+    this.post.setSize(this.cssWidth, this.cssHeight, Math.min(window.devicePixelRatio, 2), this.renderScale)
     // 墨线宽度是像素单位，屏幕一 resize 换算系数就得跟着换，否则窗口拉宽时
     // 线会横向变粗、纵向变细。这是所有用 outline.ts 的模块共用的那一份。
     setOutlineResolution(width, height)
@@ -534,7 +757,30 @@ export class Renderer {
     const hull = new Mesh(mesh.geometry, mat)
     // 外壳不参与射线：它纯粹是画面上的一圈墨，不该挡子弹也不该被拾取。
     hull.raycast = () => {}
+    // 墨线壳是沿法线外扩的背面，投进阴影会把每个物体放大一圈。
+    hull.castShadow = false
+    hull.receiveShadow = false
     mesh.add(hull)
+  }
+
+  /**
+   * 给一棵已经建好的子树打开阴影，只挑"实心、不透明、单面"的卡通网格。
+   *
+   * 装饰层（props）与怪物层（monsters）都在自己的模块里建网格，渲染器不应该
+   * 逐类去认它们；这个遍历就是两边唯一需要的契约：材质类型决定它配不配投影。
+   */
+  private enableCastingShadows(root: Object3D): void {
+    root.traverse((object) => {
+      if (!(object instanceof Mesh)) return
+      const material = object.material
+      if (!(material instanceof MeshToonMaterial)) return
+      if (material.transparent) return
+      // 双面片：草叶、芦苇、旗布。它们在 2048 的阴影图上比一个 texel 还细，
+      // 投出来只有噪点，还会让阴影相机多画几千个实例。
+      if (material.side === DoubleSide) return
+      object.castShadow = true
+      object.receiveShadow = true
+    })
   }
 
   /**
@@ -547,13 +793,35 @@ export class Renderer {
    */
   private toonMaterial(
     color: number,
-    opts: { fog?: boolean; hatch?: number; hatchSpacing?: number; tint?: number; tintAmount?: number } = {},
+    opts: {
+      fog?: boolean
+      hatch?: number
+      hatchSpacing?: number
+      tint?: number
+      tintAmount?: number
+      /** 世界空间程序化材质细节的家族（砖/木纹/拉丝/泥/叶）。 */
+      surface?: ComicSurface
+      /** 假高光强度；金属倒角靠它读出来。 */
+      specular?: number
+      specColor?: number
+      /** 剪影轮廓光；夜里逆光时把枪管和角色边缘勾出来。 */
+      rim?: number
+      /** 自发光比例（相对固有色）；只给武器用，见构造函数。 */
+      emissive?: number
+      /** 浏览器内烘焙好的细节贴图（角色布料/皮革）；世界材质不用。 */
+      map?: Texture
+    } = {},
   ): MeshToonMaterial {
     const mat = new MeshToonMaterial({
       color,
       gradientMap: this.gradientMap,
       fog: opts.fog ?? true,
     })
+    // three 对 `map: undefined` 会打警告；只在真有烘焙贴图时赋值。
+    if (opts.map !== undefined) mat.map = opts.map
+    if (opts.emissive !== undefined && opts.emissive > 0) {
+      mat.emissive = new Color(color).multiplyScalar(opts.emissive)
+    }
     // 线距 36px（spacing 18）：关卡盒子在屏幕上动辄两百像素宽，线一密就糊成
     // 编织袋。阈值 0.42 按感知亮度算，只有真正的暗面才排线 —— 受光面留白，
     // 这才是《无主之地》那种"大面积平涂 + 暗部几笔"的结构。
@@ -564,6 +832,10 @@ export class Renderer {
       grime: 0.05,
       tint: opts.tint,
       tintAmount: opts.tintAmount,
+      surface: opts.surface,
+      specular: opts.specular,
+      specColor: opts.specColor,
+      rim: opts.rim,
     })
     this.disposables.push(mat)
     return mat
@@ -584,9 +856,15 @@ export class Renderer {
       hatch: 0,
       tint: palette.tint,
       tintAmount: palette.tintAmount,
+      surface: palette.surface,
+      specular: palette.specular,
     })
     const ground = new Mesh(groundGeo, groundMat)
     ground.position.set(0, level.groundY - 0.5 - 0.01, 0)
+    // 地面只接收阴影，不投：它本身是最大的一块遮挡体，投进阴影图只会
+    // 把整张 shadow map 的深度占满，还挡住所有真正该投射的物体。
+    ground.receiveShadow = true
+    ground.castShadow = false
     this.levelGroup.add(ground)
     this.disposables.push(groundGeo)
 
@@ -626,7 +904,18 @@ export class Renderer {
 
       const spec = MATERIALS[matKey] ?? MATERIALS.wood!
       const tint = MATERIAL_TINT[matKey] ?? MATERIAL_TINT.wood!
-      const mesh = new Mesh(merged, this.toonMaterial(spec.color, { tint: tint.tint, tintAmount: tint.amount }))
+      const mesh = new Mesh(
+        merged,
+        this.toonMaterial(spec.color, {
+          tint: tint.tint,
+          tintAmount: tint.amount,
+          surface: spec.surface,
+          specular: spec.specular,
+          rim: spec.rim,
+        }),
+      )
+      mesh.castShadow = true
+      mesh.receiveShadow = true
       this.levelGroup.add(mesh)
       this.addInk(mesh)
 
@@ -666,6 +955,7 @@ export class Renderer {
     switchProgress: number,
     meleeProgress: number,
     adsZoom: number,
+    wallBlock: number,
   ): void {
     // 命中定格：先把这一帧的视觉时间压缩，再往下走。
     if (this.freeze > 0) {
@@ -687,6 +977,10 @@ export class Renderer {
     if (Math.abs(this.camera.fov - fov) > 0.01) {
       this.camera.fov = fov
       this.camera.updateProjectionMatrix()
+      // 武器相机必须跟世界相机同 FOV：否则开镜时世界在放大、枪却没变，
+      // 枪会看起来在往后退。两边的投影必须逐帧一致。
+      this.viewCamera.fov = fov
+      this.viewCamera.updateProjectionMatrix()
     }
 
     this.time += dt
@@ -746,13 +1040,21 @@ export class Renderer {
     vm.scoped = this.adsZoom >= SCOPE_MIN_ZOOM
     // 镜筒放大的是世界，不是手里这把枪：枪位按同一倍数推远，屏幕上大小不变。
     vm.viewScale = zoom
+    vm.wallBlock = Math.min(1, Math.max(0, wallBlock))
     this.viewmodel.update(vm, dt)
 
     if (this.flash > 0) {
       this.flash = Math.max(0, this.flash - dt)
-      this.muzzle.intensity = this.flash * 240
+      // 灯离枪只有 0.5~1m，衰减是平方反比；240cd 会把整把枪洗成纯白。
+      // 45cd 在枪口附近仍然明显过曝，但只持续 3 帧，正好是"闪一下"。
+      this.muzzle.intensity = this.flash * 45
+      // 世界那一盏：让贴脸的墙和对面的人真的被枪口闪一下。位置放在相机
+      // 前方一点，避免光心落在玩家自己的碰撞体内部（衰减从 0 距离开始）。
+      this.muzzleWorld.position.copy(this.camera.position)
+      this.muzzleWorld.intensity = this.flash * 35
     } else {
       this.muzzle.intensity = 0
+      this.muzzleWorld.intensity = 0
     }
 
     this.updateBoil(dt)
@@ -821,7 +1123,12 @@ export class Renderer {
    */
   onLocalShot(kick = 1, muzzle = true): void {
     this.recoil = Math.min(1, this.recoil + 0.55 * kick)
-    if (muzzle) this.flash = 0.05
+    if (muzzle) {
+      this.flash = 0.05
+      // 枪口星芒由 viewmodel 画（它知道当前枪的枪口在哪），这里的闪光计时器
+      // 只负责两盏枪口点光源。
+      this.viewmodel.flash()
+    }
     // 开镜时视野只有一半宽，同样的角度偏移在屏幕上大一倍 —— 压一档。
     const adsScale = 1 - this.adsBlend * 0.55
     this.punchPitch += 0.016 * kick * adsScale * this.motionScale
@@ -866,8 +1173,10 @@ export class Renderer {
       ),
     )
     // 卡通画法里的弹道不是细光丝，而是一道**亮黄的粗笔触**。
+    // 颜色乘到 1 以上：曳光弹要进泛光的阈值，才会在夜空里"发亮"而不只是
+    // 一条黄线。LineBasicMaterial 的 Color 允许 >1，HDR 合成会把它滚回白色。
     const mat = new LineBasicMaterial({
-      color: hit ? 0xffe066 : 0xffc94a,
+      color: new Color(hit ? 0xffe066 : 0xffc94a).multiplyScalar(2.6),
       transparent: true,
       opacity: 1,
       depthWrite: false,
@@ -885,7 +1194,7 @@ export class Renderer {
    * 传进来的是**已经插值好的**位置（由 game.ts 算），这一层只负责
    * 摆模型、转向、按血量改颜色。
    */
-  syncAvatars(players: PlayerSnapshot[], myId: number, eyeHeightOf: (flags: number) => number): void {
+  syncAvatars(players: PlayerSnapshot[], myId: number, dt: number): void {
     const seen = new Set<number>()
     for (const player of players) {
       if (player.id === myId) continue
@@ -902,30 +1211,43 @@ export class Renderer {
         this.scene.add(avatar.group)
       }
       avatar.group.visible = true
-      const eye = eyeHeightOf(player.flags)
       avatar.group.position.set(player.x, player.y, player.z)
-      // 朝向：直接从快照的 yaw 取，按最短弧插值，避免转身时"闪"一下。
+
+      // 朝向：移动时跟位移，静止时跟快照 yaw。最短弧插值避免转身闪一下。
       const dx = player.x - avatar.lastX
       const dz = player.z - avatar.lastZ
+      const moved = Number.isFinite(dx) && Number.isFinite(dz) ? Math.hypot(dx, dz) : 0
+      // 远端快照 20Hz，位置又是插值出来的；直接拿两点差分当速度会一跳一跳。
+      // 指数平滑一次，腿摆才是连续的。
+      const instant = dt > 0 ? Math.min(8, moved / dt) : 0
+      avatar.speed += (instant - avatar.speed) * Math.min(1, dt * 10)
       avatar.lastX = player.x
       avatar.lastZ = player.z
-      if (dx * dx + dz * dz > 1e-6) {
+      if (moved > 1e-4) {
         const targetYaw = Math.atan2(-dx, -dz)
         avatar.group.rotation.y = shortestArc(avatar.group.rotation.y, targetYaw, 0.35)
       } else {
         avatar.group.rotation.y = shortestArc(avatar.group.rotation.y, player.yaw, 0.35)
       }
-      // 蹲下时把身体压扁，这是唯一能让玩家一眼看出对手高度的线索。
+
+      // 蹲下时整体压低：脚底仍在 y=0，头的高度跟着降，和 hitbox 一致。
       const crouching = (player.flags & StateFlags.Crouching) !== 0
-      const scaleY = crouching ? 0.62 : 1
-      avatar.body.scale.y = scaleY
-      avatar.body.position.y = scaleY * 0.62 + 0.02
-      // 头跟到眼睛高度的位置：eye 已经是"脚底到眼睛"的距离。
-      avatar.head.position.y = eye - 0.12
+      avatar.group.scale.y = crouching ? 0.72 : 1
+
+      // 简单步行：腿绕髋关节前后摆，身体随相位轻微起伏。速度趋近 0 时幅度
+      // 自然归零；不做骨骼，远端 5m 外看不出差别，但"在走"一眼就能读出来。
+      const walking = avatar.speed > 0.25
+      const amp = walking ? Math.min(0.55, avatar.speed * 0.11) : 0
+      if (walking) avatar.phase += avatar.speed * dt * 2.2
+      const swing = Math.sin(avatar.phase) * amp
+      avatar.model.legL.rotation.x = swing
+      avatar.model.legR.rotation.x = -swing
+      avatar.model.body.position.y = 0.9 + (walking ? Math.abs(Math.sin(avatar.phase)) * 0.014 : 0)
     }
     for (const [id, avatar] of this.avatars) {
       if (!seen.has(id)) {
         this.scene.remove(avatar.group)
+        avatar.model.dispose()
         this.avatars.delete(id)
       }
     }
@@ -937,22 +1259,14 @@ export class Renderer {
     shadow.scale.set(1.15, 1, 1.7)
     shadow.position.y = 0.02
     group.add(shadow)
-    // 敌人用高饱和的警戒色，与场景的土黄绿拉开 —— 卡通渲染里"轮廓 + 色相"
-    // 是唯一的识别手段，没有材质细节可以靠。
-    const bodyMat = this.toonMaterial(0xc4553f)
-    const headMat = this.toonMaterial(0xe0b48a)
 
-    const body = new Mesh(new BoxGeometry(0.52, 1.24, 0.34), bodyMat)
-    body.position.y = 0.64
-    group.add(body)
-    this.addInk(body, AVATAR_INK_PIXELS)
-
-    const head = new Mesh(new SphereGeometry(0.135, 12, 10), headMat)
-    head.position.y = 1.62
-    group.add(head)
-    this.addInk(head, AVATAR_INK_PIXELS)
-
-    return { group, body, head, lastX: NaN, lastZ: NaN }
+    // 程序化猎人：大衣/宽檐帽/靴子/背包/横抱的步枪。材质整局共享，
+    // 这里只建几何；墨线壳用比关卡更粗的 3.4px，远处也能认出是人。
+    const model = createHunterModel(this.hunterMaterials, {
+      addInk: (mesh) => this.addInk(mesh, AVATAR_INK_PIXELS),
+    })
+    group.add(model.root)
+    return { group, model, lastX: NaN, lastZ: NaN, speed: 0, phase: 0 }
   }
 
   /** 把服务端快照里的怪物交给渲染器。插值与动画都在 monsters.ts 内部做。 */
@@ -961,7 +1275,18 @@ export class Renderer {
   }
 
   render(): void {
-    this.gl.render(this.scene, this.camera)
+    // 整帧的 draw call / 三角形从 0 开始累计（含阴影 pass 与后处理）。
+    this.gl.info.reset()
+    // 世界材质的假高光跟着月亮；武器场景整帧切换成固定的"棚拍"方向，
+    // 于是无论玩家面朝哪边，枪身倒角上那条高光都在同一个位置 —— 这是
+    // 金属读成金属、而不是读成一块灰板的关键。
+    const moon = this.atmo.moonDirection
+    setInkKeyDirection(moon.x, moon.y, moon.z)
+    this.post.renderWorld(this.scene, this.camera)
+
+    setInkKeyDirection(-0.35, 0.78, 0.52)
+    this.post.renderView(this.viewScene, this.viewCamera)
+    this.post.present()
   }
 
   /**
@@ -1087,6 +1412,10 @@ export class Renderer {
     // 大气在 props 之后：它会把自己那盏复用的 FogExp2 还原，props 里若有
     // 依赖雾的材质先释放更安全。
     this.atmo.dispose()
+    for (const avatar of this.avatars.values()) avatar.model.dispose()
+    this.avatars.clear()
+    this.hunterTextures.dispose()
+    this.post.dispose()
     this.gl.dispose()
     for (const item of this.disposables) item.dispose()
     this.disposables.length = 0

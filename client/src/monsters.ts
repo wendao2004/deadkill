@@ -80,6 +80,13 @@ export interface MonsterRendererOptions {
    * 怪本体、动画、尸体全都照常工作。
    */
   camera?: Camera
+  /**
+   * 超过这个水平距离的怪不渲染（默认 70m）。
+   *
+   * 关卡只有 ~120m，夜雾在 45m 外已经吃掉大半轮廓；把远处的怪整个跳过，
+   * 比让它们各画几十个零件更划算。弱 GPU 会把这条线压到 45m。
+   */
+  maxDistance?: number
 }
 
 export interface MonsterRenderer {
@@ -403,6 +410,8 @@ class MonsterLayer implements MonsterRenderer {
   private readonly gradientMap: DataTexture
   private readonly camera: Camera | null
   private readonly maxVisible: number
+  /** 水平距离平方；超过就不渲染，也不占可见名额。 */
+  private readonly maxDistanceSq: number
   /** id → 骨架。只在出生/消失时写，每帧只读。 */
   private readonly byId = new Map<number, Rig>()
   /** 全部池化骨架（每种怪各 maxVisible 套），用于回收扫描。 */
@@ -434,6 +443,8 @@ class MonsterLayer implements MonsterRenderer {
     this.camera = options.camera ?? null
     const requested = options.maxVisible ?? DEFAULT_MAX_VISIBLE
     this.maxVisible = Math.max(1, Math.floor(requested))
+    const maxDistance = Math.max(10, options.maxDistance ?? 70)
+    this.maxDistanceSq = maxDistance * maxDistance
 
     // 血条几何体/材质全层共享：每只怪只改 scale.x，不占额外显存。
     this.barGeometry = new PlaneGeometry(1, 1)
@@ -488,6 +499,14 @@ class MonsterLayer implements MonsterRenderer {
     const style = STYLES[view.kind]
     // 未知种类（将来加怪）：不画，但也不能崩。
     if (!style) return false
+
+    // 远处不渲染，也不占 maxVisible 名额：否则一堆雾里的怪会把近处的
+    // 那只挤掉，玩家反而看不见正在咬自己的目标。
+    if (this.camera !== null) {
+      const dx = view.x - this.camera.position.x
+      const dz = view.z - this.camera.position.z
+      if (dx * dx + dz * dz > this.maxDistanceSq) return false
+    }
 
     let rig = this.byId.get(view.id)
     if (rig !== undefined && rig.kind !== view.kind) {
@@ -1634,6 +1653,10 @@ class MonsterLayer implements MonsterRenderer {
       hatchStrength: 0.45,
       hatchThreshold: 0.44,
       grime: 0.06,
+      // 逆光时给怪物一圈冷边：HDR + 泛光之后，暗处的剪影容易和背景糊成
+      // 一块，这圈边缘光是"那里有东西在动"的最便宜的提示。
+      rim: 0.12,
+      specular: 0.04,
     })
     this.disposables.push(mat)
     return mat

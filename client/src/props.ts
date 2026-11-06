@@ -51,6 +51,7 @@ import {
   type Side,
 } from 'three'
 
+import { applyComicInk, type ComicSurface } from './ink.ts'
 import { OUTLINE_SHARED } from './outline.ts'
 import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './shadows.ts'
 
@@ -60,6 +61,8 @@ export interface PropsOptions {
 }
 
 export interface Props {
+  /** 装饰根节点。渲染器用它开/关阴影，不需要知道这里建了什么。 */
+  readonly root: Group
   /** 每帧调用，推进水面波纹与飘摇的草。dt 秒。 */
   update(dt: number): void
   dispose(): void
@@ -169,6 +172,7 @@ export function buildProps(scene: Scene, level: LevelDef, options?: PropsOptions
 
   let time = 0
   return {
+    root,
     update(dt: number): void {
       // 夹住 dt：切后台回来时 dt 可能是好几秒，草会瞬间抽一下。
       time += Math.min(Math.max(dt, 0), 0.1)
@@ -316,7 +320,13 @@ function makeGradientMap(): DataTexture {
 function makeToon(
   color: number,
   bag: GpuBag,
-  opts: { gradientMap?: DataTexture; fog?: boolean; side?: Side } = {},
+  opts: {
+    gradientMap?: DataTexture
+    fog?: boolean
+    side?: Side
+    surface?: ComicSurface
+    specular?: number
+  } = {},
 ): MeshToonMaterial {
   let map = opts.gradientMap
   if (!map) {
@@ -325,6 +335,16 @@ function makeToon(
   }
   const mat = new MeshToonMaterial({ color, gradientMap: map, fog: opts.fog ?? true })
   if (opts.side !== undefined) mat.side = opts.side
+  // 与世界其余部分用同一套墨线/程序化细节。这里刻意比关卡轻一档：
+  // 树和栅栏是小物件，排线太满会读成一团黑噪点。
+  applyComicInk(mat, {
+    hatchSpacing: 14,
+    hatchStrength: 0.38,
+    hatchThreshold: 0.42,
+    grime: 0.045,
+    surface: opts.surface,
+    specular: opts.specular,
+  })
   bag.add(mat)
   return mat
 }
@@ -441,6 +461,14 @@ function assemble(parts: BufferGeometry[]): BufferGeometry {
 function makePartMaterial(bag: GpuBag, gradientMap: DataTexture, side?: Side): MeshToonMaterial {
   const mat = new MeshToonMaterial({ color: 0xffffff, vertexColors: true, gradientMap })
   if (side !== undefined) mat.side = side
+  // 顶点色决定固有色，补丁只加排线/污渍。这里不指定 surface：同一份材质
+  // 同时被木栅栏、铁件和布条复用，贴任何一种材质纹理都会有至少一半物体错。
+  applyComicInk(mat, {
+    hatchSpacing: 16,
+    hatchStrength: 0.35,
+    hatchThreshold: 0.42,
+    grime: 0.045,
+  })
   bag.add(mat)
   return mat
 }
@@ -615,7 +643,7 @@ function buildReeds(
 
   const geo = makeReedGeometry()
   bag.add(geo)
-  const mat = makeToon(0x6f8f3e, bag, { gradientMap, side: DoubleSide })
+  const mat = makeToon(0x6f8f3e, bag, { gradientMap, side: DoubleSide, surface: 'foliage' })
   patchReedSway(mat, uReedTime)
 
   const mesh = new InstancedMesh(geo, mat, Math.max(1, accepted.length))
@@ -762,8 +790,8 @@ function buildDeadTrees(
   branchGeo.translate(0, 0.5, 0)
   bag.add(branchGeo)
 
-  const trunkMat = makeToon(TREE_BARK, bag, { gradientMap })
-  const branchMat = makeToon(TREE_BARK, bag, { gradientMap })
+  const trunkMat = makeToon(TREE_BARK, bag, { gradientMap, surface: 'wood', specular: 0.02 })
+  const branchMat = makeToon(TREE_BARK, bag, { gradientMap, surface: 'wood', specular: 0.02 })
   const inkMat = makeInkMaterial(bag, INK_BASE * 1.4)
 
   const trees: TreeSpot[] = []
@@ -1811,7 +1839,7 @@ function buildRails(
   const length = level.boundsHalf * 2.02
   const railGeo = new BoxGeometry(0.13, 0.14, length)
   bag.add(railGeo)
-  const railMat = makeToon(0x5c5f63, bag, { gradientMap })
+  const railMat = makeToon(0x5c5f63, bag, { gradientMap, surface: 'metal', specular: 0.18 })
   for (const dx of [-0.72, 0.72]) {
     const rail = new Mesh(railGeo, railMat)
     rail.position.set(dx, 0.26, 0)
@@ -1820,7 +1848,7 @@ function buildRails(
 
   const sleeperGeo = new BoxGeometry(2.7, 0.18, 0.24)
   bag.add(sleeperGeo)
-  const sleeperMat = makeToon(0x42332a, bag, { gradientMap })
+  const sleeperMat = makeToon(0x42332a, bag, { gradientMap, surface: 'wood' })
   const count = Math.max(1, Math.floor(length / 1.15))
   const sleepers = new InstancedMesh(sleeperGeo, sleeperMat, count)
   bag.add(sleepers)

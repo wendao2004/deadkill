@@ -10,6 +10,15 @@
  * 本来就该不同），存到账号上反而会出现"在网吧调高了灵敏度，回家鼠标飞了"。
  */
 
+/**
+ * 画质档位。
+ *
+ * `auto` 会在启动时探测 GPU：核显/软件渲染直接进 performance，独显从
+ * balanced 起步；游戏过程中再按帧时间自动升降档。固定档位则不自动切换，
+ * 只保留分辨率自适应。
+ */
+export type GraphicsQuality = 'auto' | 'performance' | 'balanced' | 'quality'
+
 export interface MenuSettings {
   /** 鼠标转身灵敏度倍率。1 = 默认。 */
   sensitivity: number
@@ -40,6 +49,14 @@ export interface MenuSettings {
   cameraMotion: 'full' | 'reduced' | 'off'
   /** 3D 渲染分辨率倍率（0.6~1）；低端 GPU 的帧率旋钮。 */
   renderScale: number
+  /**
+   * 画质档位：自动 / 性能 / 均衡 / 高清。
+   *
+   * 网页无法选择用哪张显卡（`powerPreference` 只是提示），所以这里改为
+   * "按实际能跑动的画面开销分级"：核显/软件渲染自动进性能档，关掉 MSAA、
+   * 泛光、实时阴影与程序化细节，只保留描边与 FXAA。
+   */
+  graphics: GraphicsQuality
 }
 
 export type Action =
@@ -90,6 +107,7 @@ export const DEFAULT_SETTINGS: MenuSettings = {
   crosshairOpacity: 1,
   cameraMotion: 'full',
   renderScale: 1,
+  graphics: 'auto',
 }
 
 /** 准星预设：骨白 / 琥珀 / 苔绿 / 青，覆盖常见色觉差异。 */
@@ -138,6 +156,13 @@ export function normalizeSettings(raw: unknown): MenuSettings {
         ? v.cameraMotion
         : d.cameraMotion,
     renderScale: clampNumber(v.renderScale, 0.6, 1, d.renderScale),
+    graphics:
+      v.graphics === 'performance' ||
+      v.graphics === 'balanced' ||
+      v.graphics === 'quality' ||
+      v.graphics === 'auto'
+        ? v.graphics
+        : d.graphics,
   }
 }
 
