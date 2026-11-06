@@ -12,11 +12,11 @@
  *
  * ## 为什么四类武器全部在构造时就建好
  *
- * 切枪是玩家一秒钟里能做两次的操作。如果 setWeapon 时才 new BoxGeometry，
- * 那一次切枪会掉一帧 —— 而且掉在"正被人打"的那一帧上。几何总量很小（四类武器
- * 合计一百来个盒子），换来的是**切换零分配、零卡顿**。代价是内存里常驻几把
- * 看不到的枪，所以缓存组**不挂在 root 上**（见 setWeapon）：three 每帧要遍历
- * 整棵可见树做矩阵更新，把没在手上的枪挂在场景里等于白付遍历成本。
+ * 切枪是玩家一秒钟里能做两次的操作。如果 setWeapon 时才建几何，那一次切枪
+ * 会掉一帧 —— 而且掉在"正被人打"的那一帧上。四类武器合计约 4 万三角形，
+ * 也仍然只在启动时建一次，换来的是**切换零分配、零卡顿**。代价是内存里常驻
+ * 几把看不到的枪，所以缓存组**不挂在 root 上**（见 setWeapon）：three 每帧要
+ * 遍历整棵可见树做矩阵更新，把没在手上的枪挂在场景里等于白付遍历成本。
  *
  * ## 为什么换弹是"压枪"而不是拆弹匣
  *
@@ -31,20 +31,52 @@
  * 这一段是**所有枪共用**的：换弹动作的形制来自"手上没有可拆弹匣"这个共性，
  * 差异留给各枪自己的 hip/ads 基准位。
  *
- * 所有几何数值最初来自 render.ts 的 buildViewmodel()（已在本次改造中整体迁入），
- * 颜色/描边宽度也照抄，所以画面上仍是当初那把枪，只是它开始动了、并且有了兄弟。
+ * 几何已经迁到 weapon-models.ts（倒角盒/车削管/挤出侧板/M-LOK/光学镜）：
+ * 本文件只保留"给定一组标量，这一帧枪摆在哪"的动画逻辑，以及每种武器在
+ * 腰射/开镜下的基准位。模型与动画分开，改枪型不用动动画，调动画不用碰模型。
  */
 
-import { AdditiveBlending, BoxGeometry, CylinderGeometry, DoubleSide, Group, Mesh, PlaneGeometry } from 'three'
-import type { BufferGeometry, Material, Object3D } from 'three'
+import { AdditiveBlending, DoubleSide, Group, Mesh, PlaneGeometry, ShaderMaterial } from 'three'
+import type { Material, Texture } from 'three'
 import { wrapAngle } from '@dk/shared'
+import { mergeAll, ring, tubeZ } from './weapon-kit.ts'
+import {
+  SIGHT_REAR_Z,
+  SIGHT_Y,
+  buildKnife,
+  buildRevolver,
+  buildRifle,
+  buildShotgun,
+  type BuiltRifle,
+  type WeaponMaterialSet,
+} from './weapon-models.ts'
 
 /** render.ts 提供，用来复用共享的卡通材质与墨线壳，本模块不自己造材质。 */
 export interface ViewmodelKit {
-  /** 造一个卡通材质（内部已经 applyComicInk）。 */
-  toon(color: number, options?: { hatch?: number; hatchSpacing?: number }): Material
+  /**
+   * 造一个卡通材质（内部已经 applyComicInk）。
+   *
+   * `surface`/`specular`/`rim` 是这次视觉升级加的：枪身是唯一值得做
+   * "材质身份"的近景物体 —— 发蓝钢要有拉丝高光，胡桃木要有木纹，
+   * 刀口要有边缘反射。它们都是固有色级/高光级的参数，不改光照模型。
+   */
+  toon(
+    color: number,
+    options?: {
+      hatch?: number
+      hatchSpacing?: number
+      surface?: 'default' | 'stone' | 'wood' | 'metal' | 'mud' | 'foliage'
+      specular?: number
+      rim?: number
+      emissive?: number
+      /** 浏览器烘焙的枪身细节贴图。 */
+      map?: Texture
+    },
+  ): Material
   /** 给 mesh 加墨线壳（BackSide），像素宽度由 render.ts 决定。 */
   addInk(mesh: Mesh, pixels?: number): void
+  /** 烘焙好的枪身贴图，由 render.ts 统一持有/释放。 */
+  textures: { metal: Texture; wood: Texture; leather: Texture }
 }
 
 /** 每帧喂进来的、与武器动画有关的全部状态。 */
@@ -73,6 +105,11 @@ export interface ViewmodelState {
   yaw?: number
   /** 镜头运动强度 0..1（可访问性设置）；缺省 1，旧调用方行为不变。 */
   motionScale?: number
+  /**
+   * 贴墙程度 0..1。1 = 枪口已经顶到墙，枪会向下压出瞄准线，
+   * 避免视图模型直接画穿墙面。缺省 0。
+   */
+  wallBlock?: number
   /**
    * 当前武器 id。**给了就等于调用 setWeapon**（给了不同的 id 时），
    * 没给就维持 setWeapon 定下的那一个 —— 这样旧调用方一行不改也能跑。
@@ -108,6 +145,8 @@ export interface Viewmodel {
   setWeapon(weaponId: number): void
   /** 每帧调用。dt 秒。 */
   update(state: ViewmodelState, dt: number): void
+  /** 扣扳机时调用一次：在枪口点一小片星芒火光。 */
+  flash(): void
   /**
    * 上一帧算出来的**相机滚转**（弧度），挥砍时不为 0（最大约 2°）。
    * 调用方每帧把它写进 `camera.rotation.z` 就得到"视野跟着刀一起甩"的那一下；
@@ -168,11 +207,19 @@ const GUN_SCALE = 0.68
  * 相机原点、照门、准星三点共线，两者投影到**同一个屏幕点**，且这个点在画面
  * 正中偏上 0.7°（1080p 下约 12px）—— 枪身不挡目标，玩家也能一眼确认"我在瞄"。
  */
-const RIFLE_ADS_Z = -0.5
-const RIFLE_ADS_PITCH = 0.006
+// 机匣离相机 34cm：再远准星太小，再近机匣会挡住目标。枪托/托底在这
+// 个距离上已经落到 0.3 的近平面之后，由近平面自然裁掉 —— 它仍然和机匣
+// 连在一起，只是"在肩膀后面"，不是被单独拆走。
+const RIFLE_ADS_Z = -0.34
+/**
+ * 开镜俯仰。**必须是 0**：没有屏幕准星后，照门—准星连线就是弹道线。
+ * 旧值 0.006（0.7°）把这条线抬到屏幕中心上方，子弹实际打在准星下方；
+ * 有准星时玩家不会发现，没准星时就是"瞄了打不中"。
+ */
+const RIFLE_ADS_PITCH = 0
 /** 照门/准星在枪局部空间的共同高度与 z（供下面那条反解式用，与 buildRifle 的零件坐标一致）。 */
-const SIGHT_Y = 0.026
-const SIGHT_REAR_Z = -0.06
+// SIGHT_Y / SIGHT_REAR_Z 现在由 weapon-models.ts 导出：模型与开镜反解必须
+// 读同一份常量，否则改一次模型就会"前准星浮在照门上"。
 
 /**
  * 由"照门—准星共线"反解开镜时的枪根 y（米）。
@@ -408,6 +455,15 @@ interface WeaponRig {
   /** 0 主 / 1 副 / 2 刀（state.slot 没给时的缺省值）。 */
   readonly slot: number
   readonly isMelee: boolean
+  /** 枪口在武器局部空间的 z（刀为 0）。枪口火光按它摆位。 */
+  readonly muzzleZ: number
+  /**
+   * 抛壳口位置与初速（武器局部空间）。刀没有抛壳口，为 null。
+   *
+   * 位置在机匣右侧（+X），初速朝右/上/向持枪者（+Z）；用真实小黄铜壳
+   * 在视图模型里飞出去，而不是在枪身上贴一张静态弹壳。
+   */
+  readonly eject: { x: number; y: number; z: number; vx: number; vy: number; vz: number } | null
   /** 刀专用：刀光面片与自己的材质（不是刀为 null）。 */
   readonly glow: Mesh | null
   readonly glowMat: Material | null
@@ -416,6 +472,8 @@ interface WeaponRig {
     hammer?: Mesh
     hammers?: Mesh[]
     cylinder?: Group
+    /** 杠杆：射击循环时绕枢轴转。 */
+    lever?: Group
   }
 }
 
@@ -437,323 +495,190 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   let lagVPitch = 0
 
   /**
-   * 本模块自己 new 出来的几何体。材质全部由 kit 提供（render.ts 统一登记、
-   * 统一释放），所以这里只记几何体 —— 释放别人的材质会让整个场景的卡通材质
-   * 失效。唯一例外是刀光材质（从 kit 借一份再 clone，见 buildKnife）。
-   */
-  const disposables: BufferGeometry[] = []
-  /** 我们自己 clone 出来的材质（刀光），dispose 时也要放。 */
-  const ownedMaterials: Material[] = []
-
-  // fog: false 是必须的：枪离相机 0.5m，但指数雾按世界坐标距离算，靠近沼泽
-  // 中心时整把枪会被雾压成一片灰。发蓝钢 + 胡桃木 + 黄铜三色。
-  const steel = kit.toon(0x4f5a6b, { hatch: 0.2 })
-  const wood = kit.toon(0x53331c, { hatch: 0.2 })
-  const brass = kit.toon(0x8f6f2c, { hatch: 0.2 })
-  // 准星/照门单独一档亮灰：和枪身同色时，开镜看到的只是一个带刻痕的蓝块，
-  // 缺口和前准星都糊在里面 —— 瞄准图必须比枪身亮两档才认得出。
-  const sight = kit.toon(0x8d99a8, { hatch: 0 })
-  // 转轮弹巢凹槽用的一档近黑：它要读成"洞"，而洞不吃光。
-  const bore = kit.toon(0x1a1f26, { hatch: 0 })
-  // 刀身比枪身亮一档（打磨过的碳钢 vs 发蓝钢），亮边再亮两档 —— 挥砍时刀面
-  // 翻过来能吃到一次高光，那一下反光就是"这是把刀"的全部说服力。
-  const bladeSteel = kit.toon(0x707c8c, { hatch: 0.15 })
-  const bladeEdge = kit.toon(0xe9f2fb, { hatch: 0 })
-  // 手套/袖口：比枪木更暖一档，靠近镜头时不会和胡桃木/阴影糊成一块。
-  const glove = kit.toon(0x7a5b47, { hatch: 0.08 })
-  const gloveDark = kit.toon(0x5a4434, { hatch: 0.12 })
-  const sleeve = kit.toon(0x3d3933, { hatch: 0.16 })
-  // 只有手掌/指节压在枪身之上；袖子和前臂仍吃深度，避免整条胳膊糊在枪上。
-  glove.depthTest = false
-  gloveDark.depthTest = false
-
-  /** 造一个盒子零件并挂到父节点上。ink 为 false 的零件（薄板、准星、刀光）不描边。 */
-  const box = (
-    w: number,
-    h: number,
-    d: number,
-    mat: Material,
-    x: number,
-    y: number,
-    z: number,
-    ink: boolean,
-    parent: Object3D,
-  ): Mesh => {
-    const geo = new BoxGeometry(w, h, d)
-    disposables.push(geo)
-    const mesh = new Mesh(geo, mat)
-    mesh.position.set(x, y, z)
-    parent.add(mesh)
-    if (ink) kit.addInk(mesh, INK_PIXELS)
-    return mesh
-  }
-
-  /** 造一个圆柱零件（轴烘焙成沿 z，和枪管同向，免得每个零件再手动转一次）。 */
-  const cyl = (r: number, h: number, seg: number, mat: Material, x: number, y: number, z: number, parent: Object3D): Mesh => {
-    const geo = new CylinderGeometry(r, r, h, seg)
-    geo.rotateX(Math.PI / 2)
-    disposables.push(geo)
-    const mesh = new Mesh(geo, mat)
-    mesh.position.set(x, y, z)
-    parent.add(mesh)
-    return mesh
-  }
-
-  /**
-   * 一只握枪的手：手套掌 + 四根指节 + 拇指 + 袖口 + 一段前臂。
+   * 四把武器的几何全部由 weapon-models.ts 生成：倒角盒、车削枪管、挤出侧板、
+   * M-LOK 槽与光学镜座。本文件只负责把它们挂进 root，并按标量摆位。
    *
-   * 不做二骨 IK、不做接触 AO（调研结论：先消除"悬空木板"就够）。手直接
-   * 焊在握把/护木上，整把枪运动时手跟着走；换弹/开镜时不会出现"手留在原地"。
-   * mirror = 1 右手（拇指在 +x），-1 左手。
+   * 材质仍由 render.ts 注入：整套卡通材质 / 墨线 / 假高光共享同一批 program，
+   * 这里改的只是钢、木、黄铜各自的细节参数。金属的 specular 是这次升级里
+   * "枪不再像一块灰板"的关键 —— 倒角接住一条高光，轮廓才读得出是个零件。
    */
-  const addArm = (
-    parent: Object3D,
-    x: number,
-    y: number,
-    z: number,
-    mirror: 1 | -1,
-  ): Group => {
-    const hand = new Group()
-    hand.position.set(x, y, z)
-    // 一块完整的手掌 + 一条指节，不再用四根独立手指：在 0.5m 的透视里
-    // 四根 11mm 的盒子只会变成一撮黑色描边，读不出"手"。
-    const palm = box(0.07, 0.06, 0.095, glove, 0, 0, 0, true, hand)
-    palm.rotation.x = 0.12
-    palm.renderOrder = 9999
-    const knuckle = box(0.064, 0.018, 0.078, gloveDark, 0, 0.032, -0.014, false, hand)
-    knuckle.renderOrder = 9999
-    // 拇指从内侧压住枪身，是"在握"而不是"贴着一块木头"的关键。
-    const thumb = box(0.02, 0.03, 0.055, gloveDark, -mirror * 0.036, 0.01, -0.004, false, hand)
-    thumb.rotation.z = -mirror * 0.5
-    thumb.renderOrder = 9999
-    // 袖口与前臂用圆柱：少一层描边黑边，近看才像胳膊而不是另一把枪。
-    cyl(0.044, 0.045, 8, sleeve, 0, -0.004, 0.058, hand)
-    const fore = cyl(0.032, 0.15, 8, sleeve, mirror * 0.012, -0.055, 0.13, hand)
-    fore.rotation.x = -0.5
-    fore.rotation.z = mirror * 0.15
-    parent.add(hand)
-    return hand
+  const mats: WeaponMaterialSet = {
+    steel: kit.toon(0x5a6879, {
+      hatch: 0.18,
+      surface: 'metal',
+      specular: 0.62,
+      rim: 0.14,
+      map: kit.textures.metal,
+    }),
+    darkSteel: kit.toon(0x2a323d, {
+      hatch: 0.10,
+      surface: 'metal',
+      specular: 0.38,
+      rim: 0.07,
+      map: kit.textures.metal,
+    }),
+    wood: kit.toon(0x5a3a22, {
+      hatch: 0.12,
+      surface: 'wood',
+      specular: 0.04,
+      map: kit.textures.wood,
+    }),
+    brass: kit.toon(0x9c7c38, {
+      hatch: 0.10,
+      surface: 'metal',
+      specular: 0.55,
+      rim: 0.08,
+      map: kit.textures.metal,
+    }),
+    // 机瞄自发光：没有屏幕准星后，照门/准星必须在暗墙前自己"发亮"。
+    // 暖象牙色比冷白更像老枪上的黄铜/白漆准星，也更容易和冷蓝夜色分开。
+    sight: kit.toon(0xfff1c8, {
+      hatch: 0,
+      surface: 'metal',
+      specular: 0.20,
+      rim: 0.10,
+      emissive: 0.5,
+    }),
+    bore: kit.toon(0x0a0d12, { hatch: 0, specular: 0 }),
+    blade: kit.toon(0x8c99aa, {
+      hatch: 0.08,
+      surface: 'metal',
+      specular: 0.95,
+      rim: 0.20,
+      map: kit.textures.metal,
+    }),
+    bladeEdge: kit.toon(0xf4f9ff, { hatch: 0, specular: 0.50, emissive: 0.08 }),
+    glove: kit.toon(0x7b5c47, {
+      hatch: 0.05,
+      specular: 0.04,
+      map: kit.textures.leather,
+    }),
+    gloveDark: kit.toon(0x543f31, {
+      hatch: 0.05,
+      specular: 0.03,
+      map: kit.textures.leather,
+    }),
+    sleeve: kit.toon(0x3c3833, { hatch: 0.10, specular: 0.02 }),
   }
 
-  // ------------------------------------------------------------ 步枪系（1 / 6 / 4）
+  /** 武器模型自己持有的几何与克隆材质（刀光）。dispose 时逐个释放。 */
+  const builtModels: { dispose(): void }[] = []
+
+  // ------------------------------------------------------------ 抛壳
+  //
+  // 一个 12 发的小黄铜壳池，挂在 root 上、按当前枪的抛壳口位置弹出。
+  // 不引刚体：视图模型里没有世界碰撞，简单的抛物线 + 翻滚就够了；在 0.5m
+  // 的观察距离上，真正重要的是"壳从右侧飞出去、转、掉出画面"这三件事。
+  const SHELL_POOL = 12
+  // 真正的弹壳：中空管 + 底缘，而不是一根实心圆柱。22mm 在 0.3m 处约
+  // 20px，管口和底缘是"这是弹壳而不是一根铜棍"的全部。
+  const shellCase = tubeZ(0.0055, 0.0045, 0.022, 10, 0.0004)
+  const shellRim = ring(0.0066, 0.0012, 10, 4)
+  shellRim.translate(0, 0, -0.011)
+  const shellGeo = mergeAll([shellCase, shellRim])!
+  const shells: Array<{
+    mesh: Mesh
+    vx: number
+    vy: number
+    vz: number
+    ax: number
+    ay: number
+    az: number
+    life: number
+  }> = []
+  for (let i = 0; i < SHELL_POOL; i++) {
+    const mesh = new Mesh(shellGeo, mats.brass)
+    mesh.visible = false
+    mesh.castShadow = false
+    mesh.raycast = () => {}
+    root.add(mesh)
+    shells.push({ mesh, vx: 0, vy: 0, vz: 0, ax: 0, ay: 0, az: 0, life: 0 })
+  }
+  let shellCursor = 0
+  let shellSeq = 0
 
   /**
-   * 杠杆步枪。1（温菲尔德）与 6（消音卡宾）是同一套零件、只换枪管长度；
-   * 4（夏普斯狙击）加一段镜筒 —— 镜筒做成**四壁围成的方框**而不是一根实心筒：
-   * 实心筒会把开镜视线堵死，而中空的框既是"从镜筒里看出去"的剪影，又让照门—
-   * 准星那条线原封不动地穿过去，共线约束一个字都不用改。
+   * 给一把枪的合并网格挂墨线壳。
+   *
+   * 跳过三类：bore 要读成"洞"，描边会把洞口填死；sight 是几毫米的准星片，
+   * 描边后会变成一根黑条；透明件（刀光）不该有实体轮廓。
    */
-  const buildRifle = (o: { barrelLen: number; forendLen: number; sightBack: number; scope: boolean; suppressor: boolean }): {
-    group: Group
-    stock: Group
-    hammer: Mesh
-  } => {
-    const group = new Group()
-    const stock = new Group()
-    group.add(stock)
-
-    // 几何关系的关键：**离相机最近的那一点必须在 0.5m 之外**。枪托背面落在相机
-    // 前 13cm 时，75° FOV 的透视会把它放大成半屏宽的白板。
-    box(0.024, 0.024, o.barrelLen, steel, 0, 0.004, -0.31 - o.barrelLen / 2, true, group) // 枪管
-    box(0.019, 0.019, 0.34, steel, 0, -0.026, -0.5, true, group) // 枪管下管（弹仓）
-    box(0.038, 0.04, o.forendLen, wood, 0, -0.016, -0.11 - o.forendLen / 2, true, group) // 前护木
-    box(0.04, 0.038, 0.24, steel, 0, -0.008, -0.02, true, group) // 机匣
-    // 杠杆枪的扳机护圈：一个细黄铜环比再堆一个盒子更能读成"温菲尔德"。
-    box(0.014, 0.03, 0.014, brass, 0, -0.036, 0.02, true, group)
-    // 枪机拉柄与击锤：开镜时镜头正对枪身背面，一整块对称的机匣背面读不出任何
-    // 机械结构。右侧伸出的拉柄与后上方的击锤小舌让这块剪影变成"一把上了膛的枪"。
-    box(0.022, 0.01, 0.016, steel, 0.026, 0.0, -0.02, true, group)
-    const hammer = box(0.012, 0.028, 0.014, brass, 0, 0.004, 0.048, true, group)
-    hammer.rotation.x = -0.35
-    hammer.userData.baseX = -0.35
-
-    // 枪托拆两段：细的"脖颈"接机匣，高的"托底"抵肩 —— 等截面的盒子在侧视里
-    // 就是一块木板，缺了由窄到宽的轮廓玩家认不出那是枪托。
-    const wrist = box(0.05, 0.044, 0.16, wood, 0, -0.026, 0.11, true, stock)
-    wrist.rotation.x = -0.06
-    const butt = box(0.032, 0.086, 0.13, wood, 0, -0.044, 0.235, true, stock)
-    butt.rotation.x = -0.1
-    // 托底板：比枪托窄一圈的深色薄片，做满尺寸会变成独立方块。
-    const plate = box(0.026, 0.072, 0.012, steel, 0, -0.048, 0.3, false, stock)
-    plate.rotation.x = -0.1
-
-    // 准星（细竖片）与照门（横条）：两者局部高度都是 0.026、x 都是 0，局部空间里
-    // 连成一条平行于枪管的直线。开镜姿态让相机原点落在这条线上（见 solveAdsY），
-    // 两者才会投影到同一个屏幕点 —— 这是"我真的在瞄"唯一的视觉依据。
-    box(0.008, 0.022, 0.006, sight, 0, SIGHT_Y, -0.28 - o.barrelLen + o.sightBack, false, group)
-    box(0.05, 0.005, 0.008, sight, 0, 0.019, SIGHT_REAR_Z, false, group)
-    box(0.015, 0.024, 0.008, sight, -0.0145, SIGHT_Y, SIGHT_REAR_Z, false, group)
-    box(0.015, 0.024, 0.008, sight, 0.0145, SIGHT_Y, SIGHT_REAR_Z, false, group)
-
-    if (o.scope) {
-      // 方框中空镜筒：四壁围在照门—准星那条线的上下左右，视线从中间穿过。
-      const half = 0.034
-      box(0.09, 0.008, 0.3, steel, 0, SIGHT_Y + half, -0.42, true, group)
-      box(0.09, 0.008, 0.3, steel, 0, SIGHT_Y - half, -0.42, true, group)
-      box(0.008, 0.076, 0.3, steel, -0.041, SIGHT_Y, -0.42, true, group)
-      box(0.008, 0.076, 0.3, steel, 0.041, SIGHT_Y, -0.42, true, group)
-      // 底座：把镜筒和机匣连起来，否则镜筒看着是浮在半空的。
-      box(0.032, 0.022, 0.05, steel, 0, -0.006, -0.34, true, group)
+  const inkModel = (group: Group): void => {
+    // 先收集再挂壳。addInk 会往 mesh 上再 add 一个子 Mesh；如果边 traverse
+    // 边挂，遍历器会立刻走到刚挂上去的壳，再给壳挂壳 —— 无限递归直接爆栈。
+    const meshes: Mesh[] = []
+    group.traverse((object) => {
+      if (object instanceof Mesh) meshes.push(object)
+    })
+    for (const mesh of meshes) {
+      const material = mesh.material as Material
+      // 前臂/袖子整个隐藏：第一人称里唯一需要的是握在枪上的手和腕口，
+      // 那根横在画面里的袖管是"手臂太突兀"的主要来源。
+      if (material === mats.sleeve) {
+        mesh.visible = false
+        continue
+      }
+      // 照门/准星保留墨线：没有屏幕准星后，它们需要在暗墙前有一圈硬轮廓；
+      // 只跳过"洞"和刀口亮边。
+      if (material === mats.bore || material === mats.bladeEdge) continue
+      if (material.transparent) continue
+      kit.addInk(mesh, INK_PIXELS)
     }
-
-    if (o.suppressor) {
-      // 消音器：比枪管粗一圈的短筒，挂在枪口。
-      box(0.05, 0.05, 0.2, steel, 0, 0.004, -0.31 - o.barrelLen - 0.05, true, group)
-    }
-
-    // 双手：右手握在枪托脖颈（挂在 stock 上，开镜收托时跟着走），左手托护木。
-    addArm(stock, 0.04, -0.03, 0.06, 1)
-    // 带镜的枪（夏普斯）镜筒低、体积大：左手再压低/往前一点，别让拇指
-    // 顶进镜筒下壁。机械瞄具的温菲尔德保持原来的托举位。
-    addArm(
-      group,
-      -0.04,
-      o.scope ? -0.075 : -0.02,
-      -0.11 - o.forendLen * (o.scope ? 0.82 : 0.62),
-      -1,
-    )
-
-    return { group, stock, hammer }
   }
 
-  // ------------------------------------------------------------ 双管霰弹（2 / 3）
-
-  /**
-   * 双管霰弹：两根并排的粗短枪管 + 折叠机匣 + 双扳机 + 双外露击锤。
-   *
-   * 双扳机的两根扳机是**前后排列**而不是左右排列（左右排列是后来的单扳机
-   * 选择器的位置），双外露击锤是 1878 年那批枪最容易识别的剪影特征 ——
-   * 霰弹枪的辨识度全在这两个"多余"的零件上，去掉就成了一把普通猎枪。
-   */
-  const buildShotgun = (): { group: Group; stock: Group; hammers: Mesh[] } => {
-    const group = new Group()
-    const stock = new Group()
-    group.add(stock)
-
-    box(0.03, 0.03, 0.46, steel, -0.017, 0.002, -0.3, true, group) // 左枪管
-    box(0.03, 0.03, 0.46, steel, 0.017, 0.002, -0.3, true, group) // 右枪管
-    box(0.01, 0.006, 0.44, steel, 0, 0.021, -0.3, false, group) // 上肋条（并排双管的接缝）
-    box(0.064, 0.052, 0.18, wood, 0, -0.028, -0.2, true, group) // 前护木：又短又粗
-    box(0.05, 0.052, 0.13, steel, 0, -0.012, 0.0, true, group) // 折叠机匣
-    box(0.056, 0.014, 0.014, brass, 0, -0.032, -0.045, true, group) // 铰链销（折叠枪的标志）
-    box(0.008, 0.024, 0.008, brass, 0, -0.044, 0.026, true, group) // 前扳机
-    box(0.008, 0.024, 0.008, brass, 0, -0.044, 0.052, true, group) // 后扳机
-    box(0.014, 0.024, 0.07, brass, 0, -0.062, 0.04, true, group) // 扳机护圈
-    const hammerL = box(0.012, 0.03, 0.014, brass, -0.019, 0.022, 0.078, true, group)
-    hammerL.rotation.x = -0.45
-    hammerL.userData.baseX = -0.45
-    const hammerR = box(0.012, 0.03, 0.014, brass, 0.019, 0.022, 0.078, true, group)
-    hammerR.rotation.x = -0.45
-    hammerR.userData.baseX = -0.45
-    // 缺口 = 两片竖起的照门耳，前准星是一颗珠子，两者高度同为 SIGHT_Y。
-    box(0.007, 0.026, 0.007, sight, -0.011, SIGHT_Y, 0.02, false, group)
-    box(0.007, 0.026, 0.007, sight, 0.011, SIGHT_Y, 0.02, false, group)
-    box(0.008, 0.014, 0.008, sight, 0, SIGHT_Y, -0.52, false, group)
-
-    const wrist = box(0.046, 0.042, 0.15, wood, 0, -0.028, 0.135, true, stock)
-    wrist.rotation.x = -0.06
-    const butt = box(0.034, 0.082, 0.12, wood, 0, -0.046, 0.25, true, stock)
-    butt.rotation.x = -0.12
-    const plate = box(0.028, 0.068, 0.012, steel, 0, -0.05, 0.31, false, stock)
-    plate.rotation.x = -0.12
-
-    // 右手握托颈，左手托粗护木。
-    addArm(stock, 0.036, -0.035, 0.07, 1)
-    addArm(group, -0.036, -0.025, -0.2, -1)
-
-    return { group, stock, hammers: [hammerL, hammerR] }
-  }
-
-  // ------------------------------------------------------------ 转轮手枪（5）
-
-  /**
-   * 柯尔特 M1873 转轮：小机匣 + 六孔转轮 + 短枪管。
-   *
-   * 六个弹巢孔放在**转轮侧壁**（沿轴向排布的凹槽）而不是端面：从第一人称
-   * 看过去，转轮的端面几乎是侧对镜头的，孔开在端面上什么都看不见；开在侧壁
-   * 上，六条暗槽跟着转轮轮廓一起转，才读得出"这是个能转的弹巢"。
-   */
-  const buildRevolver = (): { group: Group; cylinder: Group; hammer: Mesh } => {
-    const group = new Group()
-
-    box(0.032, 0.046, 0.1, steel, 0, -0.004, 0.0, true, group) // 机匣
-    // 转轮与六个弹巢孔放进同一个子组：换弹时整组绕枪管轴（z）旋转，
-    // 侧壁的暗槽会跟着转，玩家才看得出"这是转轮在转"。
-    const cylinder = new Group()
-    group.add(cylinder)
-    cyl(0.036, 0.062, 8, steel, 0, -0.01, -0.02, cylinder) // 转轮本体（八棱，卡通感更强）
-    for (let i = 0; i < 6; i++) {
-      const a = (i * Math.PI) / 3 + Math.PI / 6
-      const slot = box(0.008, 0.018, 0.05, bore, 0.0315 * Math.sin(a), -0.01 + 0.0315 * Math.cos(a), -0.02, false, cylinder)
-      slot.rotation.z = -a
-    }
-    box(0.026, 0.028, 0.3, steel, 0, 0.002, -0.22, true, group) // 枪管：短
-    box(0.012, 0.012, 0.26, steel, 0, -0.026, -0.22, true, group) // 抽壳杆
-    const grip = box(0.034, 0.09, 0.052, wood, 0, -0.058, 0.075, true, group) // 木握把
-    grip.rotation.x = -0.32
-    const hammer = box(0.01, 0.028, 0.014, brass, 0, 0.016, 0.058, true, group)
-    hammer.rotation.x = -0.5
-    hammer.userData.baseX = -0.5
-    box(0.014, 0.028, 0.05, brass, 0, -0.04, 0.055, true, group) // 扳机护圈
-    box(0.007, 0.022, 0.007, brass, 0, -0.03, 0.048, true, group) // 扳机
-    box(0.007, 0.022, 0.006, sight, 0, SIGHT_Y, -0.35, false, group) // 前准星
-    box(0.006, 0.024, 0.006, sight, -0.011, SIGHT_Y, 0.03, false, group) // 照门缺口左耳
-    box(0.006, 0.024, 0.006, sight, 0.011, SIGHT_Y, 0.03, false, group) // 照门缺口右耳
-
-    // 单手：副武器只有右手握把，前臂从右下出画。
-    addArm(group, 0.03, -0.035, 0.06, 1)
-
-    return { group, cylinder, hammer }
-  }
-
-  // ------------------------------------------------------------ 猎刀（10）
-
-  /**
-   * 猎刀：握把 + 护手 + 刀身（带亮边）。
-   *
-   * 刀身**不能是一块黑片** —— 它必须有两档：打磨过的刀面（bladeSteel）和一条
-   * 几乎白的刃口（bladeEdge）。挥砍时整个模型绕手转，刃口那条亮线会先扫过
-   * 画面，那一下就是"反光"。刀刃指向 -z（和枪管同向），握把落在原点附近，
-   * 这样整把刀绕组的原点转 = 绕手腕转，挥砍不需要额外的枢轴节点。
-   */
-  const buildKnife = (): { group: Group; glow: Mesh; glowMat: Material } => {
-    const group = new Group()
-    box(0.024, 0.032, 0.11, wood, 0, 0, 0.02, true, group) // 握把
-    box(0.052, 0.014, 0.014, brass, 0, 0, -0.04, true, group) // 护手
-    box(0.028, 0.008, 0.008, brass, 0, 0.002, 0.035, true, group) // 铆钉
-    box(0.009, 0.036, 0.3, bladeSteel, 0, 0.006, -0.2, true, group) // 刀身
-    box(0.01, 0.007, 0.3, bladeEdge, 0, -0.016, -0.2, false, group) // 亮边（刃口）
-
-    /**
-     * 刀光：一片很薄的半透明白色面片，贴在刀身侧面。
-     *
-     * 它是一张**双面加色混合**的平面，法线朝 ±x —— 刀挂在画面右侧（x ≈ +0.19），
-     * 相机相对它偏在 -x 一侧，所以这张面片是侧着被看到的：正好铺开成一条
-     * 沿刀身方向的带子，而不是一个正对镜头的方块。
-     */
-    const glowGeo = new PlaneGeometry(0.34, 0.1)
-    glowGeo.rotateY(Math.PI / 2)
-    disposables.push(glowGeo)
-    const glowMat = kit.toon(0xffffff, { hatch: 0 }).clone()
-    glowMat.transparent = true
-    glowMat.opacity = 0
-    glowMat.depthWrite = false
-    glowMat.blending = AdditiveBlending
-    glowMat.side = DoubleSide
-    glowMat.needsUpdate = true
-    ownedMaterials.push(glowMat)
-    const glow = new Mesh(glowGeo, glowMat)
-    glow.position.set(0, 0.004, -0.2)
-    glow.visible = false
-    // 刀光不能挡子弹、也不能被拾取：它是一层纯画面效果。
-    glow.raycast = () => {}
-    group.add(glow)
-
-    // 握拳：整把刀绕手的原点转，挥砍时手和刀一起走。
-    addArm(group, 0.0, -0.004, 0.02, 1)
-
-    return { group, glow, glowMat }
-  }
+  // ------------------------------------------------------------ 枪口火光
+  //
+  // 一个朝 +Z 的加色星芒面片，挂在 root 上、按当前枪的 muzzleZ 摆位。
+  // 不参与深度与射线：它只是"扣扳机"那一瞬间，画面右下角的一下亮。
+  const flashMat = new ShaderMaterial({
+    uniforms: { uIntensity: { value: 0 } },
+    vertexShader: [
+      'varying vec2 vUv;',
+      'void main() {',
+      '  vUv = uv;',
+      '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+      '}',
+    ].join('\n'),
+    fragmentShader: [
+      'uniform float uIntensity;',
+      'varying vec2 vUv;',
+      'void main() {',
+      '  vec2 p = vUv * 2.0 - 1.0;',
+      '  float r = length(p);',
+      '  float a = atan(p.y, p.x);',
+      '  float core = exp(-r * r * 26.0);',
+      '  float star = pow(abs(cos(a * 3.0)), 22.0) * exp(-r * 4.5);',
+      '  float halo = exp(-r * r * 5.0) * 0.35;',
+      '  float v = (core + star * 0.9 + halo) * uIntensity;',
+      '  vec3 tint = mix(vec3(1.0, 0.42, 0.10), vec3(1.0, 0.92, 0.62), core);',
+      '  gl_FragColor = vec4(tint * v, v);',
+      '}',
+    ].join('\n'),
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    blending: AdditiveBlending,
+    side: DoubleSide,
+    fog: false,
+    toneMapped: false,
+  })
+  const flashGeo = new PlaneGeometry(0.26, 0.26)
+  const flash = new Mesh(flashGeo, flashMat)
+  flash.visible = false
+  flash.renderOrder = 999
+  flash.raycast = () => {}
+  root.add(flash)
+  const FLASH_LIFE = 0.055
+  let flashTimer = 0
+  /** 杠杆/击锤的射击循环时长。 */
+  const LEVER_CYCLE = 0.24
+  let leverTimer = 0
+  /** 转轮每发前进 60°，用弹簧逼近目标角。 */
+  let cylinderAngle = 0
+  let cylinderTarget = 0
+  /** 抛壳延迟到枪机动作的中段，而不是和枪口火光同帧。 */
+  let pendingEject: WeaponRig['eject'] = null
+  let pendingEjectTimer = 0
 
   // ------------------------------------------------------------ 缓存表
 
@@ -763,63 +688,75 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     rigs.set(id, rig)
   }
 
-  /** 步枪的静态姿态（1 / 6 / 4 共用一套基准位，只在 z 上按枪长微调）。 */
-  const rifleRig = (id: number, built: { group: Group; stock: Group; hammer: Mesh }, extra: Partial<WeaponRig>): WeaponRig => {
-    void id
-    return {
-      group: built.group,
-      stock: built.stock,
-      parts: { hammer: built.hammer },
-      hipX: RIFLE_HIP_X,
-      hipY: RIFLE_HIP_Y,
-      hipZ: RIFLE_HIP_Z,
-      yaw: RIFLE_YAW,
-      pitch: RIFLE_PITCH,
-      roll: RIFLE_ROLL,
-      adsX: 0,
-      adsY: solveAdsY(RIFLE_ADS_PITCH, RIFLE_ADS_Z, SIGHT_Y, SIGHT_REAR_Z, GUN_SCALE),
-      adsZ: RIFLE_ADS_Z,
-      adsPitch: RIFLE_ADS_PITCH,
-      tuckY: STOCK_TUCK_Y,
-      tuckZ: STOCK_TUCK_Z,
-      scale: GUN_SCALE,
-      slot: 0,
-      isMelee: false,
-      glow: null,
-      glowMat: null,
-      ...extra,
-    }
-  }
+  /** 步枪系（1 / 6 / 4）共用一套腰射/开镜基准，只在 z 与枪口位置上按枪长微调。 */
+  const rifleRig = (built: BuiltRifle, extra: Partial<WeaponRig>): WeaponRig => ({
+    group: built.group,
+    stock: built.stock,
+    parts: { hammer: built.hammer, lever: built.lever },
+    hipX: RIFLE_HIP_X,
+    hipY: RIFLE_HIP_Y,
+    hipZ: RIFLE_HIP_Z,
+    yaw: RIFLE_YAW,
+    pitch: RIFLE_PITCH,
+    roll: RIFLE_ROLL,
+    adsX: 0,
+    adsY: solveAdsY(RIFLE_ADS_PITCH, RIFLE_ADS_Z, SIGHT_Y, SIGHT_REAR_Z, GUN_SCALE),
+    adsZ: RIFLE_ADS_Z,
+    adsPitch: RIFLE_ADS_PITCH,
+    tuckY: STOCK_TUCK_Y,
+    tuckZ: STOCK_TUCK_Z,
+    scale: GUN_SCALE,
+    slot: 0,
+    isMelee: false,
+    muzzleZ: -0.31 - 0.62,
+    eject: { x: 0.042, y: 0.015, z: -0.01, vx: 1.35, vy: 1.2, vz: 0.45 },
+    glow: null,
+    glowMat: null,
+    ...extra,
+  })
 
-  // 温菲尔德走机械瞄具（SCOPE_MIN_ZOOM=3，1.7 倍不进镜筒），所以模型上
-  // 只有准星/照门，没有镜筒；3.8 倍神射手才装 scope。
-  const rifle = buildRifle({ barrelLen: 0.62, forendLen: 0.34, sightBack: 0, scope: false, suppressor: false })
-  register(1, rifleRig(1, rifle, {}))
+  // 温菲尔德：机械瞄具，没有镜筒。
+  const rifle = buildRifle(
+    { barrelLen: 0.62, forendLen: 0.34, sightBack: 0, scope: false, suppressor: false },
+    mats,
+  )
+  builtModels.push(rifle)
+  inkModel(rifle.group)
+  register(1, rifleRig(rifle, { muzzleZ: -0.31 - 0.62 - 0.01 }))
 
-  // 消音卡宾：枪管略短（卡宾），护木相应缩短，准星往后挪一点给消音器让位。
-  const carbine = buildRifle({ barrelLen: 0.56, forendLen: 0.3, sightBack: 0.06, scope: false, suppressor: true })
-  register(6, rifleRig(6, carbine, { hipZ: RIFLE_HIP_Z + 0.02 }))
+  // 消音卡宾：枪管与护木都短一截，消音器从枪口再伸出 19cm。
+  const carbine = buildRifle(
+    { barrelLen: 0.56, forendLen: 0.30, sightBack: 0.06, scope: false, suppressor: true },
+    mats,
+  )
+  builtModels.push(carbine)
+  inkModel(carbine.group)
+  register(6, rifleRig(carbine, { hipZ: RIFLE_HIP_Z + 0.02, muzzleZ: -0.31 - 0.56 - 0.20 }))
 
-  // 狙击：枪管最长、镜筒最重，所以整把枪往前推 4cm、往右多让 1cm（长枪身别顶脸）。
-  const sniper = buildRifle({ barrelLen: 0.74, forendLen: 0.4, sightBack: 0, scope: true, suppressor: false })
+  // 神射手：最长枪管 + 光学镜；整把枪往前推 4cm、往右让 1cm，长枪身别顶脸。
+  const sniper = buildRifle(
+    { barrelLen: 0.74, forendLen: 0.40, sightBack: 0, scope: true, suppressor: false },
+    mats,
+  )
+  builtModels.push(sniper)
+  inkModel(sniper.group)
   register(
     4,
-    rifleRig(4, sniper, {
+    rifleRig(sniper, {
       hipX: RIFLE_HIP_X + 0.01,
       hipY: RIFLE_HIP_Y - 0.005,
       hipZ: RIFLE_HIP_Z - 0.04,
       roll: RIFLE_ROLL + 0.01,
       adsZ: -0.55,
-      adsPitch: 0.008,
-      adsY: solveAdsY(0.008, -0.55, SIGHT_Y, SIGHT_REAR_Z, GUN_SCALE),
+      adsPitch: 0,
+      adsY: solveAdsY(0, -0.55, SIGHT_Y, SIGHT_REAR_Z, GUN_SCALE),
+      muzzleZ: -0.31 - 0.74 - 0.01,
     }),
   )
 
-  /**
-   * 双管霰弹：比步枪更近、更靠中间（枪短，贴近脸才看得见枪管），
-   * 照门缺口在 z = +0.02（机匣顶），所以 adsY 用 0.02 反解。
-   */
-  const shotgun = buildShotgun()
+  const shotgun = buildShotgun(mats)
+  builtModels.push(shotgun)
+  inkModel(shotgun.group)
   register(2, {
     group: shotgun.group,
     stock: shotgun.stock,
@@ -830,20 +767,25 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     pitch: 0.06,
     roll: 0.06,
     adsX: 0,
-    adsY: solveAdsY(0.006, -0.47, SIGHT_Y, 0.02, GUN_SCALE),
-    adsZ: -0.47,
-    adsPitch: 0.006,
+    adsY: solveAdsY(0, -0.38, SIGHT_Y, 0.02, GUN_SCALE),
+    adsZ: -0.38,
+    adsPitch: 0,
     tuckY: STOCK_TUCK_Y * 0.85,
     tuckZ: STOCK_TUCK_Z * 0.8,
     scale: GUN_SCALE,
     slot: 0,
     isMelee: false,
+    muzzleZ: -0.54,
+    eject: { x: 0.042, y: 0.02, z: 0.0, vx: 1.35, vy: 1.15, vz: 0.45 },
     glow: null,
     glowMat: null,
     parts: { hammers: shotgun.hammers },
   })
-  // 柯尔特 1878 更短更粗：同一个模型的第二份实例，位置再压低 8mm（"短管"重心更低）。
-  const shotgun2 = buildShotgun()
+
+  // 柯尔特 1878 短管：同一套零件的第二份实例，位置再压低 8mm（重心更低）。
+  const shotgun2 = buildShotgun(mats)
+  builtModels.push(shotgun2)
+  inkModel(shotgun2.group)
   register(3, {
     group: shotgun2.group,
     stock: shotgun2.stock,
@@ -854,29 +796,24 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     pitch: 0.07,
     roll: 0.055,
     adsX: 0,
-    adsY: solveAdsY(0.006, -0.46, SIGHT_Y, 0.02, GUN_SCALE),
-    adsZ: -0.46,
-    adsPitch: 0.006,
+    adsY: solveAdsY(0, -0.37, SIGHT_Y, 0.02, GUN_SCALE),
+    adsZ: -0.37,
+    adsPitch: 0,
     tuckY: STOCK_TUCK_Y * 0.85,
     tuckZ: STOCK_TUCK_Z * 0.8,
     scale: GUN_SCALE,
     slot: 0,
     isMelee: false,
+    muzzleZ: -0.54,
+    eject: { x: 0.042, y: 0.02, z: 0.0, vx: 1.35, vy: 1.15, vz: 0.45 },
     glow: null,
     glowMat: null,
     parts: { hammers: shotgun2.hammers },
   })
 
-  /**
-   * 转轮手枪 = 副武器：**位置更低、更靠右、更靠外**。
-   *
-   * - hipY 比步枪低 4.5cm、hipX 多 3cm：副武器的出现语境是"步枪打空了"，玩家
-   *   此刻的注意力在画面中心的敌人身上，枪压在右下角才不挡人也不被误认成主武器。
-   * - adsZ -0.40（步枪 -0.5）：臂短，贴到眼前才有"贴在脸上"的感觉。
-   * - adsPitch 0.012（0.7°）：转轮的照门在机匣后端、离眼睛更近，同样的 1° 会让
-   *   准星跳出画面，所以俯仰角只能给到步枪的一半。
-   */
-  const revolver = buildRevolver()
+  const revolver = buildRevolver(mats)
+  builtModels.push(revolver)
+  inkModel(revolver.group)
   register(5, {
     group: revolver.group,
     stock: null,
@@ -887,25 +824,24 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     pitch: 0.06,
     roll: 0.09,
     adsX: 0,
-    adsY: solveAdsY(0.012, -0.4, SIGHT_Y, 0.03, GUN_SCALE),
-    adsZ: -0.4,
-    adsPitch: 0.012,
+    adsY: solveAdsY(0, -0.36, SIGHT_Y, 0.03, GUN_SCALE),
+    adsZ: -0.36,
+    adsPitch: 0,
     tuckY: 0,
     tuckZ: 0,
     scale: GUN_SCALE,
     slot: 1,
     isMelee: false,
+    muzzleZ: -0.36,
+    eject: { x: 0.028, y: 0.03, z: 0.0, vx: 1.0, vy: 1.15, vz: 0.35 },
     glow: null,
     glowMat: null,
     parts: { cylinder: revolver.cylinder, hammer: revolver.hammer },
   })
 
-  /**
-   * 猎刀：没有机械瞄具，所以**没有 collinear 反解** —— 开镜时直接把刀往下压出
-   * 画面（adsY -0.95）。这是刻意的：刀没有射程，"瞄准"对它毫无意义，抬手就是
-   * 挥砍（meleeProgress）。
-   */
-  const knife = buildKnife()
+  const knife = buildKnife(mats)
+  builtModels.push(knife)
+  inkModel(knife.group)
   register(10, {
     group: knife.group,
     stock: null,
@@ -924,10 +860,11 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     scale: 0.9,
     slot: 2,
     isMelee: true,
+    muzzleZ: 0,
+    eject: null,
     glow: knife.glow,
     glowMat: knife.glowMat,
   })
-
   // ------------------------------------------------------------ 动画状态
 
   let current: WeaponRig = rigs.get(1)!
@@ -1039,16 +976,40 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     // ---- 局部机械：击锤/转轮跟着换弹与后坐动起来。
     // 以前这些零件只在构造时写死一个角度，整把枪像一块焊死的木板；现在
     // 由纯标量驱动，不引入 AnimationMixer，也不破坏确定性。
+    // 枪机动作：杠杆/击锤/转轮都是射击循环的一部分，不是只在换弹时动。
+    if (leverTimer > 0) leverTimer = Math.max(0, leverTimer - dt)
+    const leverPulse =
+      rig.parts?.lever !== undefined && leverTimer > 0
+        ? Math.sin((1 - leverTimer / LEVER_CYCLE) * Math.PI)
+        : 0
     if (rig.parts) {
+      if (rig.parts.lever) rig.parts.lever.rotation.x = leverPulse * 0.62
       const cycle = state.reloading ? Math.sin(phase * Math.PI) : 0
       const kick = state.recoil * 0.35
       const hammers = rig.parts.hammers ?? (rig.parts.hammer ? [rig.parts.hammer] : [])
       for (const hammer of hammers) {
         const base = (hammer.userData.baseX as number | undefined) ?? 0
-        hammer.rotation.x = base - cycle * 0.55 - kick
+        hammer.rotation.x = base - cycle * 0.55 - kick - leverPulse * 0.55
       }
       if (rig.parts.cylinder) {
-        rig.parts.cylinder.rotation.z = state.reloading ? phase * Math.PI * 2 : 0
+        if (state.reloading) {
+          const a = phase * Math.PI * 2
+          cylinderAngle = a
+          cylinderTarget = a
+          rig.parts.cylinder.rotation.z = a
+        } else {
+          cylinderAngle += (cylinderTarget - cylinderAngle) * Math.min(1, dt * 18)
+          rig.parts.cylinder.rotation.z = cylinderAngle
+        }
+      }
+    }
+
+    // 抛壳延迟：到枪机动作中段才把壳放出来。
+    if (pendingEject !== null) {
+      pendingEjectTimer -= dt
+      if (pendingEjectTimer <= 0) {
+        spawnShell(pendingEject)
+        pendingEject = null
       }
     }
 
@@ -1131,9 +1092,14 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
 
     // 位置：腰射位 → 开镜位按 ads 线性插值（ads 已经由调用方平滑过），
     // 再依次叠加摆动、疾跑、换弹、落地、切枪。
+    // 贴墙：枪口已经顶到墙面时，把整把枪往下压、枪口压低，避免视图模型
+    // 直接画穿墙。只动视觉，不动相机/射线。
+    const wall = state.wallBlock === undefined ? 0 : clamp01(state.wallBlock)
+
     const px =
       rig.hipX +
       (rig.adsX - rig.hipX) * ads +
+      wall * 0.03 +
       swayX +
       swaySprintX +
       SPRINT_X * sprint +
@@ -1142,7 +1108,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       SWITCH_SIDE * slotK * side
     const py =
       rig.hipY +
-      (rig.adsY - rig.hipY) * ads +
+      (rig.adsY - rig.hipY) * ads -
+      wall * 0.11 +
       swayY +
       bob * 0.6 +
       swaySprintY +
@@ -1183,13 +1150,16 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
         lagPitch = Math.max(-0.05, Math.min(0.05, lagPitch + lagVPitch * h))
       }
     }
-    const lagScale = settled * (1 - ads * 0.7) * motionScale
+    // 机瞄时彻底关掉相机滞后：带 30% 滞后时，转视角的瞬间枪身/照门会滑出
+    // 屏幕中心，没有准星后玩家会以为"瞄具歪了"。腰射仍然保留完整滞后。
+    const lagScale = settled * (1 - ads) * motionScale
 
     // 旋转：静态姿态随 ads 收敛到 0（开镜时枪身与视轴严格对齐，照门-准星
     // 连线才是水平的），再加后坐力、低头下垂、疾跑、换弹、手抖、切枪、挥砍滚转。
     const rx =
       rig.pitch * motion +
-      rig.adsPitch * ads +
+      rig.adsPitch * ads -
+      wall * 0.4 +
       state.recoil * 0.22 * settled +
       state.pitch * 0.06 * motion +
       SPRINT_PITCH * sprint -
@@ -1222,8 +1192,11 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     const stowed = state.scoped === true && ads > SCOPE_STOW_ADS
     if (root.visible === stowed) root.visible = !stowed
 
-    // 提枪抵肩：托从中线摆出去。乘 ads 而不是 step，过渡里托是"扫"出去的。
-    if (rig.stock !== null) rig.stock.position.set(0, -rig.tuckY * ads, rig.tuckZ * ads)
+    // 举枪到位后整块枪托（含托底和右手）在相机后面/脸颊旁，本来就不该
+    // 出现在画面里。旧实现只把 stock 往画面下平移，机匣和枪托之间会裂开
+    // 一条缝 —— 这就是"瞄准把枪拆开"的来源。现在枪托保持和机匣连在一起，
+    // 到 ADS 后半程整组隐藏；近平面同时把贴脸的托底裁掉。
+    if (rig.stock !== null) rig.stock.visible = ads < 0.72
 
     // 武器组自己的局部姿态：平时是恒等（每帧写一次，代价是 6 个赋值），
     // 挥砍时是那一刀。
@@ -1243,6 +1216,41 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
 
     camRoll = -MELEE_CAM_ROLL * punch
 
+    // ---- 枪口火光
+    //
+    // 只在前 55ms 可见，透明度和尺寸一起衰减。位置吃当前枪的 muzzleZ：
+    // 消音卡宾的枪口比温菲尔德远了 0.3m，火光不能永远画在同一个地方。
+    if (flashTimer > 0) {
+      flashTimer = Math.max(0, flashTimer - dt)
+      const k = flashTimer / FLASH_LIFE
+      flash.visible = true
+      flash.position.set(0, SIGHT_Y - 0.008, rig.muzzleZ)
+      flash.scale.setScalar(0.55 + 0.65 * k)
+      flash.rotation.z = time * 13.7
+      flashMat.uniforms.uIntensity.value = k * 1.6
+    } else if (flash.visible) {
+      flash.visible = false
+    }
+
+    // ---- 抛壳
+    for (const shell of shells) {
+      if (shell.life <= 0) continue
+      shell.life -= dt
+      const mesh = shell.mesh
+      if (shell.life <= 0 || mesh.position.y < -0.55) {
+        shell.life = 0
+        mesh.visible = false
+        continue
+      }
+      shell.vy -= 9.8 * dt
+      mesh.position.x += shell.vx * dt
+      mesh.position.y += shell.vy * dt
+      mesh.position.z += shell.vz * dt
+      mesh.rotation.x += shell.ax * dt
+      mesh.rotation.y += shell.ay * dt
+      mesh.rotation.z += shell.az * dt
+    }
+
     // ---- 旧武器甩出去
     if (outgoing !== null) {
       if (sw >= SWITCH_EXIT_END) {
@@ -1258,18 +1266,64 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     }
   }
 
+  /**
+   * 从当前枪的抛壳口弹一枚黄铜壳。
+   *
+   * 用 shellSeq 做确定性抖动：同一局里每发弹的抛出方向/翻滚都不同，
+   * 但重放同一段输入时完全一致（不碰 Math.random）。
+   */
+  const spawnShell = (eject: NonNullable<WeaponRig['eject']>): void => {
+    shellSeq++
+    const jitter = (n: number): number => {
+      const s = Math.sin(shellSeq * 12.9898 + n * 78.233) * 43758.5453
+      return (s - Math.floor(s)) * 2 - 1
+    }
+    const shell = shells[shellCursor]!
+    shellCursor = (shellCursor + 1) % shells.length
+    shell.mesh.position.set(eject.x, eject.y, eject.z)
+    shell.mesh.rotation.set(jitter(1) * 0.5, jitter(2) * 0.5, jitter(3) * 0.5)
+    shell.vx = eject.vx + jitter(4) * 0.28
+    shell.vy = eject.vy + jitter(5) * 0.22
+    shell.vz = eject.vz + jitter(6) * 0.16
+    shell.ax = jitter(7) * 26
+    shell.ay = jitter(8) * 26
+    shell.az = jitter(9) * 26
+    shell.life = 0.9
+    shell.mesh.visible = true
+  }
+
+  /**
+   * 扣扳机：点枪口火光，并启动这一发的枪机动作。
+   *
+   * 抛壳不是同帧弹出：杠杆步枪的壳在杠杆压到一半时才退出来，泵动/双管
+   * 也是动作中段；延迟 0.1s 让"枪机在动"和"壳飞出来"读成同一件事。
+   */
+  const triggerFlash = (): void => {
+    if (current.isMelee) return
+    flashTimer = FLASH_LIFE
+    if (current.parts?.lever) leverTimer = LEVER_CYCLE
+    if (current.parts?.cylinder) cylinderTarget += Math.PI / 3
+    if (current.eject !== null) {
+      pendingEject = current.eject
+      pendingEjectTimer = current.parts?.lever ? 0.10 : 0.02
+    }
+  }
+
   return {
     root,
     setWeapon,
     update,
+    flash: triggerFlash,
     get cameraRoll(): number {
       return camRoll
     },
     dispose(): void {
-      for (const geo of disposables) geo.dispose()
-      for (const mat of ownedMaterials) mat.dispose()
-      disposables.length = 0
-      ownedMaterials.length = 0
+      // 每把枪自己持有一批合并几何与刀光克隆材质；逐个还回去。
+      for (const model of builtModels) model.dispose()
+      builtModels.length = 0
+      flashGeo.dispose()
+      flashMat.dispose()
+      shellGeo.dispose()
       outgoing = null
       root.clear()
     },

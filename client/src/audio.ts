@@ -837,6 +837,25 @@ export class AudioKit {
     this.seal(o)
   }
 
+  /**
+   * 抛壳：一声很轻的高频金属碰响。
+   *
+   * 它必须比枪声晚：枪声是"我开火了"，这一声是"壳飞出去落地了"。
+   * 电平压得很低（0.18），否则连射时它会变成一串敲铁皮的噪音。
+   */
+  shellEject(): void {
+    const noise = this.noise
+    const o = this.open({ priority: PRIORITY.self, level: 0.18, wet: 0.04 })
+    if (o === null) return
+    if (noise !== null) {
+      const { ctx, recipe, input } = o
+      const t = ctx.currentTime + 0.18
+      click(ctx, recipe, input, noise, t, 5200, 0.1, 0.02)
+      click(ctx, recipe, input, noise, t + 0.035, 3700, 0.06, 0.03)
+    }
+    this.seal(o)
+  }
+
   /** 刀出鞘：刀身擦鞘（带通 1800 → 5200 上扫）+ 扣到位的一声。 */
   knifeDraw(): void {
     const noise = this.noise
