@@ -1038,6 +1038,68 @@ export class AudioKit {
     this.seal(o)
   }
 
+  /**
+   * 子弹打进身体：低频"钝" + 湿噪声 + 爆头脆裂。
+   *
+   * 和 `hitConfirm` 的 UI 叮是两件事：那个只回答"记分有效"，这个回答
+   * "打进去了"。没有它，命中反馈就只剩屏幕上一个 X 和一声电子音，枪的
+   * 重量完全没有传到手上。距离/遮挡由 open() 按命中点算，所以远处中弹
+   * 是闷的，贴脸中弹才有那一下"噗"。
+   *
+   * @param damage 用来定重量：105 的狙击比 42 的卡宾沉一倍多。
+   */
+  fleshImpact(at: WorldPoint, damage: number, headshot: boolean, occluded = false): void {
+    const noise = this.noise
+    const power = Math.min(1, Math.max(0.2, damage / 120))
+    const o = this.open({ at, level: 0.35 + power * 0.25, priority: PRIORITY.self, occluded })
+    if (o === null) return
+    if (noise === null) {
+      this.seal(o)
+      return
+    }
+    const { ctx, recipe, input } = o
+    const t = ctx.currentTime + 0.002
+
+    // 1. 体重：比脚步更低、更短。命中越重，下潜越深。
+    tone(ctx, recipe, input, {
+      type: 'sine',
+      from: 120 - power * 30,
+      to: 48 - power * 6,
+      at: t,
+      peak: 0.26 + power * 0.22,
+      attack: 0.003,
+      dur: 0.1 + power * 0.07,
+    })
+    // 2. 湿声：500–800Hz 的带通，Q 压低，读成"打进软组织"而不是敲木头。
+    shake(ctx, recipe, input, {
+      noise,
+      at: t + 0.004,
+      peak: 0.24 + power * 0.18,
+      attack: 0.002,
+      dur: 0.08 + power * 0.05,
+      type: 'bandpass',
+      freq: 520 + power * 220,
+      q: 1.1,
+      hp: 70,
+      lp: 1800,
+      rate: 0.9 + power * 0.3,
+    })
+    // 3. 爆头：额外一记短脆的高频，和普通命中一秒就能分开。
+    if (headshot) {
+      click(ctx, recipe, input, noise, t, 3000, 0.16, 0.025)
+      tone(ctx, recipe, input, {
+        type: 'triangle',
+        from: 2200,
+        to: 1400,
+        at: t,
+        peak: 0.12,
+        attack: 0.002,
+        dur: 0.04,
+      })
+    }
+    this.seal(o)
+  }
+
   /** @param headshot 决定用更脆、更高的"叮"。 */
   hitConfirm(headshot: boolean): void {
     const o = this.open({ priority: PRIORITY.self, level: headshot ? 0.3 : 0.22, wet: 0.05 })
@@ -1664,16 +1726,35 @@ export class AudioKit {
   }
 
   /**
+   * 怪物脚步。
+   *
+   * 和人的脚步共用同一套材质/地面音，但重量不同：猎犬轻快，行尸更重，
+   * Boss 是"一步一震"。没有单独的怪物采样，靠 pitch 与电平做出体型差 ——
+   * 玩家听到的应该是"有东西在靠近"，而不是"又一个人在走"。
+   */
+  monsterStepAt(at: WorldPoint, surface: FootstepSurface, kind: number, occluded = false): void {
+    const weight = kind === 1 ? 0.7 : kind >= 3 ? 1.9 : 1.25
+    this.step(surface, false, false, at, occluded, weight)
+  }
+
+  /**
    * 一步。
    *
    * 三层叠起来才是"踩在某种材质上"：闷响（体重）+ 摩擦噪声（鞋底）+ 特征音
    * （木头的吱呀、金属的余响、水/泥的水花）。每一步都随机化音高和时长，
    * 因为完全一样的采样重复二十次，耳朵立刻就把它识别成"机器"。
    */
-  private step(surface: FootstepSurface, sprinting: boolean, crouching: boolean, at: WorldPoint | null, occluded = false): void {
+  private step(
+    surface: FootstepSurface,
+    sprinting: boolean,
+    crouching: boolean,
+    at: WorldPoint | null,
+    occluded = false,
+    weight = 1,
+  ): void {
     const noise = this.noise
     const spec = SURFACES[surface]
-    const opts: OpenOptions = { level: sprinting ? spec.peak * 1.35 : spec.peak }
+    const opts: OpenOptions = { level: (sprinting ? spec.peak * 1.35 : spec.peak) * weight }
     // 有坐标就交给 open() 按距离算混响：10m 外的脚步和 60m 外的不该站在同一个空间里。
     if (at !== null) opts.at = at
     else opts.wet = 0.02
@@ -1687,8 +1768,10 @@ export class AudioKit {
     const { ctx, recipe, input } = o
     const t = ctx.currentTime + 0.002 + jitter(0.004)
     // 蹲行的目标是"几乎听不见但不静音"：电平砍到 35%，同时把 2.4k 以上全削掉。
-    const level = crouching ? 0.35 : sprinting ? 1.5 : 1
-    const pitch = 1 + jitter(spec.jitter) // 每一步音高都不同
+    const level = (crouching ? 0.35 : sprinting ? 1.5 : 1) * weight
+    // 体型越大，落地频率越低。用立方根而不是线性：Boss 1.9 倍重量只降约 19%，
+    // 线性会把它的脚步压成一声闷雷，反而听不出方向。
+    const pitch = (1 + jitter(spec.jitter)) / Math.cbrt(weight) // 每一步音高都不同
     const dur = spec.dur * (sprinting ? 0.85 : 1)
 
     // 1. 闷响：体重落地的低频。wood 的 95 → 52Hz 最"空心"，stone 高一点更"实"。

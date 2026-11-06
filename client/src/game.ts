@@ -856,6 +856,9 @@ export class Game {
     // 怪物不做客户端预测：它们由服务端独占地推进，且 20Hz 的快照 + 渲染器
     // 内部插值已经足够顺。这里只把最新一帧递过去。
     this.currentMonsters = snapshot.monsters
+    // 怪物脚步：之前完全没接音频，玩家只能听见吼叫和枪声，一只猎犬绕后
+    // 贴到脸上之前没有任何声音线索。这里按快照位移触发脚步，体型决定重量。
+    this.trackMonsterAudio(snapshot.monsters, snapshot.serverTime)
     // Boss 不在事件流里：它的出现与倒下都只体现在快照的种类码上。
     // 两张吼各播一次，靠 bossSeen 记住上一次的状态。
     const boss = snapshot.monsters.find((m) => {
@@ -974,6 +977,58 @@ export class Game {
     state.lastX = player.x
     state.lastZ = player.z
     state.lastTime = now
+  }
+
+  /**
+   * 怪物脚步：按 20Hz 快照的位移触发，而不是按时间硬跳。
+   *
+   * 和远端玩家同一套思路：移动距离累积到步幅才响一步，站住/被挤住的怪
+   * 不会原地踏步；传送/刷新的几十米位移直接丢弃。体型决定步幅与重量：
+   * 猎犬小碎步、行尸正常、Boss 一步一震。
+   */
+  private trackMonsterAudio(monsters: MonsterView[], now: number): void {
+    const eye = this.character?.eye
+    const seen = new Set<number>()
+    for (const monster of monsters) {
+      seen.add(monster.id)
+      let state = this.monsterAudio.get(monster.id)
+      if (state === undefined) {
+        this.monsterAudio.set(monster.id, {
+          x: monster.x,
+          z: monster.z,
+          time: now,
+          accum: 0,
+        })
+        continue
+      }
+      const dt = (now - state.time) / 1000
+      const moved = Math.hypot(monster.x - state.x, monster.z - state.z)
+      if (dt > 1e-4 && moved < 5 && moved > 0.005 && monster.state !== 3 /* dead */) {
+        const speed = moved / dt
+        const at = { x: monster.x, y: monster.y, z: monster.z }
+        const distance = eye ? Math.hypot(at.x - eye.x, at.y - eye.y, at.z - eye.z) : Infinity
+        if (speed > 0.35 && distance <= 45) {
+          state.accum += moved
+          // 步幅按体型：猎犬 1.0m、行尸 1.6m、Boss/巨像 2.2m。
+          const stride = monster.kind === 1 ? 1.0 : monster.kind >= 3 ? 2.2 : 1.6
+          if (state.accum >= stride) {
+            state.accum = 0
+            this.audio.monsterStepAt(
+              at,
+              surfaceAt(this.options.level, at),
+              monster.kind,
+              this.heardThrough(at),
+            )
+          }
+        }
+      }
+      state.x = monster.x
+      state.z = monster.z
+      state.time = now
+    }
+    for (const id of [...this.monsterAudio.keys()]) {
+      if (!seen.has(id)) this.monsterAudio.delete(id)
+    }
   }
 
   /**
@@ -1097,6 +1152,11 @@ export class Game {
   /** 打空的次数（只在真的放出那声「咔」时 +1）。探针用它区分「没反应」与「空仓」。 */
   private dryShots = 0
   private currentMonsters: MonsterView[] = []
+  /** 每只怪物上一次快照的位置与累计步幅（20Hz 位移驱动脚步）。 */
+  private readonly monsterAudio = new Map<
+    number,
+    { x: number; z: number; time: number; accum: number }
+  >()
   /**
    * 下一次可以放"怪的动静"的倒计时（秒）。
    *
@@ -1166,15 +1226,24 @@ export class Game {
           this.heardThrough(event.origin),
         )
       } else if (event.kind === 2 /* Hit */) {
-        const distance = eye ? dist(eye, event.point) : 999
         if (event.attackerId === this.myId) {
           this.feedback.hit(event.headshot, event.damage)
           this.renderer.hitPunch(event.damage, event.headshot, false)
           this.audio.hitMarker(event.headshot)
           // 手里是刀时命中声不能借用"枪命中"那声金属叮：刀切进去和子弹打进身体
           // 是两件事，听不出来就等于每次挥刀都在怀疑自己打没打中。
-          if (this.heldSlot === 2) this.playKnifeImpact(event.point, 'flesh')
-          else this.audio.hitConfirm(event.headshot)
+          if (this.heldSlot === 2) {
+            this.playKnifeImpact(event.point, 'flesh')
+          } else {
+            this.audio.hitConfirm(event.headshot)
+            // UI 叮只说明"记分有效"；这声才是子弹打进身体的重量。
+            this.audio.fleshImpact(
+              event.point,
+              event.damage,
+              event.headshot,
+              this.heardThrough(event.point),
+            )
+          }
           this.spawnImpact(event.point, 'flesh')
           // 打中了人：血花 + 音效都在本地给，不再借用状态栏（状态栏会被
           // 后面的提示覆盖掉，而命中反馈必须立刻、且必须有声音）。
@@ -1183,12 +1252,15 @@ export class Game {
           // 我被打中：方向指示 + 受伤音。方向来自命中点相对我的位置，
           // 这样即使我在看别处也知道该往哪转向。
           this.audio.hurt()
+          // 自己中弹也要有"打进身体"的一下；方向指示是战术信息，这声是体感。
+          this.audio.fleshImpact(event.point, event.damage, event.headshot, false)
           this.options.onTraitFx?.(Trait.Bulwark)
           this.spawnImpact(event.point, 'flesh')
           if (eye) this.feedback.damageFrom(angleTo(eye, event.point, this.input.yaw))
         } else {
-          this.audio.impact(event.point, distance)
-          this.spawnImpact(event.point, this.surfaceAt(event.point))
+          // 别人打中别人：命中事件一定是肉体，不再用墙面材质声。
+          this.audio.fleshImpact(event.point, event.damage, event.headshot, this.heardThrough(event.point))
+          this.spawnImpact(event.point, 'flesh')
         }
       } else if (event.kind === 3 /* Death */) {
         if (event.victimId === this.myId) this.feedback.died()
@@ -1212,17 +1284,26 @@ export class Game {
         }
         this.audio.respawn()
       } else if (event.kind === 5 /* MonsterHit */) {
-        const distance = eye ? dist(eye, event.point) : 999
         if (event.attackerId === this.myId) {
           // 打中怪走和打中人同一套命中反馈：玩家不需要知道"这一枪打的不是人"，
           // 他只需要立刻知道"打中了"。
           this.feedback.hit(false, event.damage)
           this.renderer.hitPunch(event.damage, false, false)
           this.audio.hitMarker(false)
-          if (this.heldSlot === 2) this.playKnifeImpact(event.point, 'flesh')
-          else this.audio.hitConfirm(false)
+          if (this.heldSlot === 2) {
+            this.playKnifeImpact(event.point, 'flesh')
+          } else {
+            this.audio.hitConfirm(false)
+            this.audio.fleshImpact(
+              event.point,
+              event.damage,
+              false,
+              this.heardThrough(event.point),
+            )
+          }
+        } else {
+          this.audio.fleshImpact(event.point, event.damage, false, this.heardThrough(event.point))
         }
-        this.audio.impact(event.point, distance)
       } else if (event.kind === 6 /* MonsterDeath */) {
         this.audio.death()
         const at = this.monsterPoint(event.monsterId)
