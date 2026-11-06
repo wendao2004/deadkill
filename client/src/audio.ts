@@ -647,12 +647,149 @@ export class AudioKit {
     this.seal(o)
   }
 
-  /** 空仓的"咔"：极短、极窄、没有低频 —— 一听就知道没子弹。 */
-  dryFire(): void {
+  /**
+   * 空仓的"咔—嗒"：极短、窄带，但补一记低频让"枪机空撞"有实体。
+   *
+   * 单声高频 click 在夜图里很容易被当成环境音；加一声下坠的 120→70Hz
+   * 才能读成"扳机扣到底、击锤打空"。
+   */
+  dryFire(weaponId = 0): void {
     const noise = this.noise
-    const o = this.open({ priority: PRIORITY.self, level: 0.3, wet: 0.02 })
+    const weight = shotWeight(weaponId)
+    const o = this.open({ priority: PRIORITY.self, level: 0.42, wet: 0.02 })
     if (o === null) return
-    if (noise !== null) click(o.ctx, o.recipe, o.input, noise, o.ctx.currentTime + 0.002, 2600, 0.3, 0.045)
+    if (noise === null) {
+      this.seal(o)
+      return
+    }
+    const { ctx, recipe, input } = o
+    const t = ctx.currentTime + 0.002
+    click(ctx, recipe, input, noise, t, 2600 - weight * 500, 0.34, 0.045)
+    click(ctx, recipe, input, noise, t + 0.035, 1700 - weight * 300, 0.2, 0.05)
+    tone(ctx, recipe, input, {
+      type: 'sine',
+      from: 120 - weight * 40,
+      to: 70,
+      at: t,
+      peak: 0.1 + weight * 0.08,
+      attack: 0.004,
+      dur: 0.09,
+    })
+    this.seal(o)
+  }
+
+  /** 最后一发打空：枪机/弹仓空仓的机构声，和"扣空扳机"分开。 */
+  magEmpty(weaponId = 0): void {
+    const noise = this.noise
+    const weight = shotWeight(weaponId)
+    const o = this.open({ priority: PRIORITY.self, level: 0.5, wet: 0.03 })
+    if (o === null) return
+    if (noise === null) {
+      this.seal(o)
+      return
+    }
+    const { ctx, recipe, input } = o
+    // 稍微晚于枪声，才不会被枪口噪声完全盖住。
+    const t = ctx.currentTime + 0.055
+    click(ctx, recipe, input, noise, t, 2200 - weight * 400, 0.3, 0.045)
+    click(ctx, recipe, input, noise, t + 0.06, 1450 - weight * 300, 0.22, 0.06)
+    tone(ctx, recipe, input, {
+      type: 'sine',
+      from: 130 - weight * 40,
+      to: 58,
+      at: t,
+      peak: 0.12 + weight * 0.1,
+      attack: 0.004,
+      dur: 0.13,
+    })
+    this.seal(o)
+  }
+
+  /**
+   * 左轮转轮棘轮：一串不匀的金属"嗒"，带一条低通吱呀。
+   *
+   * 转轮不是电机，每格之间有小回弹；所以 click 的间隔/频率都做 ±10% 抖动，
+   * 再叠一条低频带通噪声当"转轴干涩的吱呀"。短版用于每发吐轮，长版用于换弹。
+   */
+  cylinderRatchet(long = false): void {
+    const noise = this.noise
+    const o = this.open({ priority: PRIORITY.self, level: long ? 0.44 : 0.32, wet: 0.02 })
+    if (o === null) return
+    if (noise === null) {
+      this.seal(o)
+      return
+    }
+    const { ctx, recipe, input } = o
+    const t = ctx.currentTime + (long ? 0.05 : 0.075)
+    const count = long ? 6 : 2
+    for (let i = 0; i < count; i++) {
+      const k = i / Math.max(1, count - 1)
+      const at = t + i * (long ? 0.055 : 0.045) * (0.9 + jitter(0.2))
+      click(ctx, recipe, input, noise, at, 1800 + k * 900 + jitter(120), long ? 0.18 : 0.14, 0.03)
+    }
+    shake(ctx, recipe, input, {
+      noise,
+      at: t,
+      peak: long ? 0.12 : 0.06,
+      attack: 0.02,
+      dur: long ? 0.46 : 0.12,
+      type: 'bandpass',
+      freq: 680,
+      sweepTo: 1500,
+      q: 1.2,
+      hp: 220,
+      lp: 3200,
+      rate: 0.7,
+    })
+    this.seal(o)
+  }
+
+  /** 收刀花式：两段反向掠过空气的风声 + 一记很轻的刃鸣。 */
+  knifeFlourish(): void {
+    const noise = this.noise
+    const o = this.open({ priority: PRIORITY.self, level: 0.36, wet: 0.03 })
+    if (o === null) return
+    if (noise === null) {
+      this.seal(o)
+      return
+    }
+    const { ctx, recipe, input } = o
+    const t = ctx.currentTime + 0.06
+    shake(ctx, recipe, input, {
+      noise,
+      at: t,
+      peak: 0.17,
+      attack: 0.03,
+      dur: 0.28,
+      type: 'bandpass',
+      freq: 620,
+      sweepTo: 2600,
+      q: 0.9,
+      hp: 260,
+      rate: 1.1,
+    })
+    shake(ctx, recipe, input, {
+      noise,
+      at: t + 0.22,
+      peak: 0.12,
+      attack: 0.025,
+      dur: 0.24,
+      type: 'bandpass',
+      freq: 2400,
+      sweepTo: 760,
+      q: 1.1,
+      hp: 700,
+      rate: 1,
+    })
+    tone(ctx, recipe, input, {
+      type: 'triangle',
+      from: 1800,
+      to: 2400,
+      at: t + 0.24,
+      peak: 0.055,
+      attack: 0.01,
+      dur: 0.2,
+    })
     this.seal(o)
   }
 
@@ -738,6 +875,26 @@ export class AudioKit {
     click(ctx, recipe, input, noise, t, 1800 - weight * 500, 0.22, 0.05)
     // 弹匣滑出的摩擦：低通 700 的噪声，起音很软
     shake(ctx, recipe, input, { noise, at: t + 0.05, peak: 0.16 + weight * 0.1, attack: 0.012, dur: 0.14, type: 'lowpass', freq: 700, rate: 0.6 })
+    // 左轮换弹：弹仓甩出后逐格上弹，六声棘轮 + 一条转轴的干涩摩擦。
+    if (WEAPONS[weaponId]?.kind === 'revolver') {
+      for (let i = 0; i < 6; i++) {
+        click(ctx, recipe, input, noise, t + 0.12 + i * 0.075 * (0.92 + jitter(0.16)), 1900 + i * 130 + jitter(120), 0.14, 0.03)
+      }
+      shake(ctx, recipe, input, {
+        noise,
+        at: t + 0.1,
+        peak: 0.1,
+        attack: 0.02,
+        dur: 0.5,
+        type: 'bandpass',
+        freq: 650,
+        sweepTo: 1400,
+        q: 1.1,
+        hp: 220,
+        lp: 3000,
+        rate: 0.7,
+      })
+    }
     this.seal(o)
   }
 

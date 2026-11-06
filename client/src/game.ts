@@ -1268,6 +1268,11 @@ export class Game {
         if (event.killerId === this.myId) {
           this.renderer.hitPunch(80, event.headshot, true)
           this.audio.killConfirm(event.headshot)
+          // 刀杀收尾：顺手转一刀。枪杀不触发 —— 花式只属于近战。
+          if (this.heldSlot === 2) {
+            this.renderer.flourish()
+            this.audio.knifeFlourish()
+          }
         }
         this.audio.death()
         this.feedback.kill(
@@ -1318,6 +1323,10 @@ export class Game {
           // 打死怪也要有收尾声：爆头一枪倒地和打中但没倒是两种不同的结果。
           this.renderer.hitPunch(event.monsterKind >= 3 ? 90 : 45, false, true)
           this.audio.killConfirm(event.monsterKind >= 3)
+          if (this.heldSlot === 2) {
+            this.renderer.flourish()
+            this.audio.knifeFlourish()
+          }
         }
       } else if (event.kind === 7 /* MonsterShot */) {
         // 持枪行尸开枪：曳光 + 落在它那个方向上的枪声，和玩家那一枪完全同款。
@@ -1451,7 +1460,7 @@ export class Game {
       if (now >= this.dryReadyAt) {
         this.dryReadyAt = now + DRY_FIRE_GAP_MS
         this.dryShots++
-        this.audio.dryFire()
+        this.audio.dryFire(spec?.id ?? 0)
       }
       return
     }
@@ -1468,6 +1477,10 @@ export class Game {
     if (spec?.kind === 'revolver') this.options.onTraitFx?.(Trait.Ambidextrous)
     if (this.input.ads) this.options.onTraitFx?.(Trait.IronGrip)
     this.renderer.onLocalShot(kick)
+    // 左轮吐轮：每发转 60°，棘轮声必须跟着枪机走，而不是跟着键盘。
+    if (spec?.kind === 'revolver') this.audio.cylinderRatchet(false)
+    // 最后一发：枪机空仓的机构声。它和"扣空扳机"的 dryFire 是两件事。
+    if (spec !== undefined && spec.magazine > 0 && meNow?.ammo === 1) this.audio.magEmpty(spec.id)
     // 抛壳声与枪声分开：枪声在第 0 帧，黄铜落地/碰撞的高频"叮"要在
     // 壳飞出去之后才出现。AudioKit 内部按优先级调度，不会抢枪声。
     this.audio.shellEject()
@@ -1767,8 +1780,12 @@ export class Game {
     this.switchMs = spec.switchMs * switchScale(this.options.traits)
     // 切枪的机械声是"我在干什么"的听觉确认，必须和按键同帧。
     // 刀是拔鞘而不是上膛：一声金属摩擦比枪机上膛声更像那么回事。
-    if (slot === 2) this.audio.knifeDraw()
-    else this.audio.weaponSwitch(weaponId)
+    if (slot === 2) {
+      this.audio.knifeDraw()
+      // 收刀花式：出鞘后顺势转一圈手腕。视觉由 viewmodel 的 flourish 驱动，
+      // 声音在这里起，晚 60ms，不和拔鞘声糊在一起。
+      this.audio.knifeFlourish()
+    } else this.audio.weaponSwitch(weaponId)
     this.net.sendSlot(slot)
   }
 
