@@ -88,6 +88,7 @@ import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './sh
 import { createViewmodel, type Viewmodel, type ViewmodelKit, type ViewmodelState } from './viewmodel.ts'
 
 import {
+  BODY_CACHE_TTL_MS,
   DEFAULT_WEAPON_ID,
   SCOPE_MIN_ZOOM,
   WEAPONS,
@@ -394,6 +395,14 @@ export class Renderer {
   private cssHeight = 1
   private readonly levelGroup = new Group()
   private readonly avatars = new Map<number, RemoteAvatar>()
+  /**
+   * 玩家尸体。服务端的 bodyCaches 只发给"离得近的人一个 spotId"，客户端拿不到
+   * 死亡坐标；但快照里有死亡瞬间的位置，所以这里在第一次看到 alive=0 时把
+   * 远端猎人放倒留在原地，保留 BODY_CACHE_TTL_MS，与可搜刮的尸体缓存同寿。
+   */
+  private readonly corpses: { group: Group; model: HunterModel; age: number }[] = []
+  /** 上一次快照里这个玩家是否活着；用来识别"刚死"这一帧。 */
+  private readonly wasAlive = new Map<number, boolean>()
   /** 角色/怪物的接地阴影共用一张贴图和材质，避免每个角色一份。 */
   private readonly shadowTexture = createShadowTexture()
   private readonly shadowMaterial = createShadowMaterial(this.shadowTexture, 0.5)
@@ -703,8 +712,14 @@ export class Renderer {
       },
       // 第一人称武器是写实档里最不该被墨线勾边的一块：它离镜头 0.4m，
       // 墨线会变成一圈黑描边，正好和 PBR 的金属高光打架。
+      // 唯一例外是准星/照门：几毫米宽的亮片只有靠一圈细线才能在暗墙前读出来。
       addInk: (mesh, pixels) => {
-        if (!this.realistic) this.addInk(mesh, pixels)
+        if (!this.realistic) {
+          this.addInk(mesh, pixels)
+          return
+        }
+        const material = mesh.material as Material
+        if (material?.userData?.isSight === true) this.addInk(mesh, 1.6)
       },
       textures: {
         metal: this.hunterTextures.metal,
@@ -1029,13 +1044,16 @@ export class Renderer {
       base.lerp(new Color(lum, lum, lum), 0.2)
       base.multiplyScalar(0.9)
     }
+    // 带自发光的枪件（准星/照门/刀口）是"涂了一层亮漆的金属"，不是裸金属：
+    // 金属度 1 会把固有色反射掉，在暗夜棚拍灯下反而发灰，正好丢掉唯一的瞄准点。
+    const painted = (opts.emissive ?? 0) >= 0.4
     const mat = new MeshStandardMaterial({
       color: base,
-      metalness: metal ? 1 : 0,
-      roughness,
+      metalness: metal && !painted ? 1 : 0,
+      roughness: painted ? 0.5 : roughness,
       // 夜景 IBL 很暗，给一点加成；否则金属只剩棚拍灯的一点点直接高光，
       // 仍然读成灰板。环境本身来自天空球，不会把暗部洗白。
-      envMapIntensity: metal ? 1.6 : 0.9,
+      envMapIntensity: painted ? 0.5 : metal ? 1.6 : 0.9,
       fog: opts.fog ?? true,
     })
     if (opts.map !== undefined) mat.map = opts.map
@@ -1450,14 +1468,36 @@ export class Renderer {
    * 摆模型、转向、按血量改颜色。
    */
   syncAvatars(players: PlayerSnapshot[], myId: number, dt: number): void {
+    // 尸体与可搜刮缓存同寿（120s）；到点就直接移出场景，不做淡出 ——
+    // 淡出需要每具尸体单独改材质透明度，而玩家真正关心的是"这 2 分钟里能搜"。
+    const corpseTtl = BODY_CACHE_TTL_MS / 1000
+    for (let i = this.corpses.length - 1; i >= 0; i--) {
+      const corpse = this.corpses[i]!
+      corpse.age += dt
+      if (corpse.age >= corpseTtl) {
+        this.scene.remove(corpse.group)
+        corpse.model.dispose()
+        this.corpses.splice(i, 1)
+      }
+    }
+
     const seen = new Set<number>()
+    const present = new Set<number>()
+    for (const player of players) present.add(player.id)
     for (const player of players) {
       if (player.id === myId) continue
       if ((player.flags & StateFlags.Alive) === 0) {
+        // 第一次看到这个玩家死亡：把他放倒在死亡位置。之后即使他复活，
+        // 尸体也不会跟着走 —— 它属于"上一次死亡"，与 bodyCaches 一致。
+        if (this.wasAlive.get(player.id) !== false) {
+          this.spawnCorpse(player)
+          this.wasAlive.set(player.id, false)
+        }
         const dead = this.avatars.get(player.id)
         if (dead) dead.group.visible = false
         continue
       }
+      this.wasAlive.set(player.id, true)
       seen.add(player.id)
       let avatar = this.avatars.get(player.id)
       if (!avatar) {
@@ -1506,6 +1546,28 @@ export class Renderer {
         this.avatars.delete(id)
       }
     }
+    // 离开对局的玩家不再需要"上一次是否活着"；尸体照常按 TTL 消失。
+    for (const id of [...this.wasAlive.keys()]) if (!present.has(id)) this.wasAlive.delete(id)
+  }
+
+  /**
+   * 在死亡位置放一具猎人模型。
+   *
+   * 没有骨骼/死亡动画，直接用程序化猎人的刚体姿势：绕 X 轴放倒、抬到地面
+   * 之上。远处看到"地上躺着一个宽檐帽的人"就足够，近处也不会穿模到地下。
+   */
+  private spawnCorpse(player: PlayerSnapshot): void {
+    const group = new Group()
+    group.position.set(player.x, player.y, player.z)
+    group.rotation.y = player.yaw
+    const model = createHunterModel(this.hunterMaterials, { addInk: () => {} })
+    // 模型原点在脚底、身体沿 +Y；绕 X 转 -90° 后沿 -Z 躺下，再抬 0.24m
+    // 让大衣/帽子贴在地面而不是埋进去。
+    model.root.rotation.x = -Math.PI / 2
+    model.root.position.y = 0.24
+    group.add(model.root)
+    this.scene.add(group)
+    this.corpses.push({ group, model, age: 0 })
   }
 
   private createAvatar(): RemoteAvatar {
@@ -1679,6 +1741,12 @@ export class Renderer {
     this.atmo.dispose()
     for (const avatar of this.avatars.values()) avatar.model.dispose()
     this.avatars.clear()
+    for (const corpse of this.corpses) {
+      this.scene.remove(corpse.group)
+      corpse.model.dispose()
+    }
+    this.corpses.length = 0
+    this.wasAlive.clear()
     this.hunterTextures.dispose()
     for (const maps of Object.values(this.surfaceMaps)) maps.dispose()
     this.post.dispose()

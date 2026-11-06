@@ -537,7 +537,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       surface: 'metal',
       specular: 0.20,
       rim: 0.10,
-      emissive: 0.5,
+      // 0.5 → 0.8：写实档的 PBR 会给它加环境反射与轮廓光，但准星本身必须
+      // 是画面里最稳的亮点，不能被背景或机匣吃掉。
+      emissive: 0.8,
     }),
     bore: kit.toon(0x0a0d12, { hatch: 0, specular: 0 }),
     blade: kit.toon(0x8c99aa, {
@@ -560,6 +562,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     }),
     sleeve: kit.toon(0x3c3833, { hatch: 0.10, specular: 0.02 }),
   }
+  // 写实档不再给枪身描边，但准星/照门必须保留一圈细线：它们只有几毫米宽，
+  // 在暗墙/机匣上没有任何轮廓就真的"看不见"了。Renderer 只认这个标记。
+  mats.sight.userData.isSight = true
 
   /** 武器模型自己持有的几何与克隆材质（刀光）。dispose 时逐个释放。 */
   const builtModels: { dispose(): void }[] = []
@@ -1197,6 +1202,16 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     // 一条缝 —— 这就是"瞄准把枪拆开"的来源。现在枪托保持和机匣连在一起，
     // 到 ADS 后半程整组隐藏；近平面同时把贴脸的托底裁掉。
     if (rig.stock !== null) rig.stock.visible = ads < 0.72
+    // 机械瞄具抬到位后，击锤/杠杆会挡在照门前方（尤其是杠杆枪的高击锤），
+    // 从后照门看过去正好压住准星。ADS 过半就把这些活动件收起来，腰射不受影响。
+    const clearSight = ads > 0.55
+    if (rig.parts) {
+      if (rig.parts.hammer !== undefined) rig.parts.hammer.visible = !clearSight
+      if (rig.parts.hammers !== undefined) {
+        for (const hammer of rig.parts.hammers) hammer.visible = !clearSight
+      }
+      if (rig.parts.lever !== undefined) rig.parts.lever.visible = !clearSight
+    }
 
     // 武器组自己的局部姿态：平时是恒等（每帧写一次，代价是 6 个赋值），
     // 挥砍时是那一刀。
