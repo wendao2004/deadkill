@@ -76,7 +76,7 @@ import { impactSurfaceOf, surfaceAt } from './surfaces.ts'
 import type { MarkerClue, ObjectiveView } from './markers.ts'
 import type { ImpactKind } from './vfx.ts'
 import type { MonsterView } from './monsters.ts'
-import { loadSavedSettings, type MenuSettings } from './settings.ts'
+import { loadSavedSettings, type GraphicsQuality, type MenuSettings } from './settings.ts'
 
 /** 空数组常量：每帧给罗盘传"没有撤离点"时不分配新数组。 */
 const NO_POINTS: { x: number; z: number }[] = []
@@ -380,6 +380,31 @@ export class Game {
    * 任何一次"忘记透传"都会让滑条看起来没反应。
    */
   private settings: MenuSettings = loadSavedSettings()
+  /** 当前实际画质档（auto 会被解析成具体档；运行中只在持续掉帧时降档）。 */
+  private qualityTier: 'performance' | 'balanced' | 'quality' = 'balanced'
+  /** 连续多少帧明显超标；满 60 帧才动分辨率/画质，避免被单次尖峰带着抖。 */
+  private lowFrameFrames = 0
+  /**
+   * 本地角色最近两个固定步的脚底位置/眼高，用于渲染插值。
+   *
+   * 旧实现直接把 60Hz 的预测位置塞给相机：144Hz 屏幕上位置每 16.7ms 跳一次、
+   * 视角每帧都在转，读起来就是"移动卡卡的"。`kernel.clock.time.alpha` 本来
+   * 就是为这件事准备的，只是之前没用上。
+   */
+  private readonly prevFeet = { x: 0, y: 0, z: 0 }
+  private readonly currFeet = { x: 0, y: 0, z: 0 }
+  private readonly renderFeet = { x: 0, y: 0, z: 0 }
+  private prevEyeHeight = 1.62
+  private currEyeHeight = 1.62
+  private renderEyeHeight = 1.62
+  private hasFeetSample = false
+  /** 和解造成的视觉残差：物理立刻对齐，相机用 0.12s 追上，避免 6cm 硬跳。 */
+  private readonly reconcileOffset = { x: 0, y: 0, z: 0 }
+  /** 渲染脚底 y 的低通，滤掉胶囊 snap-to-ground/台阶的厘米级抖动。 */
+  private smoothedFeetY = 0
+  /** 贴墙程度 0..1：视图模型据此把枪压下，避免画穿墙。 */
+  private wallBlock = 0
+  private readonly wallDir = { x: 0, y: 0, z: 0 }
 
   constructor(private readonly options: GameOptions) {
     this.kernel = new Kernel<ClientContext>({
@@ -406,6 +431,9 @@ export class Game {
     this.renderer.setBrightness(this.settings.brightness)
     this.renderer.setMotionScale(motionScaleOf(this.settings.cameraMotion))
     this.renderer.setRenderScale(this.settings.renderScale)
+    // 第一帧前按 GPU/设置定型：核显/软件渲染直接从性能档起步，
+    // 避免"先卡十秒再自动降档"。
+    this.applyGraphicsQuality(this.settings.graphics)
     this.audio.setVolume(this.settings.volume)
     // 目标 HUD 单独一层（hud.css 里 position:fixed、z-index:7），挂 body
     // 而不是 #app：它必须能盖在镜筒遮罩上，开镜时计时/线索/撤离进度仍然可读。
@@ -488,6 +516,7 @@ export class Game {
         this.character = new Character(this.world!, info.spawn)
         // 出生后先 step 一次，让新碰撞体进入本地物理世界。
         this.world!.step()
+        this.resetFeetSample()
         // 出生朝向：面朝地图中心，而不是面朝 -Z。
         // 0 度朝向在 12 个出生点里有一半正对着一面 3m 高的农舍外墙 ——
         // 玩家进游戏第一眼看到的是"一堵墙贴到脸上"，会以为是贴图错误。
@@ -502,6 +531,11 @@ export class Game {
         // 开阔地上风压过人声。地图群系决定一个初值，足够。
         this.audio.setAmbienceBias(this.options.level.biome === 'swamp' ? 'marsh' : 'open')
         this.options.onStatus('')
+        // 核显/软件渲染时给一条看得见的提示：网页无法切显卡，但玩家至少
+        // 知道为什么帧率低、应该去系统设置里把浏览器指到独显。
+        if (this.renderer.gpuInfo().integrated || this.renderer.gpuInfo().software) {
+          this.options.onStatus('检测到核显/软件渲染 · 已自动使用性能画质 · 独显设置见 docs/显卡与性能.md')
+        }
         this.running = true
         this.lastFrameAt = performance.now()
         this.raf = requestAnimationFrame(this.frame)
@@ -540,6 +574,15 @@ export class Game {
     this.kernel.resize(width, height, this.ctx)
   }
 
+  /** 调试 HUD 用：当前 GPU 类别与画质档。 */
+  gpuLabel(): string {
+    return this.renderer.gpuLabel()
+  }
+
+  qualityLabel(): string {
+    return this.qualityTier === 'performance' ? '性能' : this.qualityTier === 'balanced' ? '均衡' : '高清'
+  }
+
   /** M 键：打开/关闭猎场地图。地图打开时游戏继续跑，玩家仍然暴露在危险里。 */
   toggleMap(): void {
     this.mapOverlay?.toggle()
@@ -547,17 +590,42 @@ export class Game {
 
   /** 主界面改设置时调用，四条链路各自生效，不需要重开一局。 */
   setSettings(settings: MenuSettings): void {
+    const prevGraphics = this.settings.graphics
+    const prevRenderScale = this.settings.renderScale
     this.settings = { ...settings }
     this.input.applySettings(this.settings)
     this.renderer.setFov(this.settings.fov)
     this.renderer.setBrightness(this.settings.brightness)
     this.renderer.setMotionScale(motionScaleOf(this.settings.cameraMotion))
-    // 设置是"上限"，不是直接覆盖自动降分辨率：只把当前值压到上限以内，
-    // 上抬留给 adaptResolution 在帧率宽裕时慢慢升。
-    if (this.renderer.getScale() > this.settings.renderScale) {
+    // 只有画质档变了才重新定档；改灵敏度/音量不该顺手重置分辨率与 RT。
+    if (settings.graphics !== prevGraphics) this.applyGraphicsQuality(settings.graphics)
+    // 分辨率上限是显式操作：不再做"自动升分辨率"，所以玩家把它调高时必须
+    // 立刻生效，否则滑条看起来没反应。
+    if (settings.renderScale !== prevRenderScale) {
       this.renderer.setRenderScale(this.settings.renderScale)
+      this.renderer.setSize(this.viewWidth, this.viewHeight)
     }
     this.audio.setVolume(this.settings.volume)
+  }
+
+  /**
+   * 应用画质档。
+   *
+   * auto 的起点由 GPU 探测决定：核显/软件渲染 → performance；独显 → balanced。
+   * 固定档则完全听玩家的。起始分辨率也随档位收敛，避免核显第一帧就顶着
+   * 1080p + 4x MSAA 去编译/渲染。
+   */
+  private applyGraphicsQuality(mode: GraphicsQuality): void {
+    if (mode === 'auto') {
+      const gpu = this.renderer.gpuInfo()
+      this.qualityTier = gpu.integrated || gpu.software ? 'performance' : 'balanced'
+    } else {
+      this.qualityTier = mode
+    }
+    this.renderer.setQuality(this.qualityTier)
+    this.lowFrameFrames = 0
+    const cap = this.qualityTier === 'performance' ? 0.65 : this.qualityTier === 'balanced' ? 0.85 : 1
+    this.renderer.setRenderScale(Math.min(this.settings.renderScale, cap))
   }
 
   // ------------------------------------------------------------ 主循环
@@ -607,30 +675,50 @@ export class Game {
   }
 
   /**
-   * 自适应分辨率：按实测帧时间抬高/压低渲染分辨率。
+   * 自适应分辨率：**只降不升**。
    *
-   * 为什么不是"给个画质档位让玩家选"：帧率取决于显卡、窗口大小、场上有
-   * 多少怪物，玩家不知道自己的机器该选哪档，"自动"比"高/中/低"准得多。
-   * 而且这个游戏是 PvP —— 掉帧直接等于打不中，宁可画面糊一点也不能卡。
+   * 早期版本在阈值两侧自动升/降，结果每一次改分辨率都要重建 HDR 目标与
+   * 泛光金字塔：帧率一好就升、升完又掉、再降 —— 玩家看到的是每隔几秒
+   * 一次的顿挫，比稳定在低一点的分辨率更难受。
    *
-   * 判据用**帧时间**而不是 fps 本身：60fps 下 16.7ms 是预算，一旦超标就
-   * 是实打实的掉帧。上抬比下压保守（要求连续多帧都很宽裕），否则会在
-   * 阈值附近来回跳、画面一忽儿清一忽儿糊，比一直糊更难受。
+   * 现在：连续 1 秒（60 帧）明显超标才降；降到当前画质档的下限后，仍然
+   * 超标才降一档画质。升清晰度是玩家的显式操作（设置里的画质/分辨率上限），
+   * 不做自动回弹。启动后 2 秒内不参与自适应，避开 shader 编译/首帧分配。
    */
   private adaptResolution(dt: number): void {
     if (dt <= 0) return
     const budget = 1000 / 60
     this.frameMs += (dt * 1000 - this.frameMs) * 0.1
+
+    // 启动阶段：首帧 shader 编译、纹理上传、RT 分配都可能让 frameMs 飙高，
+    // 这不是稳态性能，不该触发降档。
+    if (this.kernel.clock.time.frame < 120) {
+      this.lowFrameFrames = 0
+      return
+    }
+
+    if (this.frameMs > budget * 1.45) this.lowFrameFrames++
+    else this.lowFrameFrames = 0
+
+    if (this.lowFrameFrames < 60) return
     if (--this.scaleCooldown > 0) return
+
     const scale = this.renderer.getScale()
-    if (this.frameMs > budget * 1.35 && scale > 0.55) {
-      this.renderer.setRenderScale(scale - 0.1)
+    const minScale = this.renderer.getMinScale()
+    const auto = this.settings.graphics === 'auto'
+
+    if (scale > minScale + 1e-6) {
+      // 先降世界分辨率。步长 0.1，且改完至少等 2.5 秒再评估下一次。
+      this.renderer.setRenderScale(Math.max(minScale, scale - 0.1))
       this.renderer.setSize(this.viewWidth, this.viewHeight)
-      this.scaleCooldown = 45
-    } else if (this.frameMs < budget * 0.75 && scale < this.settings.renderScale - 1e-6) {
-      this.renderer.setRenderScale(scale + 0.05)
-      this.renderer.setSize(this.viewWidth, this.viewHeight)
-      this.scaleCooldown = 90
+      this.scaleCooldown = 150
+      this.lowFrameFrames = 0
+    } else if (auto && this.qualityTier !== 'performance') {
+      // 分辨率已经到本档下限，还是超标：降一档画质（会重建 RT/阴影图）。
+      this.qualityTier = this.qualityTier === 'quality' ? 'balanced' : 'performance'
+      this.renderer.setQuality(this.qualityTier)
+      this.scaleCooldown = 300
+      this.lowFrameFrames = 0
     }
   }
 
@@ -694,8 +782,13 @@ export class Game {
       buttons: sample.buttons,
     }
 
+    // 固定步前后的脚底位置：渲染层用 alpha 在两者之间插值。
+    const beforeFeet = character.feet
+    const beforeEye = character.eyeHeightCurrent
     character.step(world, input, dt)
     world.step()
+    const afterFeet = character.feet
+    this.captureFeetSample(beforeFeet, beforeEye, afterFeet, character.eyeHeightCurrent)
 
     // 本地开火立刻给反馈（后坐、枪口火光、枪声），不等服务端确认。
     // 服务端的命中判定结果晚一拍才到，但"扣扳机"这件事必须是 0 延迟的。
@@ -709,7 +802,7 @@ export class Game {
 
     // 脚步声按行进距离触发，不按时间 —— 按时间的话贴着墙原地蹭也会有脚步，
     // 而那在猎杀类游戏里是致命的信息泄露（等于给对方报点）。
-    const feet = character.feet
+    const feet = afterFeet
     if (this.lastFeet) {
       const moved = Math.hypot(feet.x - this.lastFeet.x, feet.z - this.lastFeet.z)
       this.stepAccum += moved
@@ -911,6 +1004,9 @@ export class Game {
     const error = Math.hypot(dx, dy, dz)
     if (error < RECONCILE_EPSILON) return
 
+    // 记录修正前的视觉位置：物理立刻对齐，但相机用一小段残差平滑追上去。
+    const before = character.feet
+
     // 把自己拨回权威位置，速度也用服务端的。
     character.teleport({ x: me.x, y: me.y, z: me.z })
     character.vx = me.vx
@@ -924,6 +1020,20 @@ export class Game {
       character.step(world, entry.input, entry.input.dtMs / 1000)
       world.step()
       entry.predicted = character.feet
+    }
+
+    // 样本对齐到重放后的最终位置（不是 teleport 那一刻）：否则相机会
+    // 落后整个重放距离。然后按修正量设置视觉残差。
+    this.resetFeetSample()
+    const after = character.feet
+    const jumpX = before.x - after.x
+    const jumpY = before.y - after.y
+    const jumpZ = before.z - after.z
+    if (Math.hypot(jumpX, jumpY, jumpZ) < 1.2) {
+      this.reconcileOffset.x = jumpX
+      this.reconcileOffset.y = jumpY
+      this.reconcileOffset.z = jumpZ
+      this.smoothedFeetY = before.y
     }
   }
 
@@ -1032,6 +1142,10 @@ export class Game {
 
     for (const event of events) {
       if (event.kind === 1 /* Shot */) {
+        // 刀也走 Shot 事件（服务端靠它广播挥砍），但刀没有弹道：不能画曳光、
+        // 不能沿视线在墙上补"弹着点"、也不能放枪声。命中反馈由后续的
+        // Hit/MonsterHit 负责（血雾 + 刀切声），这才是刀该有的样子。
+        if (WEAPONS[event.weaponId]?.kind === 'knife') continue
         const distance = eye ? dist(eye, event.origin) : 999
         if (!hitAttackers.has(event.playerId)) this.playShotImpact(event.origin, event.dir)
         if (event.playerId === this.myId) {
@@ -1269,6 +1383,9 @@ export class Game {
     if (spec?.kind === 'revolver') this.options.onTraitFx?.(Trait.Ambidextrous)
     if (this.input.ads) this.options.onTraitFx?.(Trait.IronGrip)
     this.renderer.onLocalShot(kick)
+    // 抛壳声与枪声分开：枪声在第 0 帧，黄铜落地/碰撞的高频"叮"要在
+    // 壳飞出去之后才出现。AudioKit 内部按优先级调度，不会抢枪声。
+    this.audio.shellEject()
     const eye = this.character?.eye
     if (eye) {
       // 直接算而不是调 lookDirection(yaw, pitch)：那个函数每次返回新对象，
@@ -1669,17 +1786,139 @@ export class Game {
     )
   }
 
+  /**
+   * 记录一个固定步的起点/终点。
+   *
+   * 位移过大时直接吸附：服务器和解/传送/复活的位置跳变如果也做 16ms 插值，
+   * 相机会像被橡皮筋从旧位置拖过来。小幅修正才值得插值。
+   */
+  private captureFeetSample(
+    before: Vec3,
+    beforeEye: number,
+    after: Vec3,
+    afterEye: number,
+  ): void {
+    const jump = Math.hypot(after.x - before.x, after.y - before.y, after.z - before.z)
+    if (!this.hasFeetSample || jump > 2) {
+      this.prevFeet.x = after.x
+      this.prevFeet.y = after.y
+      this.prevFeet.z = after.z
+      this.prevEyeHeight = afterEye
+    } else {
+      this.prevFeet.x = before.x
+      this.prevFeet.y = before.y
+      this.prevFeet.z = before.z
+      this.prevEyeHeight = beforeEye
+    }
+    this.currFeet.x = after.x
+    this.currFeet.y = after.y
+    this.currFeet.z = after.z
+    this.currEyeHeight = afterEye
+    this.hasFeetSample = true
+  }
+
+  /** 出生/传送后把两个样本都对齐到当前位置。 */
+  private resetFeetSample(): void {
+    const character = this.character
+    if (!character) return
+    const feet = character.feet
+    this.prevFeet.x = feet.x
+    this.prevFeet.y = feet.y
+    this.prevFeet.z = feet.z
+    this.currFeet.x = feet.x
+    this.currFeet.y = feet.y
+    this.currFeet.z = feet.z
+    this.renderFeet.x = feet.x
+    this.renderFeet.y = feet.y
+    this.renderFeet.z = feet.z
+    this.prevEyeHeight = character.eyeHeightCurrent
+    this.currEyeHeight = character.eyeHeightCurrent
+    this.renderEyeHeight = character.eyeHeightCurrent
+    this.smoothedFeetY = feet.y
+    this.reconcileOffset.x = 0
+    this.reconcileOffset.y = 0
+    this.reconcileOffset.z = 0
+    this.hasFeetSample = true
+  }
+
+  /** 渲染用的脚底位置：60Hz 模拟 → 任意刷新率的连续运动。 */
+  private renderFeetAt(alpha: number): Vec3 {
+    const character = this.character
+    if (!character) return { x: 0, y: 0, z: 0 }
+    const r = this.renderFeet
+    if (!this.hasFeetSample) {
+      const f = character.feet
+      r.x = f.x + this.reconcileOffset.x
+      r.y = f.y + this.reconcileOffset.y
+      r.z = f.z + this.reconcileOffset.z
+      return r
+    }
+    const p = this.prevFeet
+    const q = this.currFeet
+    r.x = p.x + (q.x - p.x) * alpha + this.reconcileOffset.x
+    r.y = p.y + (q.y - p.y) * alpha + this.reconcileOffset.y
+    r.z = p.z + (q.z - p.z) * alpha + this.reconcileOffset.z
+    return r
+  }
+
   private renderFrame(dt: number, _now: number): void {
     const character = this.character
     if (!character) return
     const sample = this.input
-    const feet = character.feet
+    // 60Hz 的模拟用 alpha 插值成渲染帧的位置；眼高单独做一次指数平滑，
+    // 蹲/起立时镜头不会"啪"地跳一截。
+    const feet = this.renderFeetAt(this.kernel.clock.time.alpha)
+    // 垂直低通：角色控制器在慢速走时会做台阶/贴地的小幅修正，60Hz 固定步
+    // 下这些厘米级 y 变化比冲刺时更容易被看见。水平位置保持精确插值。
+    this.smoothedFeetY += (feet.y - this.smoothedFeetY) * Math.min(1, dt * 25)
+    feet.y = this.smoothedFeetY
+    // 和解残差按 0.12s 衰减；物理已经在权威位置，镜头只是追上去。
+    const reconcileDecay = Math.exp(-dt / 0.12)
+    this.reconcileOffset.x *= reconcileDecay
+    this.reconcileOffset.y *= reconcileDecay
+    this.reconcileOffset.z *= reconcileDecay
+    if (
+      Math.abs(this.reconcileOffset.x) < 1e-4 &&
+      Math.abs(this.reconcileOffset.y) < 1e-4 &&
+      Math.abs(this.reconcileOffset.z) < 1e-4
+    ) {
+      this.reconcileOffset.x = 0
+      this.reconcileOffset.y = 0
+      this.reconcileOffset.z = 0
+    }
+    const eyeTarget = character.eyeHeightCurrent
+    this.renderEyeHeight += (eyeTarget - this.renderEyeHeight) * Math.min(1, dt * 16)
+    const eyeHeight = this.renderEyeHeight
+
+    // 贴墙检测：视图模型是独立场景、不参与世界深度，枪口顶到墙时会直接
+    // 画在墙前面。这里从眼睛沿视线打一条 1.6m 的射线，把"墙离多近"变成
+    // 一个 0..1 的标量交给武器动画，把枪压出瞄准线。
+    let targetWallBlock = 0
+    if (this.world) {
+      const eye = character.eye
+      const cp = Math.cos(sample.pitch)
+      this.wallDir.x = -Math.sin(sample.yaw) * cp
+      this.wallDir.y = Math.sin(sample.pitch)
+      this.wallDir.z = -Math.cos(sample.yaw) * cp
+      const wallHit = traceShot(this.world, {
+        origin: eye,
+        dir: this.wallDir,
+        maxDistance: 1.6,
+        exclude: character.collider,
+        classify: () => null,
+      })
+      if (wallHit.hit) {
+        const t = Math.min(1, Math.max(0, (wallHit.distance - 0.35) / 1.25))
+        targetWallBlock = 1 - t * t * (3 - 2 * t)
+      }
+    }
+    this.wallBlock += (targetWallBlock - this.wallBlock) * Math.min(1, dt * 10)
 
     // 眼高直接取角色控制器的当前值（蹲下时更矮）：镜头和射线起点必须同源，
     // 否则近距离会出现"准星在他头上，服务端却判没打中"。
     this.renderer.updateCamera(
       feet,
-      character.eyeHeightCurrent,
+      eyeHeight,
       sample.yaw,
       sample.pitch,
       sample.ads,
@@ -1694,6 +1933,7 @@ export class Game {
       this.switchProgress(),
       this.meleeProgress(),
       WEAPONS[this.heldWeapon]?.adsZoom ?? 1,
+      this.wallBlock,
     )
     // 指南针/撤离方位必须每帧跟着 yaw 走，不能等 1Hz 的目标包。
     this.objectiveHud?.updateBearing(
@@ -1729,7 +1969,7 @@ export class Game {
     )
     const cp = Math.cos(listenerPitch)
     this.audio.setListener(
-      { x: feet.x, y: feet.y + character.eyeHeightCurrent, z: feet.z },
+      { x: feet.x, y: feet.y + eyeHeight, z: feet.z },
       { x: -Math.sin(listenerYaw) * cp, y: Math.sin(listenerPitch), z: -Math.cos(listenerYaw) * cp },
     )
     if (sample.ads && !this.wasAds) this.audio.aimBreath()
@@ -1738,9 +1978,7 @@ export class Game {
     this.markerView.myX = feet.x
     this.markerView.myY = feet.y
     this.markerView.myZ = feet.z
-    this.renderer.syncAvatars(this.currentRemote, this.myId, (flags) =>
-      (flags & StateFlags.Crouching) !== 0 ? 1.15 : 1.62,
-    )
+    this.renderer.syncAvatars(this.currentRemote, this.myId, dt)
     this.renderer.syncMonsters(this.currentMonsters, dt)
     this.tickGrowls(dt)
     this.renderer.syncObjective(this.markerView, dt)
@@ -1770,6 +2008,10 @@ export class Game {
         z: Math.round(feet.z * 100) / 100,
         yaw: Math.round(sample.yaw * 1000) / 1000,
         fps: Math.round(this.fps),
+        // 当前实际跑在哪张卡、哪一档画质：帧率低时先看这两个，
+        // 而不是盲目怀疑代码。gpu 为空表示浏览器没暴露 UNMASKED_RENDERER。
+        gpu: this.renderer.gpuInfo().renderer,
+        quality: this.qualityTier,
         // 拿枪身份与开镜数值：换枪后模型/倍镜到底有没有跟着换，只能在这里看。
         weapon: this.heldWeapon,
         ammo: this.ammoBySlot[this.heldSlot] ?? 0,

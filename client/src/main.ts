@@ -301,7 +301,8 @@ function setHud(hud: HudState): void {
   }
   lastHealth = hud.health
 
-  debugText.textContent = `${Math.round(hud.fps)}fps · ${hud.ping}ms · tick ${hud.tick}`
+  const gpuTag = game ? ` · ${game.gpuLabel()}/${game.qualityLabel()}` : ''
+  debugText.textContent = `${Math.round(hud.fps)}fps · ${hud.ping}ms · tick ${hud.tick}${gpuTag}`
   // 武器名记在 dataset 里，这样"命中 75"这种临时提示过期后能 restore 回来。
   // 只在"这一行显示的正是旧武器名（或是空的）"时才改写：这样换枪/选枪后会刷新，
   // 而「点击画面锁定鼠标」这类临时提示不会被每帧的枪名顶掉。

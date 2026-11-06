@@ -49,7 +49,13 @@ import {
 
 import { rememberLevelId } from './level-choice.ts'
 import { traitGlyph } from './traits.ts'
-import { CROSSHAIR_COLORS, loadSavedSettings, saveSettings, type Action, type MenuSettings } from './settings.ts'
+import {
+  loadSavedSettings,
+  saveSettings,
+  type Action,
+  type GraphicsQuality,
+  type MenuSettings,
+} from './settings.ts'
 import {
   AdditiveBlending,
   BackSide,
@@ -217,6 +223,17 @@ function normalizeCoins(value: unknown): number {
   const num = Number(value)
   if (!Number.isFinite(num)) return 0
   return Math.max(0, Math.floor(num))
+}
+
+/**
+ * 金币的显示格式：不带 `$`，带千分位。
+ *
+ * 游戏里有两种钱：局内搜刮/赏金是**现金**（带 `$`），跨局解锁天赋的是
+ * **金币**。之前金币也带 `$`，和结算里的现金混在一起，玩家会以为金币
+ * 就是美元。统一成纯数字，只靠"金币"这个标签区分。
+ */
+export function formatCoins(value: unknown): string {
+  return normalizeCoins(value).toLocaleString('en-US')
 }
 
 /** 已拥有等级的读：缺省、脏值、旧格式统统走 normalizeTraitLevels 落地成合法打包值。 */
@@ -989,7 +1006,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   const dossier = mk('div', 'dk-dossier')
   const dossierRows: Array<[string, string]> = [
-    ['金币', '$' + normalizeCoins(config.coins ?? 0).toLocaleString('en-US')],
+    ['金币', formatCoins(config.coins ?? 0)],
     ['天赋', ownedCount + '/' + TRAITS.length],
     ['血脉', String(bloodlineLevel)],
   ]
@@ -1140,7 +1157,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   }
 
   function coinsLabel(): string {
-    return '金币 $' + normalizeCoins(config.coins ?? 0)
+    return '金币 ' + formatCoins(config.coins ?? 0)
   }
 
   /**
@@ -2166,54 +2183,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       }),
     )
 
-    // 准星：颜色 / 大小 / 不透明度。深色夜战里，骨白准星不是每个人都看得清。
-    const crossRow = mk('div', 'dk-field')
-    crossRow.appendChild(mk('span', 'dk-field__label', '准星颜色'))
-    const swatches = mk('div', 'dk-swatches')
-    for (const color of CROSSHAIR_COLORS) {
-      const swatch = mkButton('dk-swatch')
-      swatch.style.background = color
-      swatch.title = color
-      swatch.setAttribute('aria-label', '准星颜色 ' + color)
-      const sync = (): void => {
-        swatch.classList.toggle('is-selected', settings.crosshairColor === color)
-      }
-      sync()
-      swatch.addEventListener('click', () => {
-        commitSettings({ crosshairColor: color })
-        for (const other of swatches.querySelectorAll('.dk-swatch')) {
-          ;(other as HTMLElement).classList.toggle('is-selected', other === swatch)
-        }
-      })
-      swatches.appendChild(swatch)
-    }
-    crossRow.appendChild(swatches)
-    panel.appendChild(crossRow)
-
-    panel.appendChild(
-      buildSliderRow({
-        label: '准星大小',
-        hint: '弱视或高分辨率屏可以放大',
-        min: 0.7,
-        max: 1.6,
-        step: 0.05,
-        value: settings.crosshairScale,
-        format: (v) => Math.round(v * 100) + '%',
-        apply: (v) => commitSettings({ crosshairScale: v }),
-      }),
-    )
-    panel.appendChild(
-      buildSliderRow({
-        label: '准星不透明度',
-        hint: '太高会盖住暗处目标，太低会在亮背景消失',
-        min: 0.4,
-        max: 1,
-        step: 0.05,
-        value: settings.crosshairOpacity,
-        format: (v) => Math.round(v * 100) + '%',
-        apply: (v) => commitSettings({ crosshairOpacity: v }),
-      }),
-    )
+    // 硬核机瞄：没有屏幕准星，准星颜色/大小/不透明度三项不再有意义，
+    // 设置面板里也一并撤掉，避免玩家调一个看不见的东西。
 
     // 镜头运动：晕动症玩家可以把走路的 bob/后坐力滚转/相机滞后全部关掉。
     const motionRow = mk('div', 'dk-field')
@@ -2240,6 +2211,34 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     }
     motionRow.appendChild(motionSeg)
     panel.appendChild(motionRow)
+
+    // 画质：网页无法选显卡，所以给"按开销分级"的档位。自动档会先探测
+    // 核显/软件渲染，再按帧时间升降；手动档只影响渲染开销，不改玩法。
+    const qualityRow = mk('div', 'dk-field')
+    qualityRow.appendChild(mk('span', 'dk-field__label', '画质'))
+    const qualitySeg = mk('div', 'dk-segment')
+    const qualityEntries: Array<[GraphicsQuality, string]> = [
+      ['auto', '自动'],
+      ['performance', '性能'],
+      ['balanced', '均衡'],
+      ['quality', '高清'],
+    ]
+    for (const [value, label] of qualityEntries) {
+      const btn = mkButton('dk-segment__item', label)
+      btn.setAttribute('aria-pressed', settings.graphics === value ? 'true' : 'false')
+      if (settings.graphics === value) btn.classList.add('is-selected')
+      btn.addEventListener('click', () => {
+        commitSettings({ graphics: value })
+        for (const other of qualitySeg.querySelectorAll('.dk-segment__item')) {
+          const isSelf = other === btn
+          other.classList.toggle('is-selected', isSelf)
+          other.setAttribute('aria-pressed', isSelf ? 'true' : 'false')
+        }
+      })
+      qualitySeg.appendChild(btn)
+    }
+    qualityRow.appendChild(qualitySeg)
+    panel.appendChild(qualityRow)
     panel.appendChild(
       buildSliderRow({
         label: '分辨率上限',
@@ -2596,7 +2595,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       if (disposed) return
       config.coins = normalizeCoins(next)
       if (dossierCoinsEl) {
-        dossierCoinsEl.textContent = '$' + config.coins.toLocaleString('en-US')
+        dossierCoinsEl.textContent = formatCoins(config.coins)
       }
       syncTraits()
     },

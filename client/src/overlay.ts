@@ -298,8 +298,11 @@ export function createSettlement(): Settlement {
       // 金币单独一行、单独颜色：它是跨局资产，和"这一趟值多少现金"不是一回事，
       // 混进合计里会让人以为这局输了钱。
       if (model.coins !== undefined) {
-        const gain = model.coins > 0 ? '+' + model.coins : '0'
-        const suffix = model.coinsTotal !== undefined ? `  （共 ${model.coinsTotal}）` : ''
+        const gain = model.coins > 0 ? '+' + model.coins.toLocaleString('en-US') : '0'
+        const suffix =
+          model.coinsTotal !== undefined
+            ? `  （共 ${model.coinsTotal.toLocaleString('en-US')}）`
+            : ''
         const row = document.createElement('div')
         row.className = 'dkov-line gain'
         const a = document.createElement('span')
