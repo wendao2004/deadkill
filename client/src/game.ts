@@ -531,10 +531,10 @@ export class Game {
         // 开阔地上风压过人声。地图群系决定一个初值，足够。
         this.audio.setAmbienceBias(this.options.level.biome === 'swamp' ? 'marsh' : 'open')
         this.options.onStatus('')
-        // 核显/软件渲染时给一条看得见的提示：网页无法切显卡，但玩家至少
-        // 知道为什么帧率低、应该去系统设置里把浏览器指到独显。
+        // 核显/软件渲染时给一条看得见的提示。第三档已放弃这两类硬件：
+        // 仍然允许进游戏看画面，但不再承诺帧率，也不再自动退回卡通档。
         if (this.renderer.gpuInfo().integrated || this.renderer.gpuInfo().software) {
-          this.options.onStatus('检测到核显/软件渲染 · 已自动使用性能画质 · 独显设置见 docs/显卡与性能.md')
+          this.options.onStatus('核显/软件渲染不在支持范围 · 已使用均衡写实画质 · 独显设置见 docs/显卡与性能.md')
         }
         this.running = true
         this.lastFrameAt = performance.now()
@@ -611,14 +611,15 @@ export class Game {
   /**
    * 应用画质档。
    *
-   * auto 的起点由 GPU 探测决定：核显/软件渲染 → performance；独显 → balanced。
-   * 固定档则完全听玩家的。起始分辨率也随档位收敛，避免核显第一帧就顶着
+   * auto 的起点由 GPU 探测决定：独显 → quality；核显/软件渲染 → balanced
+   * （写实材质仍然生效，只降采样/阴影/泛光，且不再自动退回 toon）。
+   * 固定档则完全听玩家的。起始分辨率也随档位收敛，避免第一帧就顶着
    * 1080p + 4x MSAA 去编译/渲染。
    */
   private applyGraphicsQuality(mode: GraphicsQuality): void {
     if (mode === 'auto') {
       const gpu = this.renderer.gpuInfo()
-      this.qualityTier = gpu.integrated || gpu.software ? 'performance' : 'balanced'
+      this.qualityTier = gpu.integrated || gpu.software ? 'balanced' : 'quality'
     } else {
       this.qualityTier = mode
     }
