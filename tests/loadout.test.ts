@@ -100,8 +100,9 @@ test('切枪: 切到狙击枪要等更久，切到刀最快', () => {
   requestSwitch(toSniper, 0, 0)
   // 先回主武器（同一槽位请求会被拒），再切狙击不是可选槽位 —— 这里直接
   // 用 switchTicks 验证表里的手感值，避免把"主武器可选"混进判定测试。
-  assert.equal(switchTicks(SNIPER), Math.ceil(1200 / TICK_MS))
+  assert.equal(switchTicks(SNIPER), Math.ceil(SNIPER.switchMs / TICK_MS))
   assert.equal(switchTicks(KNIFE), Math.ceil(400 / TICK_MS))
+  assert.equal(switchTicks(SNIPER) > switchTicks(RIFLE), true, '狙击仍然是最慢的主武器')
   assert.equal(switchTicks(RIFLE) > switchTicks(REVOLVER), true)
 })
 

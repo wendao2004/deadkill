@@ -1379,8 +1379,11 @@ export class Game {
     this.fireReadyAt = now + (spec?.fireIntervalMs ?? 500) * fireIntervalScale(spec?.kind ?? '', this.options.traits)
     // 推背量按武器给：神射手/霰弹的视角跳动必须明显大于转轮手枪，否则
     // 六把枪开起来手感一模一样，玩家分辨不出自己拿的是什么。
+    // 神射手 1.7 → 1.45：开镜后 3.8 倍视野里，一次 1.7 的推背会把镜心甩出
+    // 目标半个屏幕，玩家必须等它完全回正才敢打第二枪；1.45 仍有明显的"大枪"
+    // 手感，但恢复时间短了约 15%。
     const kick =
-      spec?.kind === 'sniper' ? 1.7 : spec?.kind === 'shotgun' ? 1.5 : spec?.kind === 'revolver' ? 0.8 : 1
+      spec?.kind === 'sniper' ? 1.45 : spec?.kind === 'shotgun' ? 1.5 : spec?.kind === 'revolver' ? 0.8 : 1
     if (spec?.kind === 'revolver') this.options.onTraitFx?.(Trait.Ambidextrous)
     if (this.input.ads) this.options.onTraitFx?.(Trait.IronGrip)
     this.renderer.onLocalShot(kick)

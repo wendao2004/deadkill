@@ -424,10 +424,13 @@ export const WEAPONS: Record<number, WeaponSpec> = {
     slot: 0,
     damage: 105,
     headMultiplier: 3.6,
-    fireIntervalMs: 1400,
+    // 栓动节奏从 1400 收到 1150：旧值在实战里是"开一枪站着看对面跑掉"，
+    // 拉栓的等待比瞄准本身还长。仍比所有连发枪慢，但给第二次机会。
+    fireIntervalMs: 1150,
     magazine: 3,
     reserve: 18,
-    reloadMs: 3800,
+    // 3 发弹仓逐发压弹，3800 太长；3200 让"打空后撤回来再战"仍然有代价。
+    reloadMs: 3200,
     effectiveRange: 90,
     pellets: 1,
     spread: 0.009,
@@ -435,7 +438,7 @@ export const WEAPONS: Record<number, WeaponSpec> = {
     // 3.8 倍把 55° 压到 14.5°：90 米外的人头还有 30 像素，这一枪才"能瞄"。
     adsZoom: 3.8,
     // 全长 1.2m 的靶枪 + 光学镜：举起来最慢，切它就是主动放弃这几秒的输出。
-    switchMs: 1200,
+    switchMs: 1000,
   },
   // 柯尔特 M1873 转轮手枪：副武器定位 —— 掏枪快、换弹快、散布一般，
   // 中距离三枪躯干才能放倒人，逼你在没子弹时也要贴近到 25 米内。
