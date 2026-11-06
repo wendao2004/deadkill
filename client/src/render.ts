@@ -1394,6 +1394,11 @@ export class Renderer {
    *   那点暖光在近距离缠斗里会让玩家以为自己开了一枪（而且它是整屏的
    *   点光源，黑暗里一眼就能看见，等于给对手报点）。
    */
+  /** 刀杀/收刀花式，由 game 在近战击杀时调用。 */
+  flourish(): void {
+    this.viewmodel.flourish()
+  }
+
   onLocalShot(kick = 1, muzzle = true): void {
     this.recoil = Math.min(1, this.recoil + 0.55 * kick)
     if (muzzle) {

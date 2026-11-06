@@ -36,7 +36,16 @@
  * 腰射/开镜下的基准位。模型与动画分开，改枪型不用动动画，调动画不用碰模型。
  */
 
-import { AdditiveBlending, DoubleSide, Group, Mesh, PlaneGeometry, ShaderMaterial } from 'three'
+import {
+  AdditiveBlending,
+  Color,
+  DoubleSide,
+  Group,
+  Mesh,
+  NormalBlending,
+  PlaneGeometry,
+  ShaderMaterial,
+} from 'three'
 import type { Material, Texture } from 'three'
 import { wrapAngle } from '@dk/shared'
 import { mergeAll, ring, tubeZ } from './weapon-kit.ts'
@@ -147,6 +156,8 @@ export interface Viewmodel {
   update(state: ViewmodelState, dt: number): void
   /** 扣扳机时调用一次：在枪口点一小片星芒火光。 */
   flash(): void
+  /** 刀杀/收刀时转一圈手腕。只在刀上生效。 */
+  flourish(): void
   /**
    * 上一帧算出来的**相机滚转**（弧度），挥砍时不为 0（最大约 2°）。
    * 调用方每帧把它写进 `camera.rotation.z` 就得到"视野跟着刀一起甩"的那一下；
@@ -403,6 +414,14 @@ const GLOW_PEAK = 0.62
 const MELEE_CAM_ROLL = 0.035
 /** 武器自己再吃一份滚转（1.3°）：调用方没接 cameraRoll 时也能看出"有力"。 */
 const MELEE_ROOT_ROLL = -0.022
+
+/**
+ * 收刀花式：0.72s 转一圈手腕。
+ *
+ * 比挥砍慢得多，因为它不是攻击，是"收招/入场"的节奏。转太快会读成掉帧，
+ * 转太慢又会挡住视线 —— 0.72s 正好在 60fps 下看清刀刃划过的整圈。
+ */
+const FLOURISH_TIME = 0.72
 
 /** 把 t 夹到 0..1 再做 smoothstep（缓入缓出）。 */
 function smoothstep01(t: number): number {
@@ -673,7 +692,67 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   flash.renderOrder = 999
   flash.raycast = () => {}
   root.add(flash)
+  // 第二层星芒反向旋转，两层叠出六瓣；单层只有三瓣，连发时像同一个贴图在闪。
+  const flash2 = new Mesh(flashGeo, flashMat)
+  flash2.visible = false
+  flash2.renderOrder = 998
+  flash2.raycast = () => {}
+  root.add(flash2)
   const FLASH_LIFE = 0.055
+
+  // ---- 第一人称硝烟 ----
+  // 世界层已经有 vfx.muzzle 的烟，但它从枪口前方 0.6m 才开始，第一人称
+  // 看不到"枪口自己冒烟"。这里在枪口挂三片软圆面，0.5s 内膨胀/上飘/淡出。
+  const smokeGeo = new PlaneGeometry(1, 1)
+  const makeSmokeMaterial = (): ShaderMaterial =>
+    new ShaderMaterial({
+      uniforms: {
+        uOpacity: { value: 0 },
+        uColor: { value: new Color(0x8f9498) },
+      },
+      vertexShader: [
+        'varying vec2 vUv;',
+        'void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      ].join('\n'),
+      fragmentShader: [
+        'uniform float uOpacity;',
+        'uniform vec3 uColor;',
+        'varying vec2 vUv;',
+        'float h(vec2 p) { p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 34.7); return fract(p.x * p.y); }',
+        'void main() {',
+        '  vec2 p = vUv * 2.0 - 1.0;',
+        '  float r = length(p);',
+        '  float n = h(vUv * 7.0) * 0.55 + h(vUv * 19.0 + 3.1) * 0.45;',
+        '  float a = smoothstep(1.0, 0.12, r) * (0.55 + 0.45 * n);',
+        '  gl_FragColor = vec4(uColor, a * uOpacity);',
+        '}',
+      ].join('\n'),
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: NormalBlending,
+      fog: false,
+      toneMapped: false,
+    })
+  const smokePuffs: Array<{
+    mesh: Mesh
+    mat: ShaderMaterial
+    life: number
+    maxLife: number
+    vx: number
+    vy: number
+    vz: number
+  }> = []
+  for (let i = 0; i < 3; i++) {
+    const mat = makeSmokeMaterial()
+    const mesh = new Mesh(smokeGeo, mat)
+    mesh.visible = false
+    mesh.renderOrder = 997
+    mesh.raycast = () => {}
+    root.add(mesh)
+    smokePuffs.push({ mesh, mat, life: 0, maxLife: 1, vx: 0, vy: 0, vz: 0 })
+  }
+  let smokeCursor = 0
   let flashTimer = 0
   /** 杠杆/击锤的射击循环时长。 */
   const LEVER_CYCLE = 0.24
@@ -889,6 +968,11 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   let wasAirborne = false
   /** 上一帧算出的相机滚转（挥砍用）。 */
   let camRoll = 0
+  /** 花式转刀的剩余时间。 */
+  let flourishTimer = 0
+  /** 第几次挥砍：奇偶决定正手/反手，连续挥刀不会每一下都一模一样。 */
+  let meleeSeq = 0
+  let meleeWasActive = false
 
   /** 把当前正在甩的那把摘掉、归位（切枪结束、或又一次切枪打断它时用）。 */
   const dropOutgoing = (): void => {
@@ -911,12 +995,16 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
    */
   const setWeapon = (weaponId: number): void => {
     const next = rigs.get(weaponId) ?? rigs.get(1)!
+    const wasMelee = current.isMelee
     currentId = weaponId
     if (next === current) return
     // 连切两次时把更早那件直接丢掉，只有一件允许"正在甩出去"。
     dropOutgoing()
     outgoing = current
     current = next
+    // 收入刀袋再抽出来时转一圈手腕；换成枪则立刻取消，避免走在半路的花式卡住。
+    if (next.isMelee && !wasMelee) flourishTimer = FLOURISH_TIME
+    else if (!next.isMelee) flourishTimer = 0
     next.group.position.set(0, 0, 0)
     next.group.rotation.set(0, 0, 0)
     next.group.visible = true
@@ -1049,6 +1137,14 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     let mrx = 0
     let mry = 0
     let mrz = 0
+    // 每一下挥砍交替正手/反手（奇偶镜像 roll/yaw/x），连砍不会像同一段动画
+    // 在循环播放。第一下开始前取消花式，免得转刀和劈砍叠成一团。
+    if (melee > 0 && !meleeWasActive) {
+      meleeSeq++
+      flourishTimer = 0
+    }
+    meleeWasActive = melee > 0
+    const arc = meleeSeq % 2 === 0 ? -1 : 1
     // punch：这一下挥砍"当前有多快"，刀光和相机滚转都吃它。
     let punch = 0
     if (melee > 0 && melee < 1) {
@@ -1057,9 +1153,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
         const x = melee / MELEE_WIND_END
         const t = 1 - (1 - x) * (1 - x)
         mrx = MELEE_WIND_RX * t
-        mry = MELEE_WIND_RY * t
-        mrz = MELEE_WIND_RZ * t
-        mx = MELEE_WIND_PX * t
+        mry = MELEE_WIND_RY * t * arc
+        mrz = MELEE_WIND_RZ * t * arc
+        mx = MELEE_WIND_PX * t * arc
         my = MELEE_WIND_PY * t
         mz = MELEE_WIND_PZ * t
       } else if (melee < MELEE_SLASH_END) {
@@ -1067,9 +1163,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
         const x = (melee - MELEE_WIND_END) / (MELEE_SLASH_END - MELEE_WIND_END)
         const t = x * x
         mrx = MELEE_WIND_RX + (MELEE_SLASH_RX - MELEE_WIND_RX) * t
-        mry = MELEE_WIND_RY + (MELEE_SLASH_RY - MELEE_WIND_RY) * t
-        mrz = MELEE_WIND_RZ + (MELEE_SLASH_RZ - MELEE_WIND_RZ) * t
-        mx = MELEE_WIND_PX + (MELEE_SLASH_PX - MELEE_WIND_PX) * t
+        mry = (MELEE_WIND_RY + (MELEE_SLASH_RY - MELEE_WIND_RY) * t) * arc
+        mrz = (MELEE_WIND_RZ + (MELEE_SLASH_RZ - MELEE_WIND_RZ) * t) * arc
+        mx = (MELEE_WIND_PX + (MELEE_SLASH_PX - MELEE_WIND_PX) * t) * arc
         my = MELEE_WIND_PY + (MELEE_SLASH_PY - MELEE_WIND_PY) * t
         mz = MELEE_WIND_PZ + (MELEE_SLASH_PZ - MELEE_WIND_PZ) * t
         punch = Math.sin(x * Math.PI)
@@ -1078,9 +1174,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
         const x = (melee - MELEE_SLASH_END) / (1 - MELEE_SLASH_END)
         const k = 1 - smoothstep01(x)
         mrx = MELEE_SLASH_RX * k + MELEE_RECOVER_RX * Math.sin(x * Math.PI)
-        mry = MELEE_SLASH_RY * k
-        mrz = MELEE_SLASH_RZ * k
-        mx = MELEE_SLASH_PX * k
+        mry = MELEE_SLASH_RY * k * arc
+        mrz = MELEE_SLASH_RZ * k * arc
+        mx = MELEE_SLASH_PX * k * arc
         my = MELEE_SLASH_PY * k
         mz = MELEE_SLASH_PZ * k
       }
@@ -1213,10 +1309,20 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       if (rig.parts.lever !== undefined) rig.parts.lever.visible = !clearSight
     }
 
+    // 收刀花式：转一圈手腕。pitch/roll 用 sin 包络，起收都在零位，
+    // 不会和切枪的入场弧线打架；yaw 走满 2π，这才是"刷花"。
+    let flourish = 0
+    if (flourishTimer > 0) {
+      flourishTimer = Math.max(0, flourishTimer - dt)
+      flourish = 1 - flourishTimer / FLOURISH_TIME
+    }
+    const fTilt = Math.sin(Math.min(1, flourish) * Math.PI)
+    const fSpin = smoothstep01(flourish) * Math.PI * 2
+
     // 武器组自己的局部姿态：平时是恒等（每帧写一次，代价是 6 个赋值），
-    // 挥砍时是那一刀。
-    rig.group.position.set(mx, my, mz)
-    rig.group.rotation.set(mrx, mry, mrz)
+    // 挥砍时是那一刀，收刀时是那圈花。
+    rig.group.position.set(mx, my + fTilt * 0.06, mz)
+    rig.group.rotation.set(mrx + fTilt * 0.25, mry + fSpin, mrz + fTilt * 0.7)
 
     // 刀光：只在"劈下"的时段可见，透明度跟着速度包络走，长度随速度拉长。
     if (rig.glow !== null && rig.glowMat !== null) {
@@ -1243,8 +1349,31 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       flash.scale.setScalar(0.55 + 0.65 * k)
       flash.rotation.z = time * 13.7
       flashMat.uniforms.uIntensity.value = k * 1.6
-    } else if (flash.visible) {
-      flash.visible = false
+      // 第二层反向旋转、略大：两层叠出六瓣，连发时不会读成"同一张贴图在闪"。
+      flash2.visible = true
+      flash2.position.copy(flash.position)
+      flash2.scale.setScalar(0.75 + 0.9 * k)
+      flash2.rotation.z = -time * 9.3
+    } else {
+      if (flash.visible) flash.visible = false
+      if (flash2.visible) flash2.visible = false
+    }
+
+    // ---- 枪口硝烟：0.5s 内膨胀、上飘、淡出
+    for (const puff of smokePuffs) {
+      if (puff.life <= 0) continue
+      puff.life = Math.max(0, puff.life - dt)
+      if (puff.life <= 0) {
+        puff.mesh.visible = false
+        continue
+      }
+      const k = 1 - puff.life / puff.maxLife
+      puff.mesh.position.x += puff.vx * dt
+      puff.mesh.position.y += puff.vy * dt
+      puff.mesh.position.z += puff.vz * dt
+      puff.mesh.scale.setScalar(0.035 + k * 0.2)
+      puff.mesh.rotation.z += dt * 0.7
+      puff.mat.uniforms.uOpacity!.value = (1 - k) * 0.3
     }
 
     // ---- 抛壳
@@ -1322,6 +1451,22 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       pendingEject = current.eject
       pendingEjectTimer = current.parts?.lever ? 0.10 : 0.02
     }
+    // 枪口硝烟：每次开火取一片，三片轮换，连发时不会出现"同一片烟原地重生"。
+    const puff = smokePuffs[smokeCursor++ % smokePuffs.length]!
+    puff.life = 0.5 + Math.random() * 0.18
+    puff.maxLife = puff.life
+    puff.mesh.visible = true
+    puff.mesh.position.set(
+      (Math.random() - 0.5) * 0.012,
+      SIGHT_Y - 0.004 + (Math.random() - 0.5) * 0.012,
+      current.muzzleZ + 0.03,
+    )
+    puff.mesh.scale.setScalar(0.035)
+    puff.mesh.rotation.z = Math.random() * Math.PI
+    puff.vx = (Math.random() - 0.5) * 0.05
+    puff.vy = 0.12 + Math.random() * 0.06
+    puff.vz = 0.16 + Math.random() * 0.08
+    puff.mat.uniforms.uOpacity!.value = 0.3
   }
 
   return {
@@ -1329,6 +1474,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     setWeapon,
     update,
     flash: triggerFlash,
+    flourish: () => {
+      if (current.isMelee) flourishTimer = FLOURISH_TIME
+    },
     get cameraRoll(): number {
       return camRoll
     },
@@ -1338,6 +1486,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       builtModels.length = 0
       flashGeo.dispose()
       flashMat.dispose()
+      smokeGeo.dispose()
+      for (const puff of smokePuffs) puff.mat.dispose()
       shellGeo.dispose()
       outgoing = null
       root.clear()
