@@ -36,12 +36,10 @@ import {
   LOOT_ITEM_NAME,
   MAX_CATCHUP_TICKS,
   MONSTER_ID_BASE,
-  MONSTER_RESPAWN_MS,
   MonsterKindCode,
   MonsterStateCode,
   damageMonster,
   MONSTER_SPECS,
-  monsterAtPosition,
   monsterHurtbox,
   spawnMonster,
   stepMonster,
@@ -68,6 +66,9 @@ import {
   TICK_RATE,
   aimDirection,
   boxFootprintDistance,
+  brushAt,
+  boxSpan,
+  penetrationFor,
   canFire,
   canReload,
   addReserve,
@@ -735,13 +736,9 @@ export class World {
     let moved = false
     for (const entity of this.monsters) {
       const data = entity.data
-      if (data.state === 'dead') {
-        if (entity.respawnTick !== 0 && this.tick >= entity.respawnTick) {
-          this.reviveMonster(entity)
-          moved = true
-        }
-        continue
-      }
+      // 本局怪物不重生：死亡是永久的。玩家需要能真正清空一个巢穴，
+      // 否则"打怪"永远打不完，搜刮/推进线索也会被无限刷新的怪拖死。
+      if (data.state === 'dead') continue
 
       // 枪手的视线起点：每只怪开跑前刷新这三个复用字段（见 aiInput 的注释）。
       // 近战怪用不到，改成一行也没有意义 —— 一次减法比一次分支便宜。
@@ -1169,9 +1166,9 @@ export class World {
 
   private killMonster(entity: MonsterEntity, killerId: number): void {
     const isBoss = isBossKind(entity.data.kind)
-    // Boss 不复活：它是"一局一次"的关卡事件，12 秒后原地再站起来等于不许玩家
-    // 继续放逐。respawnTick 留 0，stepMonsters 会一直跳过它。
-    entity.respawnTick = isBoss ? 0 : this.tick + Math.ceil(MONSTER_RESPAWN_MS / TICK_MS)
+    // 所有怪都不复活（包括 Boss）：本局的巢穴必须能被清空。respawnTick 恒为 0，
+    // stepMonsters 会一直跳过尸体；尸体本身仍保留在场景里给玩家搜刮/辨认。
+    entity.respawnTick = 0
     // 和玩家尸体同理：死掉的怪不该继续吃子弹。
     entity.collider.setEnabled(false)
     this.pendingEvents.push({
@@ -1297,24 +1294,6 @@ export class World {
     if (index >= 0) this.monsters.splice(index, 1)
     this.monstersByCollider.delete(entity.collider.handle)
     this.physics.removeRigidBody(entity.body)
-  }
-
-  private reviveMonster(entity: MonsterEntity): void {
-    const old = entity.data
-    // 用 monsterAtPosition 而不是 spawnMonster：复活要回到巢穴原处，
-    // 不能让 12 秒后重刷的怪从 0.7m 外冒出来（那看起来像瞬移）。
-    entity.data = monsterAtPosition(
-      old.kind,
-      { x: old.homeX, y: this.level.groundY, z: old.homeZ },
-      old.id,
-    )
-    entity.respawnTick = 0
-    entity.yaw = 0
-    entity.stuckTicks = 0
-    entity.detourUntilTick = 0
-    entity.detourSign = 1
-    entity.collider.setEnabled(true)
-    this.syncMonsterBody(entity)
   }
 
   /** 射线打中的碰撞体属于谁。死掉的不算目标 —— 尸体不挡子弹这条对怪也一样。 */
@@ -1983,8 +1962,13 @@ export class World {
       headshot: boolean
       point: Vec3
       target: ShotTarget
+      damageScale: number
     }[] = []
     let firstDir: Vec3 | null = null
+
+    // 最多穿过两层掩体。再往上是"子弹在木箱迷宫里无限跳"，没有战术意义，
+    // 也会让伤害衰减失去意义。
+    const MAX_PENETRATION_LAYERS = 2
 
     for (let pellet = 0; pellet < spec.pellets; pellet++) {
       const dir = aimDirection(
@@ -1996,62 +1980,107 @@ export class World {
         spreadScale(player.traits),
       )
       if (pellet === 0) firstDir = dir
-      const result = traceShot(this.physics, {
-        origin: eye,
-        dir,
-        maxDistance: spec.effectiveRange * 3,
-        exclude: player.character.collider,
-        // 玩家胶囊交给下面的解析求交，引擎只负责墙与怪。
-        filter: (collider) => {
-          const hit = this.targetOf(collider)
-          return hit === null || hit.kind !== 'player'
-        },
-        classify: (collider) => {
-          const target = this.targetOf(collider)
-          if (!target) return null
-          // 怪的"脚底"就是 AI 的 y，交出去就能复用同一套爆头判定：
-          // 猎犬只有 1m 高，永远够不到 HEAD_MIN_HEIGHT(1.45)，天然只能打躯干。
-          return target.kind === 'player'
-            ? { playerId: target.player.id, feetY: target.player.character.feet.y }
-            : {
-                playerId: target.monster.data.id,
-                feetY: target.monster.data.y,
-                // 屠夫 3.3m 高：绝对 1.45m 的头部带会把整个胸腹都算爆头，
-                // 1200 血 8 枪就没了。按自身身高给头部下沿。
-                headMinHeight:
-                  target.monster.data.y + MONSTER_SPECS[target.monster.data.kind].height * 0.78,
-              }
-        },
-      })
-      // 引擎这一发只可能打到静态几何或怪（玩家胶囊已被 filter 排除）。
-      const maxDistance = spec.effectiveRange * 3
-      let bestDistance = result.hit ? result.distance : maxDistance
-      let point = result.hit ? result.point : vecAdd(eye, vecScale(dir, maxDistance))
-      let target = result.hit && result.collider ? this.targetOf(result.collider) : null
-      let feetY = target && target.kind === 'monster' ? target.monster.data.y : 0
-      // 蹲姿的头部带下沿来自 rewindTargets；怪按自身身高，静态保持全局值。
-      let headMinHeight =
-        target && target.kind === 'monster'
-          ? target.monster.data.y + MONSTER_SPECS[target.monster.data.kind].height * 0.78
-          : HEAD_MIN_HEIGHT
 
-      // 玩家按历史位姿单独求交：只有比遮挡物更近才算打中。
-      for (const other of rewindTargets) {
-        const d = rayCapsule(eye, dir, other.a, other.b, PLAYER_RADIUS)
-        if (d === null || d >= bestDistance) continue
-        bestDistance = d
-        point = vecAdd(eye, vecScale(dir, d))
-        target = { kind: 'player', player: this.players.get(other.playerId)! }
-        feetY = other.feetY
-        headMinHeight = other.headMinHeight
+      let origin = eye
+      let travel = 0
+      let remaining = spec.effectiveRange * 3
+      let damageScale = 1
+      let target: ShotTarget | null = null
+      let hitPoint: Vec3 | null = null
+      let hitDistance = 0
+      let hitFeetY = 0
+      let hitHeadMin = HEAD_MIN_HEIGHT
+
+      for (let layer = 0; layer <= MAX_PENETRATION_LAYERS; layer++) {
+        if (remaining <= 0.05) break
+
+        const result = traceShot(this.physics, {
+          origin,
+          dir,
+          maxDistance: remaining,
+          exclude: player.character.collider,
+          // 玩家胶囊交给下面的解析求交，引擎只负责静态几何与怪。
+          filter: (collider) => {
+            const hit = this.targetOf(collider)
+            return hit === null || hit.kind !== 'player'
+          },
+          classify: () => null,
+        })
+
+        const segmentEnd = travel + (result.hit ? result.distance : remaining)
+
+        // 当前这一段里最近的玩家（按历史位姿）。用绝对距离比较，
+        // 这样穿透之后仍然能和同一根弹道上的静态遮挡排出先后。
+        let playerHit: {
+          d: number
+          target: ShotTarget
+          feetY: number
+          headMinHeight: number
+        } | null = null
+        for (const other of rewindTargets) {
+          const d = rayCapsule(eye, dir, other.a, other.b, PLAYER_RADIUS)
+          if (d === null || d <= travel + 1e-4 || d >= segmentEnd - 1e-4) continue
+          if (playerHit !== null && d >= playerHit.d) continue
+          playerHit = {
+            d,
+            target: { kind: 'player', player: this.players.get(other.playerId)! },
+            feetY: other.feetY,
+            headMinHeight: other.headMinHeight,
+          }
+        }
+        if (playerHit !== null) {
+          target = playerHit.target
+          hitDistance = playerHit.d
+          hitPoint = vecAdd(eye, vecScale(dir, playerHit.d))
+          hitFeetY = playerHit.feetY
+          hitHeadMin = playerHit.headMinHeight
+          break
+        }
+
+        if (!result.hit || !result.collider) break
+        const direct = this.targetOf(result.collider)
+        if (direct !== null) {
+          // 引擎这一发可以先打到怪（玩家已被 filter 排除）。
+          target = direct
+          hitDistance = travel + result.distance
+          hitPoint = result.point
+          hitFeetY = direct.kind === 'monster' ? direct.monster.data.y : 0
+          hitHeadMin =
+            direct.kind === 'monster'
+              ? direct.monster.data.y + MONSTER_SPECS[direct.monster.data.kind].height * 0.78
+              : HEAD_MIN_HEIGHT
+          break
+        }
+
+        // 静态遮挡：判断它是不是一块"能穿"的关卡盒刷。地面/边界不在
+        // level.boxes 里，brushAt 找不到，自然按硬掩体处理。
+        const brush = brushAt(this.level, result.point, 0.12)
+        if (!brush) break
+        const rule = penetrationFor(brush.material, spec.kind)
+        if (rule.maxThickness <= 0) break
+        const span = boxSpan(brush, origin, dir)
+        if (!span) break
+        // 命中点必须真的落在这个盒子的入射面上；否则地面/旁边的贴地盒子
+        // 会把一次地面命中误判成"可穿的木箱"。
+        if (Math.abs(span.enter - result.distance) > 0.12) break
+        const thickness = span.exit - Math.max(span.enter, 0)
+        if (thickness > rule.maxThickness || layer >= MAX_PENETRATION_LAYERS) break
+
+        // 从背面继续打；伤害按层衰减。
+        const advance = span.exit + 0.02
+        travel += advance
+        origin = vecAdd(eye, vecScale(dir, travel))
+        remaining -= advance
+        damageScale = Math.max(0.08, damageScale * rule.damageScale)
       }
 
-      if (!target) continue
+      if (!target || !hitPoint) continue
       hits.push({
-        distance: bestDistance,
-        headshot: point.y - feetY >= headMinHeight,
-        point,
+        distance: hitDistance,
+        headshot: hitPoint.y - hitFeetY >= hitHeadMin,
+        point: hitPoint,
         target,
+        damageScale,
       })
     }
 
@@ -2068,7 +2097,7 @@ export class World {
       this.applyHit(
         player,
         hit.target,
-        damageAt(spec, hit.distance, hit.headshot),
+        damageAt(spec, hit.distance, hit.headshot) * hit.damageScale,
         hit.headshot,
         hit.point,
       )
