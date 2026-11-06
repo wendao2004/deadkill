@@ -1072,6 +1072,68 @@ export class AudioKit {
     this.seal(o)
   }
 
+  /** 重刀：比轻刀更低、更长、更重的一刀；后半程多一条刃尖切风的亮线。 */
+  knifeHeavySwing(): void {
+    const noise = this.noise
+    const o = this.open({ priority: PRIORITY.self, level: 0.55, wet: 0.06 })
+    if (o === null) return
+    if (noise === null) {
+      this.seal(o)
+      return
+    }
+    const { ctx, recipe, input } = o
+    const t = ctx.currentTime + 0.002
+    // 1. 手臂抡起来的风：比轻刀更慢的起音和更低的中心。
+    shake(ctx, recipe, input, {
+      noise,
+      at: t,
+      peak: 0.26,
+      attack: 0.05,
+      dur: 0.4,
+      type: 'bandpass',
+      freq: 220,
+      sweepTo: 1400,
+      q: 0.75,
+      hp: 120,
+      rate: 1,
+    })
+    // 2. 刃尖切过空气：迟 70ms，频率更高。
+    shake(ctx, recipe, input, {
+      noise,
+      at: t + 0.07,
+      peak: 0.13,
+      attack: 0.02,
+      dur: 0.26,
+      type: 'bandpass',
+      freq: 1900,
+      sweepTo: 4800,
+      q: 1.5,
+      hp: 1200,
+      rate: 1.1,
+    })
+    // 3. 体重：抡刀时胸腔里的低频，轻刀没有这一层。
+    tone(ctx, recipe, input, {
+      type: 'sine',
+      from: 118,
+      to: 52,
+      at: t,
+      peak: 0.2,
+      attack: 0.01,
+      dur: 0.18,
+    })
+    // 4. 收势的一点刃鸣，给这一刀一个"甩出去"的尾巴。
+    tone(ctx, recipe, input, {
+      type: 'triangle',
+      from: 1600,
+      to: 1250,
+      at: t + 0.2,
+      peak: 0.06,
+      attack: 0.01,
+      dur: 0.22,
+    })
+    this.seal(o)
+  }
+
   /**
    * 刀砍到东西。
    *
@@ -1208,7 +1270,7 @@ export class AudioKit {
   fleshImpact(at: WorldPoint, damage: number, headshot: boolean, occluded = false): void {
     const noise = this.noise
     const power = Math.min(1, Math.max(0.2, damage / 120))
-    const o = this.open({ at, level: 0.35 + power * 0.25, priority: PRIORITY.self, occluded })
+    const o = this.open({ at, level: 0.27 + power * 0.15, priority: PRIORITY.self, occluded })
     if (o === null) return
     if (noise === null) {
       this.seal(o)
@@ -1223,7 +1285,7 @@ export class AudioKit {
       from: 120 - power * 30,
       to: 48 - power * 6,
       at: t,
-      peak: 0.26 + power * 0.22,
+      peak: 0.2 + power * 0.15,
       attack: 0.003,
       dur: 0.1 + power * 0.07,
     })
@@ -1231,7 +1293,7 @@ export class AudioKit {
     shake(ctx, recipe, input, {
       noise,
       at: t + 0.004,
-      peak: 0.24 + power * 0.18,
+      peak: 0.16 + power * 0.12,
       attack: 0.002,
       dur: 0.08 + power * 0.05,
       type: 'bandpass',
@@ -1243,13 +1305,13 @@ export class AudioKit {
     })
     // 3. 爆头：额外一记短脆的高频，和普通命中一秒就能分开。
     if (headshot) {
-      click(ctx, recipe, input, noise, t, 3000, 0.16, 0.025)
+      click(ctx, recipe, input, noise, t, 3000, 0.1, 0.02)
       tone(ctx, recipe, input, {
         type: 'triangle',
         from: 2200,
         to: 1400,
         at: t,
-        peak: 0.12,
+        peak: 0.08,
         attack: 0.002,
         dur: 0.04,
       })
@@ -1257,21 +1319,49 @@ export class AudioKit {
     this.seal(o)
   }
 
-  /** @param headshot 决定用更脆、更高的"叮"。 */
+  /**
+   * 命中确认：战地式"金属 tick"，不是电子音。
+   *
+   * 旧版是三角波 900→760 再叠一声 1050Hz 的 hitMarker，加上肉体声之后三层
+   * 一起糊；听感像"叮——嗒"，既不干脆也没有层次。现在压成一条 55ms 的
+   * 三段音：1ms 的硬起音（金属片）、40ms 的短共鸣（三角波）、60ms 的低频
+   * 体重。爆头整体上移一个八度并多一记 4.2kHz 的亮边，普通命中保持中性。
+   *
+   * 不做长尾、不加湿声：命中确认属于 UI 层，肉体声在 fleshImpact 里。
+   */
   hitConfirm(headshot: boolean): void {
-    const o = this.open({ priority: PRIORITY.self, level: headshot ? 0.3 : 0.22, wet: 0.05 })
+    const noise = this.noise
+    const o = this.open({ priority: PRIORITY.self, level: headshot ? 0.42 : 0.34, wet: 0.01 })
     if (o === null) return
     const { ctx, recipe, input } = o
     const t = ctx.currentTime + 0.002
-    const base = headshot ? 1500 : 900
-    const peak = headshot ? 2100 : 760
-    const tail = headshot ? 0.1 : 0.07
-    // 三角波自带几个奇次谐波，"叮"才立得起来；纯正弦在同音量下听起来明显更小。
-    tone(ctx, recipe, input, { type: 'triangle', from: base, to: peak, at: t, peak: headshot ? 0.3 : 0.22, attack: 0.004, dur: 0.006 })
-    tone(ctx, recipe, input, { type: 'triangle', from: peak, to: base * 0.9, at: t, peak: headshot ? 0.18 : 0.13, attack: 0.004, dur: tail, lag: 0.006 })
-    // 爆头多一层高频撕裂，普通命中没有 —— 这两者必须一秒就能分清。
-    const noise = this.noise
-    if (headshot && noise !== null) click(ctx, recipe, input, noise, t, 5200, 0.12, 0.03)
+    const base = headshot ? 3400 : 2400
+    const body = headshot ? 2100 : 1600
+
+    // 1. 硬起音：越短越像"钢铁碰了一下"，超过 20ms 就开始像铃铛。
+    if (noise !== null) click(ctx, recipe, input, noise, t, base, headshot ? 0.28 : 0.2, 0.016)
+    // 2. 短共鸣：三角波自带奇次谐波，50ms 内收完。
+    tone(ctx, recipe, input, {
+      type: 'triangle',
+      from: base * 0.72,
+      to: body,
+      at: t,
+      peak: headshot ? 0.18 : 0.14,
+      attack: 0.001,
+      dur: 0.05,
+    })
+    // 3. 体重：压在 150→88Hz，只负责"有东西被击中"的实体感。
+    tone(ctx, recipe, input, {
+      type: 'sine',
+      from: headshot ? 160 : 140,
+      to: 88,
+      at: t,
+      peak: headshot ? 0.16 : 0.12,
+      attack: 0.003,
+      dur: 0.06,
+    })
+    // 4. 爆头专属：再高一档的亮边，和普通命中一秒就能分开。
+    if (headshot && noise !== null) click(ctx, recipe, input, noise, t + 0.004, 4200, 0.14, 0.02)
     this.seal(o)
   }
 
@@ -1370,6 +1460,114 @@ export class AudioKit {
     recipe.nodes.push(lp)
     tone(ctx, recipe, lp, { type: 'sawtooth', from: 220, to: 46, at: t, peak: 0.3, attack: 0.05, dur: 1.0 })
     if (noise !== null) shake(ctx, recipe, lp, { noise, at: t, peak: 0.2, attack: 0.1, dur: 1.0, type: 'lowpass', freq: 900, rate: 0.5 })
+    this.seal(o)
+  }
+
+  /**
+   * 怪物死亡。
+   *
+   * 旧的 `death()` 是给玩家用的：220→46Hz 的锯齿在 1 秒里滑到次声，
+   * 听感就是一声长而软的低频下滑 —— 也就是"放屁"。怪物死亡需要**短促、
+   * 有冲击、有肉体**：先一记干硬的撞击和低频体重，再一层湿声，喉音只给
+   * 0.2–0.3s 的短促下坠，最后半拍后身体砸地。体型决定频率与时长：猎犬
+   * 偏高偏短，行尸中等，巨像/Boss 更低更长。
+   *
+   * 传 at 时走 HRTF：玩家应该听得出"倒在我左边 8 米"，而不是从自己胸口
+   * 冒出来一声。
+   */
+  monsterDeath(kind: number, at?: WorldPoint, occluded = false): void {
+    const noise = this.noise
+    const heavy = kind >= 3
+    const hound = kind === 1
+    const o = this.open({
+      at,
+      priority: at === undefined ? PRIORITY.self : undefined,
+      level: heavy ? 0.95 : 0.8,
+      wet: at === undefined ? 0.18 : 0.1,
+      occluded,
+    })
+    if (o === null) return
+    if (noise === null) {
+      this.seal(o)
+      return
+    }
+    const { ctx, recipe, input } = o
+    const t = ctx.currentTime + 0.002
+    const base = heavy ? 170 : hound ? 520 : 260
+    const end = heavy ? 62 : hound ? 190 : 96
+
+    // 1. 冲击：一记很短的高频"啪"给起音，再让低频体重落下去。
+    click(ctx, recipe, input, noise, t, heavy ? 1200 : 2000, heavy ? 0.3 : 0.24, 0.02)
+    tone(ctx, recipe, input, {
+      type: 'sine',
+      from: base * 1.3,
+      to: end,
+      at: t,
+      peak: heavy ? 0.5 : 0.38,
+      attack: 0.003,
+      dur: heavy ? 0.22 : 0.16,
+    })
+
+    // 2. 湿声：肉被撕开的那一下，宽 Q 带通，不能是"轰"。
+    shake(ctx, recipe, input, {
+      noise,
+      at: t,
+      peak: heavy ? 0.42 : 0.34,
+      attack: 0.002,
+      dur: heavy ? 0.18 : 0.13,
+      type: 'bandpass',
+      freq: hound ? 1300 : 800,
+      q: 1.1,
+      hp: 120,
+      lp: 2600,
+      rate: 1.1,
+    })
+
+    // 3. 喉音：0.24–0.34s 的短促下坠，带通/低通压住高频，不做长滑音。
+    tone(ctx, recipe, input, {
+      type: 'sawtooth',
+      from: base,
+      to: end * 1.2,
+      at: t + 0.008,
+      peak: heavy ? 0.26 : 0.2,
+      attack: 0.012,
+      dur: heavy ? 0.34 : 0.24,
+      lp: heavy ? 700 : 1100,
+    })
+
+    // 4. 倒地：迟 0.16s，身体砸进泥里；有它才有"死了"的重量。
+    tone(ctx, recipe, input, {
+      type: 'sine',
+      from: 100,
+      to: 42,
+      at: t + 0.16,
+      peak: heavy ? 0.4 : 0.26,
+      attack: 0.004,
+      dur: heavy ? 0.34 : 0.24,
+    })
+    shake(ctx, recipe, input, {
+      noise,
+      at: t + 0.16,
+      peak: heavy ? 0.24 : 0.16,
+      attack: 0.01,
+      dur: 0.24,
+      type: 'lowpass',
+      freq: 420,
+      rate: 0.6,
+    })
+
+    // 5. 猎犬：额外一记高音短嚎，和行尸的闷死区分开。
+    if (hound) {
+      tone(ctx, recipe, input, {
+        type: 'triangle',
+        from: 980,
+        to: 420,
+        at: t + 0.02,
+        peak: 0.2,
+        attack: 0.006,
+        dur: 0.16,
+      })
+    }
     this.seal(o)
   }
 
