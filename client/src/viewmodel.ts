@@ -130,6 +130,8 @@ export interface ViewmodelState {
   switchProgress?: number
   /** 一次挥砍的进度 0..1（抬起 → 劈下 → 收回）。刀以外忽略。缺省 0。 */
   meleeProgress?: number
+  /** 这一刀是不是重刀：幅度更大、收招更慢。缺省 false。 */
+  meleeHeavy?: boolean
   /**
    * 是否正在透过镜筒看（带 2 倍以上倍镜且已开镜）。为 true 且举枪到位后，
    * 整个武器根节点会被摘掉 —— 镜筒遮罩已经画出视野，让枪身留在画面正中
@@ -970,8 +972,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   let camRoll = 0
   /** 花式转刀的剩余时间。 */
   let flourishTimer = 0
-  /** 第几次挥砍：奇偶决定正手/反手，连续挥刀不会每一下都一模一样。 */
-  let meleeSeq = 0
+  /** 每一次挥砍随机正/反手与幅度，连续挥刀不会像同一段动画循环。 */
+  let meleeArc = 1
+  let meleeTilt = 1
   let meleeWasActive = false
 
   /** 把当前正在甩的那把摘掉、归位（切枪结束、或又一次切枪打断它时用）。 */
@@ -1137,14 +1140,16 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     let mrx = 0
     let mry = 0
     let mrz = 0
-    // 每一下挥砍交替正手/反手（奇偶镜像 roll/yaw/x），连砍不会像同一段动画
-    // 在循环播放。第一下开始前取消花式，免得转刀和劈砍叠成一团。
+    // 每一下挥砍随机正/反手与幅度（视觉随机，不影响判定），连砍不会像
+    // 同一段动画在循环播放。重刀在此基础上再整体放大。
+    const heavy = rig.isMelee && state.meleeHeavy === true
     if (melee > 0 && !meleeWasActive) {
-      meleeSeq++
       flourishTimer = 0
+      meleeArc = Math.random() < 0.5 ? -1 : 1
+      meleeTilt = 0.85 + Math.random() * 0.3
     }
     meleeWasActive = melee > 0
-    const arc = meleeSeq % 2 === 0 ? -1 : 1
+    const arc = meleeArc
     // punch：这一下挥砍"当前有多快"，刀光和相机滚转都吃它。
     let punch = 0
     if (melee > 0 && melee < 1) {
@@ -1180,6 +1185,19 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
         my = MELEE_SLASH_PY * k
         mz = MELEE_SLASH_PZ * k
       }
+    }
+
+    // 重刀：整段幅度放大、往前送出更多；轻刀的随机 tilt 只改俯仰幅度。
+    if (melee > 0 && melee < 1) {
+      if (heavy) {
+        mrx *= 1.3
+        mry *= 1.15
+        mrz *= 1.35
+        mx *= 1.2
+        my *= 1.25
+        mz *= 1.45
+      }
+      mrx *= meleeTilt
     }
 
     // ---- 切枪：u 是"离就位还有多远"。六个自由度六个指数，合出来是一段弧。

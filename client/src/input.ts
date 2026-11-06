@@ -62,6 +62,13 @@ export class InputController {
   crouching = false
   ads = false
   /**
+   * 当前手持近战：右键不再是开镜，而是重刀。
+   *
+   * 协议不改：刀上右键仍然发 Ads 位，服务端按"刀 + Ads = 重刀"解释。
+   * 这样不用新增输入位，也不必动输入包的位宽。
+   */
+  meleeMode = false
+  /**
    * 玩家设置。默认一份拷贝而不是引用 DEFAULT_SETTINGS —— 否则任何一次
    * 就地修改都会污染"出厂默认"，而设置面板的"恢复默认"按钮靠它。
    */
@@ -145,7 +152,7 @@ export class InputController {
    */
   consumeLook(): void {
     // 开镜灵敏度要按"这一帧"的右键状态算，不能等到下一个模拟步。
-    this.ads = this.mouseRight
+    this.ads = this.mouseRight && !this.meleeMode
     if (this.accumX === 0 && this.accumY === 0) return
     // 开镜时视野窄，同样的鼠标位移在屏幕上扫过的角度更大 —— 不按开镜倍率
     // 压一档的话，一开镜准星就像被甩出去，微调根本压不住。
@@ -171,7 +178,8 @@ export class InputController {
     if (this.jumpQueued || this.down('jump')) buttons |= Buttons.Jump
     if (this.sprinting) buttons |= Buttons.Sprint
     if (this.crouching) buttons |= Buttons.Crouch
-    if (this.ads) buttons |= Buttons.Ads
+    // 刀上右键骗过开镜判定，直接占 Ads 位当重刀；服务端按武器类型分流。
+    if (this.meleeMode ? this.mouseRight : this.ads) buttons |= Buttons.Ads
     if (this.fireQueued || this.mouseLeft) buttons |= Buttons.Fire
     if (this.reloadQueued || this.down('reload')) buttons |= Buttons.Reload
     // 交互是**持续**语义而不是边沿：服务端按按住时长累积搜索进度，松开就清零。

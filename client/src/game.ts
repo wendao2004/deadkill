@@ -26,6 +26,7 @@ import {
   DEFAULT_WEAPON_ID,
   INTERP_DELAY_MS,
   MATCH_SECONDS,
+  KNIFE_HEAVY_INTERVAL_MS,
   MAX_INPUTS_PER_PACKET,
   MONSTER_SPECS,
   SCOPE_MIN_ZOOM,
@@ -653,6 +654,7 @@ export class Game {
 
     // 视角每渲染帧推进一次，不等模拟步：高于 60Hz 的屏幕上，只在固定步里
     // 更新会让准星一跳一跳（玩家说的"枪不跟手"）。
+    this.input.meleeMode = this.heldSlot === 2
     this.input.consumeLook()
     this.ctx.now = now
 
@@ -763,7 +765,13 @@ export class Game {
   private stepOnce(dt: number): void {
     const character = this.character!
     const world = this.world!
+    // 刀上右键是重刀而不是开镜：先告诉输入层，再采样本帧输入。
+    this.input.meleeMode = this.heldSlot === 2
     const sample = this.input.sample()
+    // 重刀按"按下沿"触发；按住右键不会连续重砍。
+    const heavyDown = this.heldSlot === 2 && (sample.buttons & Buttons.Ads) !== 0
+    if (heavyDown && !this.wasHeavyDown && this.switchProgress() >= 1) this.onLocalHeavyMelee()
+    this.wasHeavyDown = heavyDown
     const punch = this.renderer.aimPunch()
     // 瞄准方向带相机后坐；移动方向保持鼠标原始朝向，避免按 W 时被枪口上跳带歪。
     const aimYaw = wrapAngle(sample.yaw + punch.yaw)
@@ -1122,6 +1130,8 @@ export class Game {
    */
   private reloadStartAt = 0
   private reloadMs = 0
+  /** 这次换弹属于哪把枪：切枪打断后旧枪的"上膛"声不能再播。 */
+  private reloadWeaponId = 0
   private wasReloading = false
   /** 本地预测的当前槽位与武器 id（0 主 / 1 副 / 2 刀）。 */
   private heldSlot = 0
@@ -1130,6 +1140,12 @@ export class Game {
   private switchMs = 0
   private meleeStartAt = 0
   private meleeMs = 0
+  /** 这一刀是重刀：视图模型据此放大蓄力/劈砍幅度。 */
+  private meleeHeavy = false
+  /** 刀上右键（协议里的 Ads 位）的边沿状态。 */
+  private wasHeavyDown = false
+  /** 重刀后的本地锁定截止时间；和服务端 heavyUntilTick 同义。 */
+  private heavyUntilAt = 0
   /**
    * 每个槽位最后一次在快照里看到的弹药数。
    *
@@ -1229,7 +1245,6 @@ export class Game {
         if (event.attackerId === this.myId) {
           this.feedback.hit(event.headshot, event.damage)
           this.renderer.hitPunch(event.damage, event.headshot, false)
-          this.audio.hitMarker(event.headshot)
           // 手里是刀时命中声不能借用"枪命中"那声金属叮：刀切进去和子弹打进身体
           // 是两件事，听不出来就等于每次挥刀都在怀疑自己打没打中。
           if (this.heldSlot === 2) {
@@ -1294,7 +1309,6 @@ export class Game {
           // 他只需要立刻知道"打中了"。
           this.feedback.hit(false, event.damage)
           this.renderer.hitPunch(event.damage, false, false)
-          this.audio.hitMarker(false)
           if (this.heldSlot === 2) {
             this.playKnifeImpact(event.point, 'flesh')
           } else {
@@ -1310,8 +1324,13 @@ export class Game {
           this.audio.fleshImpact(event.point, event.damage, false, this.heardThrough(event.point))
         }
       } else if (event.kind === 6 /* MonsterDeath */) {
-        this.audio.death()
         const at = this.monsterPoint(event.monsterId)
+        // Boss 的死亡由 bossDown() 的整套下坠/砸地负责，这里不再叠一条低频；
+        // 普通怪用专门的怪物死亡声，按死亡位置空间化。
+        if (event.monsterKind < 3) {
+          if (at) this.audio.monsterDeath(event.monsterKind, at, this.heardThrough(at))
+          else this.audio.monsterDeath(event.monsterKind)
+        }
         if (at) {
           // 死亡按种类给个头骨大小：猎犬瘦、行尸胖，一坨同样大的墨会显得假。
           this.renderer.effects.burst(at, event.monsterKind === 1 ? 0.85 : 1.2)
@@ -1726,14 +1745,23 @@ export class Game {
    * 这时把进度留在原地，视图模块会用指数回落收尾。
    */
   private trackReload(me: PlayerSnapshot): void {
+    // 本地已经切到别的枪时，快照里旧枪的 Reloading 位晚到一两帧是正常的；
+    // 不能再据此重启换弹动画/声音（否则打断后又会压一次枪）。
+    if (me.weaponId !== this.heldWeapon) {
+      this.wasReloading = false
+      this.reloadMs = 0
+      return
+    }
     const reloading = (me.flags & StateFlags.Reloading) !== 0
     if (reloading && !this.wasReloading) {
       this.reloadStartAt = performance.now()
       this.reloadMs = WEAPONS[me.weaponId]?.reloadMs ?? 0
+      this.reloadWeaponId = me.weaponId
       // 自己的换弹也要有声音：开仓 + 上膛；配方早就有，之前只是没人调用。
       this.audio.reloadStart(me.weaponId)
     } else if (!reloading && this.wasReloading) {
-      this.audio.reloadEnd()
+      // 换枪打断换弹时不播"上膛"：那是换成功了的声音。
+      if (me.weaponId === this.reloadWeaponId) this.audio.reloadEnd()
     }
     this.wasReloading = reloading
   }
@@ -1822,13 +1850,32 @@ export class Game {
     const spec = WEAPONS[this.heldWeapon]
     const interval = (spec?.fireIntervalMs ?? 380) * fireIntervalScale('knife', this.options.traits)
     this.options.onTraitFx?.(Trait.HundredHands)
+    if (now < this.heavyUntilAt) return
     if (now - this.meleeStartAt < interval) return
     this.meleeStartAt = now
     this.meleeMs = interval
+    this.meleeHeavy = false
     this.audio.knifeSwing()
     // 刀的"推背"只有一点点：视角猛跳的话近身缠斗会看不清对方的手。
     // 第二个参数关掉枪口闪光 —— 挥刀却在枪口放一团光，等于在黑暗里给对手报点。
     this.renderer.onLocalShot(0.25, false)
+  }
+
+  /**
+   * 重刀：右键按下沿触发。和轻刀共用 meleeStartAt，所以轻刀后立刻右键
+   * 会按重刀的长冷却被拦下；服务端用同一份 shared 常量，不会两套节奏。
+   */
+  private onLocalHeavyMelee(): void {
+    const now = performance.now()
+    const interval = KNIFE_HEAVY_INTERVAL_MS * fireIntervalScale('knife', this.options.traits)
+    if (now - this.meleeStartAt < interval) return
+    this.meleeStartAt = now
+    this.meleeMs = interval
+    this.meleeHeavy = true
+    this.heavyUntilAt = now + interval
+    this.audio.knifeHeavySwing()
+    // 重刀的推背比轻刀大：这一下必须让屏幕知道"我用了全力"。
+    this.renderer.onLocalShot(0.5, false)
   }
 
   /**
@@ -2016,6 +2063,8 @@ export class Game {
     }
     this.wallBlock += (targetWallBlock - this.wallBlock) * Math.min(1, dt * 10)
 
+    // 重刀姿势开关：视图模型只在这一刀是重刀时放大蓄力/劈砍。
+    this.renderer.setMeleeHeavy(this.meleeHeavy)
     // 眼高直接取角色控制器的当前值（蹲下时更矮）：镜头和射线起点必须同源，
     // 否则近距离会出现"准星在他头上，服务端却判没打中"。
     this.renderer.updateCamera(

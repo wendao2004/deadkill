@@ -1441,14 +1441,17 @@ export class World {
   receiveSwitchSlot(playerId: number, slot: number): void {
     const player = this.players.get(playerId)
     if (!player || !player.alive) return
+    // currentSlot 立刻生效，只有"举好"要等到 switchDoneTick。
+    // 天赋"左右开工"把切枪用时打 6 折：倍率必须传进来，否则客户端动画会和服务端的
+    // "能不能开火"错开半秒，表现为按了左键没反应。
+    const accepted = requestSwitch(player.loadout, slot, this.tick, switchScale(player.traits))
+    if (!accepted) return
+    // 只有真的切到别的槽才取消换弹；同一个槽的重复请求不该把换弹吞掉。
     if (player.reloading) {
       player.reloading = false
       player.reloadDoneTick = 0
     }
-    // currentSlot 立刻生效，只有"举好"要等到 switchDoneTick。
-    // 天赋"左右开工"把切枪用时打 6 折：倍率必须传进来，否则客户端动画会和服务端的
-    // "能不能开火"错开半秒，表现为按了左键没反应。
-    if (requestSwitch(player.loadout, slot, this.tick, switchScale(player.traits))) this.abortHeal(player)
+    this.abortHeal(player)
   }
 
   /**

@@ -508,6 +508,8 @@ export class Renderer {
   private adsBlend = 0
   /** 上一帧 updateCamera 收到的倍率。到 SCOPE_MIN_ZOOM 才在开镜时收起枪身（见 ViewmodelState.scoped）。 */
   private adsZoom = 1
+  /** 这一刀是不是重刀：由 game 在每次挥砍时设置。 */
+  private meleeHeavy = false
   private time = 0
   /** 关卡本来的雾色与密度，见构造函数里 appliedFog 的注释。 */
   private fogBase = { color: 0, density: 0 }
@@ -1309,6 +1311,7 @@ export class Renderer {
     vm.slot = slot
     vm.switchProgress = switchProgress
     vm.meleeProgress = meleeProgress
+    vm.meleeHeavy = this.meleeHeavy
     // 带镜的枪进镜筒时要收起枪身，否则模型正好压在分划上（见 viewmodel 的 scoped）。
     vm.scoped = this.adsZoom >= SCOPE_MIN_ZOOM
     // 镜筒放大的是世界，不是手里这把枪：枪位按同一倍数推远，屏幕上大小不变。
@@ -1397,6 +1400,11 @@ export class Renderer {
   /** 刀杀/收刀花式，由 game 在近战击杀时调用。 */
   flourish(): void {
     this.viewmodel.flourish()
+  }
+
+  /** 下一次 meleeProgress 用重刀姿势。 */
+  setMeleeHeavy(heavy: boolean): void {
+    this.meleeHeavy = heavy
   }
 
   onLocalShot(kick = 1, muzzle = true): void {
