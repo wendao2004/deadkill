@@ -37,6 +37,8 @@ import {
   Camera,
   ClampToEdgeWrapping,
   Color,
+  DepthFormat,
+  DepthTexture,
   HalfFloatType,
   LinearFilter,
   Mesh,
@@ -45,7 +47,9 @@ import {
   Scene,
   ShaderMaterial,
   UnsignedByteType,
+  UnsignedIntType,
   Vector2,
+  Vector3,
   Vector4,
   WebGLRenderTarget,
 } from 'three'
@@ -292,6 +296,7 @@ precision highp float;
 uniform sampler2D tWorld;
 uniform sampler2D tView;
 uniform sampler2D tBloom;
+uniform sampler2D tContact;
 uniform vec2 uWorldTexel;
 uniform float uExposure;
 uniform float uBloom;
@@ -299,6 +304,7 @@ uniform float uGrain;
 uniform float uVignette;
 uniform float uSharpness;
 uniform float uChromatic;
+uniform float uContact;
 varying vec2 vUv;
 
 ${LUM}
@@ -355,6 +361,13 @@ void main() {
   // --- 武器层合成 ---
   // MSAA resolve 后边缘像素是"覆盖率 × 颜色 / 覆盖率 alpha"，本质是预乘。
   // 先乘 (1-a) 再相加，剪影处既不会漏出世界，也不会出现一圈黑边。
+  // --- 接触阴影：只乘世界层。武器层有自己的深度，且离镜头 0.4m，
+  //     屏幕空间射线在它身上没有意义。---
+  if ( uContact > 0.0001 ) {
+    float lit = texture2D( tContact, vUv ).r;
+    world *= mix( 1.0, lit, uContact );
+  }
+
   vec4 vm = max( texture2D( tView, vUv ), vec4( 0.0 ) );
   float alpha = clamp( vm.a, 0.0, 1.0 );
   vec3 hdr = world * ( 1.0 - alpha ) + vm.rgb;
@@ -457,6 +470,87 @@ void main() {
 }
 `
 
+/**
+ * 屏幕空间接触阴影：从每个像素沿"朝月亮"的方向在视图空间里走 8 步，
+ * 投影回屏幕比较深度。比阴影贴图便宜得多，专门补"箱脚/角色脚与地面之间
+ * 那 2–4px 的暗部"—— 实时阴影在 2048² / ±52m 下做不到这个尺度。
+ *
+ * 输出 `1.0 = 无遮挡`，合成阶段只乘世界层。天空深度（1.0）直接放过。
+ *
+ * ## 为什么步进方向在视图空间
+ *
+ * 世界空间方向每帧跟着相机转，投影回屏幕时会因透视变成一条曲线；在视图
+ * 空间里沿固定方向步进，再把每个采样点投影回屏幕，才是屏幕空间阴影的
+ * 标准做法。代价是每步一次矩阵乘，8 步在独显上是可接受的。
+ */
+const CONTACT = /* glsl */ `
+precision highp float;
+uniform sampler2D tDepth;
+uniform mat4 uInvProj;
+uniform mat4 uProj;
+uniform vec3 uLightView;
+uniform float uStrength;
+uniform float uRadius;
+uniform float uBias;
+uniform float uThickness;
+uniform float uMaxDistance;
+varying vec2 vUv;
+
+float contactHash(vec2 p) {
+  p = fract(p * vec2(127.1, 311.7));
+  p += dot(p, p + 34.7);
+  return fract(p.x * p.y);
+}
+
+vec3 viewPosition(vec2 uv, float d) {
+  vec4 clip = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+  vec4 view = uInvProj * clip;
+  return view.xyz / view.w;
+}
+
+void main() {
+  float d = texture2D(tDepth, vUv).x;
+  // 天空/远裁剪面：没有遮挡体，也没有可投影的表面。
+  if (d >= 0.99999) {
+    gl_FragColor = vec4(1.0);
+    return;
+  }
+
+  vec3 origin = viewPosition(vUv, d);
+  // 只做近景：40m 外的接触阴影在屏幕上不到一个像素，步进只会制造噪点。
+  float fade = 1.0 - smoothstep(uMaxDistance * 0.6, uMaxDistance, -origin.z);
+  if (fade <= 0.001) {
+    gl_FragColor = vec4(1.0);
+    return;
+  }
+
+  // 用像素哈希抖动起点，把 8 步的阶梯状断层打散成细噪声；
+  // 之后 FXAA / 泛光会把它吃掉，不需要额外的模糊 pass。
+  float jitter = contactHash(gl_FragCoord.xy) - 0.5;
+  float occ = 0.0;
+  for (int i = 1; i <= 8; i++) {
+    float t = (float(i) + jitter) / 8.0 * uRadius;
+    vec3 p = origin + uLightView * t;
+    vec4 clip = uProj * vec4(p, 1.0);
+    vec3 ndc = clip.xyz / clip.w;
+    if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z > 1.0) break;
+    vec2 uv = ndc.xy * 0.5 + 0.5;
+    float sd = texture2D(tDepth, uv).x;
+    if (sd >= 0.99999) continue;
+    vec3 sp = viewPosition(uv, sd);
+    // 两者都是负数；sp.z > p.z 表示遮挡体比射线点更靠近相机。
+    float gap = sp.z - p.z;
+    if (gap > uBias && gap < uThickness) {
+      occ = 1.0;
+      break;
+    }
+  }
+
+  float lit = 1.0 - occ * uStrength * fade;
+  gl_FragColor = vec4(vec3(lit), 1.0);
+}
+`
+
 // ------------------------------------------------------------------ 工具
 
 /** 半浮点颜色缓冲是否可渲染。没有它就只能退回 8bit（HDR 信息会丢失，但不会崩）。 */
@@ -480,6 +574,20 @@ export class PostFX {
   private worldRT: WebGLRenderTarget
   private viewRT: WebGLRenderTarget
   private ldrRT: WebGLRenderTarget
+  /**
+   * 世界层的深度纹理。
+   *
+   * 接触阴影、GTAO、TAA 的 reactive mask 都要在这里取场景深度；武器层是
+   * 独立的全分辨率 RT，深度不参与世界效果。MSAA 的深度由 three 的
+   * `resolveDepthBuffer`（默认 true）在 resolve 时一并 blit 出来。
+   */
+  private worldDepth: DepthTexture | null = null
+  /** 接触阴影的 1 通道结果（RGBA8 占位，纹理过滤比 R8 兼容性好）。 */
+  private contactRT: WebGLRenderTarget
+  private readonly contactMaterial: ShaderMaterial
+  private contactEnabled = true
+  private contactReady = false
+  private contactStrength = 0.38
   private readonly bloomMips: BloomMip[] = []
 
   /** 世界 RT 的像素尺寸。对象本身恒定，setSize 只改字段，避免调用方拿到旧引用。 */
@@ -559,7 +667,9 @@ export class PostFX {
         tWorld: { value: null as Texture | null },
         tView: { value: null as Texture | null },
         tBloom: { value: null as Texture | null },
+        tContact: { value: null as Texture | null },
         uWorldTexel: { value: new Vector2(1, 1) },
+        uContact: { value: 0 },
         uExposure: { value: DEFAULTS.exposure },
         uBloom: { value: DEFAULTS.bloom },
         uGrain: { value: DEFAULTS.grain },
@@ -588,6 +698,26 @@ export class PostFX {
       toneMapped: false,
     })
 
+    this.contactMaterial = new ShaderMaterial({
+      uniforms: {
+        tDepth: { value: null as Texture | null },
+        uInvProj: { value: null },
+        uProj: { value: null },
+        uLightView: { value: new Vector3(0, 1, 0) },
+        uStrength: { value: 0.38 },
+        uRadius: { value: 1.2 },
+        uBias: { value: 0.02 },
+        uThickness: { value: 0.35 },
+        uMaxDistance: { value: 18 },
+      },
+      vertexShader: FS_VERT,
+      fragmentShader: CONTACT,
+      depthTest: false,
+      depthWrite: false,
+      blending: NoBlending,
+      toneMapped: false,
+    })
+
     // --- 全屏三角形 ---
     this.fsGeometry = new BufferGeometry()
     this.fsGeometry.setAttribute(
@@ -606,9 +736,10 @@ export class PostFX {
 
     // --- 初始 RT ---
     // 真实尺寸要等 setSize；先用 1x1 占位，保证 setSize 之前调用 render/present 不会炸。
-    this.worldRT = this.makeHdrTarget(1, 1, true)
+    this.worldRT = this.makeHdrTarget(1, 1, true, true)
     this.viewRT = this.makeHdrTarget(1, 1, true)
     this.ldrRT = this.makeLdrTarget(1, 1)
+    this.contactRT = this.makeContactTarget(1, 1)
     this.rebuildBloom(1, 1)
     this.bindTargets()
   }
@@ -618,6 +749,16 @@ export class PostFX {
   /** 当前世界 HDR RT。降分辨率时它会小于 viewTarget，这是刻意的。 */
   get worldTarget(): WebGLRenderTarget {
     return this.worldRT
+  }
+
+  /**
+   * 世界层的深度纹理（与 worldRT 同尺寸）。
+   *
+   * 调用方只能在 renderWorld 之后、下一帧重建 RT 之前使用；setSize/切画质
+   * 会重建 worldRT 并换掉这个引用，所以不要缓存它。
+   */
+  get depthTexture(): DepthTexture | null {
+    return this.worldDepth
   }
 
   /** 当前武器 HDR RT（始终全分辨率，透明背景）。 */
@@ -649,8 +790,11 @@ export class PostFX {
       this.worldSize.width = ww
       this.worldSize.height = wh
       const old = this.worldRT
-      this.worldRT = this.makeHdrTarget(ww, wh, true)
+      this.worldRT = this.makeHdrTarget(ww, wh, true, true)
       old.dispose()
+      const oldContact = this.contactRT
+      this.contactRT = this.makeContactTarget(ww, wh)
+      oldContact.dispose()
       // 注意：**不**在这里重建泛光金字塔。renderScale 变化只改世界 RT 的
       // 尺寸；泛光 mip 只负责"模糊 + 上采样"，采样是归一化 UV，不要求和
       // 源纹理同尺寸。每压一次分辨率就重新分配 5 张 RT，本身就会造成一次
@@ -673,6 +817,37 @@ export class PostFX {
     this.worldTexel.set(1 / ww, 1 / wh)
     this.ldrTexel.set(1 / vw, 1 / vh)
     this.bindTargets()
+  }
+
+  /**
+   * 接触阴影开关与强度。
+   *
+   * 只在 `updateContactShadow` 至少调用过一次之后才真正参与合成，
+   * 避免首帧拿着 null 矩阵去跑全屏 pass。
+   */
+  setContactShadow(enabled: boolean, strength = 0.38): void {
+    this.contactEnabled = enabled
+    this.contactStrength = Math.min(0.6, Math.max(0, strength))
+    this.compositeMaterial.uniforms.uContact.value =
+      enabled && this.contactReady ? this.contactStrength : 0
+  }
+
+  /**
+   * 每帧在 `present()` 之前调用：相机矩阵 + 朝月亮的方向（世界空间）。
+   *
+   * 深度纹理来自 worldRT；如果这一帧重建过 RT，`worldDepth` 已经是新的，
+   * 这里重新取一次即可。
+   */
+  updateContactShadow(camera: Camera, lightDirection: Vector3): void {
+    if (this.worldDepth === null) return
+    const u = this.contactMaterial.uniforms
+    u.uInvProj.value = camera.projectionMatrixInverse
+    u.uProj.value = camera.projectionMatrix
+    u.uLightView.value.copy(lightDirection).transformDirection(camera.matrixWorldInverse).normalize()
+    u.uStrength.value = this.contactStrength
+    u.tDepth.value = this.worldDepth
+    this.contactReady = true
+    this.compositeMaterial.uniforms.uContact.value = this.contactEnabled ? this.contactStrength : 0
   }
 
   setSettings(settings: PostSettings): void {
@@ -731,7 +906,7 @@ export class PostFX {
     if (resized) {
       const oldWorld = this.worldRT
       const oldView = this.viewRT
-      this.worldRT = this.makeHdrTarget(this.worldSize.width, this.worldSize.height, true)
+      this.worldRT = this.makeHdrTarget(this.worldSize.width, this.worldSize.height, true, true)
       this.viewRT = this.makeHdrTarget(this.viewWidth, this.viewHeight, true)
       oldWorld.dispose()
       oldView.dispose()
@@ -807,6 +982,7 @@ export class PostFX {
     // 上采样正在累加的目标 mip 清掉，所以整段关掉 autoClear。
     r.autoClear = false
     try {
+      if (this.contactEnabled && this.contactReady && this.worldDepth !== null) this.runContact()
       this.runBloom()
       if (this.fxaaEnabled) {
         this.runComposite(this.ldrRT)
@@ -829,6 +1005,7 @@ export class PostFX {
     this.worldRT.dispose()
     this.viewRT.dispose()
     this.ldrRT.dispose()
+    this.contactRT.dispose()
     for (const mip of this.bloomMips) mip.rt.dispose()
     this.bloomMips.length = 0
 
@@ -836,14 +1013,20 @@ export class PostFX {
     this.upMaterial.dispose()
     this.compositeMaterial.dispose()
     this.fxaaMaterial.dispose()
+    this.contactMaterial.dispose()
     this.fsGeometry.dispose()
     this.fsScene.clear()
   }
 
   // ------------------------------------------------------------ 内部
 
-  private makeHdrTarget(width: number, height: number, depth: boolean): WebGLRenderTarget {
-    return new WebGLRenderTarget(width, height, {
+  private makeHdrTarget(
+    width: number,
+    height: number,
+    depth: boolean,
+    withDepthTexture = false,
+  ): WebGLRenderTarget {
+    const target = new WebGLRenderTarget(width, height, {
       type: this.hdrType,
       format: RGBAFormat,
       minFilter: LinearFilter,
@@ -854,6 +1037,32 @@ export class PostFX {
       stencilBuffer: false,
       generateMipmaps: false,
       samples: this.samples,
+      // MSAA 的深度必须一起 resolve 到 depthTexture，否则屏幕空间效果会读到
+      // 未解析的多重采样深度（表现为整屏随机遮挡）。three 默认就是 true。
+      resolveDepthBuffer: true,
+    })
+    if (withDepthTexture) {
+      const depthTexture = new DepthTexture(width, height)
+      depthTexture.format = DepthFormat
+      depthTexture.type = UnsignedIntType
+      target.depthTexture = depthTexture
+      this.worldDepth = depthTexture
+    }
+    return target
+  }
+
+  private makeContactTarget(width: number, height: number): WebGLRenderTarget {
+    return new WebGLRenderTarget(width, height, {
+      type: UnsignedByteType,
+      format: RGBAFormat,
+      minFilter: LinearFilter,
+      magFilter: LinearFilter,
+      wrapS: ClampToEdgeWrapping,
+      wrapT: ClampToEdgeWrapping,
+      depthBuffer: false,
+      stencilBuffer: false,
+      generateMipmaps: false,
+      samples: 0,
     })
   }
 
@@ -908,6 +1117,7 @@ export class PostFX {
     cu.tWorld.value = this.worldRT.texture
     cu.tView.value = this.viewRT.texture
     cu.tBloom.value = this.bloomMips.length > 0 ? this.bloomMips[0]!.rt.texture : null
+    cu.tContact.value = this.contactRT.texture
     cu.uWorldTexel.value.copy(this.worldTexel)
 
     const fu = this.fxaaMaterial.uniforms
@@ -959,6 +1169,12 @@ export class PostFX {
 
     // 由粗到细累加完之后，mip0 就是最终 bloom。
     this.compositeMaterial.uniforms.tBloom.value = this.bloomMips[0]!.rt.texture
+  }
+
+  private runContact(): void {
+    const u = this.contactMaterial.uniforms
+    u.tDepth.value = this.worldDepth
+    this.blit(this.contactMaterial, this.contactRT)
   }
 
   private runComposite(target: WebGLRenderTarget | null): void {
