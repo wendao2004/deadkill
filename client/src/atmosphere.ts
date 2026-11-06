@@ -144,6 +144,11 @@ export interface FireLight {
 export interface Atmosphere {
   readonly root: Group
   /**
+   * 天空球。环境探针（environment.ts）会 clone 它烘 IBL；外部不要改它的
+   * 变换/材质，只当作一个可复制的视觉源。
+   */
+  readonly sky: Mesh
+  /**
    * 主光（月光）。渲染器要用它开启实时阴影，并让阴影相机跟着玩家走。
    * 暴露对象而不是复制一份方向：灯的 position/target 每帧由本模块维护，
    * 外部只读。
@@ -863,6 +868,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
 
   return {
     root,
+    sky,
     keyLight: moon,
     moonDirection: moonDir,
     update,
