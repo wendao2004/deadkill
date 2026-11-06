@@ -78,6 +78,10 @@ import {
   heldAmmo,
   heldWeapon,
   isKnife,
+  KNIFE_HEAVY_ARC,
+  KNIFE_HEAVY_DAMAGE_SCALE,
+  KNIFE_HEAVY_INTERVAL_MS,
+  KNIFE_HEAVY_RANGE,
   isPrimaryChoice,
   isSwitching,
   actionScale,
@@ -318,6 +322,10 @@ interface PlayerState {
   ads: boolean
   reloading: boolean
   reloadDoneTick: number
+  /** 刀上右键的边沿状态：按住只触发一次重刀，不会每 tick 都砍。 */
+  heavyHeld: boolean
+  /** 重刀后的锁定帧：这段时间连轻刀也不能出，避免"重刀接轻刀"白嫖。 */
+  heavyUntilTick: number
   /**
    * 槽位 / 按槽弹药 / 切枪计时，规则在 shared/src/loadout.ts。
    *
@@ -1363,6 +1371,8 @@ export class World {
       ads: false,
       reloading: false,
       reloadDoneTick: 0,
+      heavyHeld: false,
+      heavyUntilTick: 0,
       loadout: createLoadout(DEFAULT_WEAPON_ID),
       ackSeq: 0,
       ackedTick: 0,
@@ -1424,13 +1434,17 @@ export class World {
   /**
    * 收到切槽请求。
    *
-   * 限制在"活着且不在换弹"：换弹途中抽刀，现实中等于把通条丢在地上，
-   * 代码里等于换弹计时器与切枪计时器互相覆盖 —— 两个都不做才是对的。
+   * 换弹中允许切枪，并且**直接打断换弹**：玩家按 2/3/1 就是"我现在不想
+   * 换了"。旧实现静默拒绝，客户端却已经本地切了，快照再把人拉回去 ——
+   * 表现就是"换弹时切不动枪"。打断即放弃这次装填，不补弹。
    */
   receiveSwitchSlot(playerId: number, slot: number): void {
     const player = this.players.get(playerId)
     if (!player || !player.alive) return
-    if (player.reloading) return
+    if (player.reloading) {
+      player.reloading = false
+      player.reloadDoneTick = 0
+    }
     // currentSlot 立刻生效，只有"举好"要等到 switchDoneTick。
     // 天赋"左右开工"把切枪用时打 6 折：倍率必须传进来，否则客户端动画会和服务端的
     // "能不能开火"错开半秒，表现为按了左键没反应。
@@ -1634,7 +1648,14 @@ export class World {
       }
     }
 
-    if ((input.buttons & Buttons.Fire) !== 0) this.tryFire(player)
+    // 刀上右键走 Ads 位：刀没有开镜，这个位在这里的语义就是"重刀"。
+    // 只在按下的边沿触发，按住不会每 tick 都砍；切换走/收刀自然清零。
+    const heldSpec = heldWeapon(player.loadout)
+    const heavyHeld = isKnife(heldSpec) && (input.buttons & Buttons.Ads) !== 0
+    const heavyTriggered = heavyHeld && !player.heavyHeld
+    if (heavyTriggered) this.tryHeavyMelee(player)
+    player.heavyHeld = heavyHeld
+    if (!heavyTriggered && (input.buttons & Buttons.Fire) !== 0) this.tryFire(player)
   }
 
   private characterStep(player: PlayerState, input: PlayerInput): void {
@@ -1922,11 +1943,33 @@ export class World {
 
   // ------------------------------------------------------------ 射击
 
+  /**
+   * 重刀：刀上右键，单次高伤害、长冷却、更大的刀程与扇形。
+   *
+   * 和轻刀共用 `lastFireTick`：轻刀后立刻重刀要等 900ms，避免"轻刀接重刀"
+   * 白嫖两次伤害。换弹/切枪中直接丢弃，不排队。
+   */
+  private tryHeavyMelee(player: Player): void {
+    const spec = heldWeapon(player.loadout)
+    if (!isKnife(spec) || player.reloading) return
+    if (isSwitching(player.loadout, this.tick)) return
+    const cooldown = Math.ceil(
+      (KNIFE_HEAVY_INTERVAL_MS * fireIntervalScale('knife', player.traits)) / TICK_MS,
+    )
+    if (this.tick - player.loadout.lastFireTick < cooldown) return
+    player.loadout.lastFireTick = this.tick
+    player.heavyUntilTick = this.tick + cooldown
+    this.abortHeal(player)
+    this.meleeSwing(player, spec, true)
+  }
+
   private tryFire(player: Player): void {
     const spec = heldWeapon(player.loadout)
     // 换弹与切枪都是"手上的动作还没做完"：这时候的左键直接丢弃，不排队。
     // 排队会让玩家在切枪结束的那一 tick 连喷好几发 —— 那不是手感，是外挂。
     if (player.reloading) return
+    // 重刀后的锁定：这段时间轻刀也不能出，否则 900ms 的代价被 380ms 的轻刀绕过。
+    if (isKnife(spec) && this.tick < player.heavyUntilTick) return
     if (!canFire(player.loadout, this.tick, fireIntervalScale(spec.kind, player.traits))) return
     // 开枪即中止包扎：手上既然已经抬枪，那条绷带就没扎完，进度不给保留。
     this.abortHeal(player)
@@ -2110,7 +2153,7 @@ export class World {
    * 照样发一个 ShotEvent：客户端要靠它播挥刀音效与刀光，否则近战完全没有
    * 反馈；weaponId 是刀的 id，客户端据此知道该放刀声而不是枪声。
    */
-  private meleeSwing(player: Player, spec: WeaponSpec): void {
+  private meleeSwing(player: Player, spec: WeaponSpec, heavy = false): void {
     const eye = player.character.eye
     // 刀不吃散布（spread 0），直接拿视线方向当扇形中心。
     const dir = aimDirection(player.yaw, player.pitch, spec, false, 0)
@@ -2159,7 +2202,13 @@ export class World {
       weaponId: spec.id,
     })
 
-    const hit = meleeStrike(eye, dir, spec, candidates)
+    const hit = meleeStrike(
+      eye,
+      dir,
+      spec,
+      candidates,
+      heavy ? { range: KNIFE_HEAVY_RANGE, arc: KNIFE_HEAVY_ARC } : undefined,
+    )
     if (!hit) return
     // 刀也要看墙：meleeStrike 只遍历胶囊，不做静态遮挡。薄墙后 0.5m 的目标
     // 仍在 2.4m 刀程内，不补这一条就能隔墙/隔月台地板砍人。
@@ -2181,7 +2230,8 @@ export class World {
       player,
       target,
       damageAt(spec, Math.min(hit.distance, spec.effectiveRange), hit.headshot) *
-        meleeDamageScale(player.traits),
+        meleeDamageScale(player.traits) *
+        (heavy ? KNIFE_HEAVY_DAMAGE_SCALE : 1),
       hit.headshot,
       hit.point,
     )
@@ -2314,6 +2364,8 @@ export class World {
     player.alive = true
     player.reloading = false
     player.ads = false
+    player.heavyHeld = false
+    player.heavyUntilTick = 0
     // 重生 = 重新配装：上一命打空的弹匣不该跨命继承。
     resetLoadout(player.loadout)
     player.character.teleport(spawn)
