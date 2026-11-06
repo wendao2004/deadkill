@@ -352,20 +352,29 @@ export class Feedback {
   hit(headshot: boolean, damage: number): void {
     if (this.disposed) return
 
-    // 爆头只切一次 class（静态尺寸与配色），不是动画。
+    // 爆头只切一次 class（静态配色），不是动画。
     this.hitMarker.classList.toggle('dkfb-hit--head', headshot)
 
+    // 命中越重，X 越大、停留越久：一发 105 的狙击和一发 16 的霰弹弹丸
+    // 如果反馈完全一样，玩家就只能靠伤害数字确认自己换枪了。上限压在
+    // 62px，别让重击把屏幕中心糊住。
+    const power = Math.min(1, Math.max(0.2, damage / 120))
+    const size = Math.round(40 + power * 18 + (headshot ? 10 : 0))
+    this.hitMarker.style.width = `${size}px`
+    this.hitMarker.style.height = `${size}px`
+    const startScale = 1.35 + power * 0.3
+
     // 必须 cancel 上一段动画再起新的：cancel 会把元素打回关键帧起点，
-    // 于是连发时每一发都是满强度的 1.5 → 1.0。若改用 class 开关，
+    // 于是连发时每一发都是满强度的满屏 X。若改用 class 开关，
     // 浏览器会把「移除再添加同名动画」合并进同一帧，表现是越打越淡甚至整段不播。
     this.hitAnim?.cancel()
     const anim = this.hitMarker.animate(
       [
-        { transform: 'translate(-50%, -50%) scale(1.5)', opacity: 1 },
+        { transform: `translate(-50%, -50%) scale(${startScale})`, opacity: 1 },
         { transform: 'translate(-50%, -50%) scale(1)', opacity: 0 },
       ],
       // steps() 让淡出走台阶而不是线性滑 —— 手绘/印刷质感，也省掉插值。
-      { duration: HIT_MS, easing: 'steps(6, end)', fill: 'none' },
+      { duration: HIT_MS + Math.round(power * 80) + (headshot ? 30 : 0), easing: 'steps(6, end)', fill: 'none' },
     )
     this.track(anim)
     this.hitAnim = anim
@@ -585,8 +594,10 @@ export class Feedback {
     // 数字是我们算的整数，但仍然用 textContent，不拼任何 HTML。
     slot.el.textContent = String(Math.max(0, Math.round(damage)))
     slot.el.style.opacity = '1'
+    // 重击的数字初始更大：数字本身也是命中反馈的一部分，不只负责报数。
+    const pop = 1.12 + Math.min(0.5, damage / 220) + (headshot ? 0.18 : 0)
     slot.el.style.transform =
-      `translate(-50%, -50%) translate(${slot.ox}px, ${slot.oy}px) scale(1.22)`
+      `translate(-50%, -50%) translate(${slot.ox}px, ${slot.oy}px) scale(${pop})`
   }
 
   /**

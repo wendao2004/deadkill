@@ -1423,7 +1423,11 @@ export class Renderer {
    */
   hitPunch(damage: number, headshot: boolean, kill: boolean): void {
     const weight = Math.min(1, Math.max(0.15, damage / 60)) * (headshot ? 1.35 : 1)
-    this.freeze = Math.max(this.freeze, kill ? 0.075 : headshot ? 0.055 : 0.04)
+    // 定格时长也吃伤害：重枪/爆头多停一两帧，轻武器连射不会被拖慢。
+    this.freeze = Math.max(
+      this.freeze,
+      kill ? 0.082 : headshot ? 0.06 : 0.038 + Math.min(0.014, damage / 9000),
+    )
     const adsScale = 1 - this.adsBlend * 0.55
     this.punchPitch += 0.011 * weight * adsScale * this.motionScale
     this.punchYaw += (Math.random() - 0.5) * 0.007 * weight * adsScale * this.motionScale
