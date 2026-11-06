@@ -48,6 +48,7 @@ import {
   LineSegments,
   Mesh,
   MeshBasicMaterial,
+  MeshStandardMaterial,
   MeshToonMaterial,
   NearestFilter,
   NoToneMapping,
@@ -80,6 +81,7 @@ import { createMonsterRenderer, type MonsterRenderer, type MonsterView } from '.
 import { createObjectiveMarkers, type ObjectiveMarkers, type ObjectiveView } from './markers.ts'
 import { createVfx, type ImpactKind, type Vfx } from './vfx.ts'
 import { createAtmosphere, type Atmosphere } from './atmosphere.ts'
+import { createEnvironmentProbe, type EnvironmentProbe } from './environment.ts'
 import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './shadows.ts'
 import { createViewmodel, type Viewmodel, type ViewmodelKit, type ViewmodelState } from './viewmodel.ts'
 
@@ -361,6 +363,8 @@ export class Renderer {
   /** 非碰撞装饰（水、芦苇、栅栏、雾墙）。纯视觉，不参与任何判定。 */
   private readonly props: Props
   private readonly atmo: Atmosphere
+  /** 从天空球烘出来的 IBL；PBR 材质靠它拿到方向性环境反射。 */
+  private readonly environment: EnvironmentProbe
   /** 怪物渲染器。状态完全由服务端快照驱动，客户端不预测它们。 */
   private readonly monsters: MonsterRenderer
   /** 世界里的目标标记（线索光柱 / 血巢 / 撤离线），由 game.ts 喂目标状态。 */
@@ -373,6 +377,14 @@ export class Renderer {
    */
   private readonly ink: ShaderMaterial
   private edgeMat: LineBasicMaterial | null = null
+  /**
+   * 写实档开关。
+   *
+   * 第三档（全面写实）默认开启：武器与猎人走 PBR + IBL，不再叠卡通排线
+   * 和墨线。世界层（关卡/道具/怪物）在 M2 换材质之前仍走 toon，
+   * 所以这个开关目前只作用于通过 `surfaceMaterial` 拿材质的对象。
+   */
+  private readonly realistic = true
   /** 基础视野角（度），设置面板可改。开镜收窄在它之上叠加。 */
   private baseFov = BASE_FOV
   /** 渲染分辨率缩放，见 setRenderScale。 */
@@ -429,7 +441,7 @@ export class Renderer {
     this.hunterMaterials = createHunterMaterials(
       {
         toon: (color, options) =>
-          this.toonMaterial(color, {
+          this.surfaceMaterial(color, {
             hatch: options?.hatch,
             hatchSpacing: options?.hatchSpacing,
             surface: options?.surface,
@@ -437,7 +449,11 @@ export class Renderer {
             rim: options?.rim,
             map: options?.map,
           }),
-        addInk: (mesh, pixels) => this.addInk(mesh, pixels),
+        // 写实档不给角色加墨线壳：这里留一条细轮廓会把 PBR 材质重新压回
+        // 卡通剪影，而轮廓识别在 M3 会用"仅敌人"的 1.2–1.4px 描边补回来。
+        addInk: (mesh, pixels) => {
+          if (!this.realistic) this.addInk(mesh, pixels)
+        },
       },
       this.hunterTextures,
     )
@@ -526,6 +542,14 @@ export class Renderer {
     // 两套灯叠在地上就还是白天，夜晚永远是"调暗一点"而不是另一种照明。
     this.atmo = createAtmosphere(this.scene)
     this.atmo.setLevel(level.fogColor, level.fogDensity)
+    // 天空烘成 IBL：必须在 setLevel 之后，否则烘到的是默认雾色而不是这一局
+    // 的天光。武器场景单独给一份更高的 intensity —— 棚拍灯下金属需要环境
+    // 反射才不像一块灰板，但世界层不能被环境光洗成灰白天。
+    this.environment = createEnvironmentProbe(this.gl, this.atmo.sky)
+    this.scene.environment = this.environment.environment
+    this.scene.environmentIntensity = 0.35
+    this.viewScene.environment = this.environment.environment
+    this.viewScene.environmentIntensity = 1.0
     // 假高光的方向 = 月光方向。世界材质用它；武器场景在 render() 里会临时
     // 换成固定的"棚拍"方向（见 render 末尾），两套光照各自自洽。
     setInkKeyDirection(
@@ -579,18 +603,25 @@ export class Renderer {
       // 武器有自己的棚拍灯（见构造函数上方），自发光只需要把最暗的一档从
       // 纯黑抬起来一点，保留"夜里也能读出机匣分界"的功能，不再承担主照明。
       toon: (color, options) => {
-        return this.toonMaterial(color, {
-          fog: false,
-          hatch: options?.hatch,
-          hatchSpacing: options?.hatchSpacing,
-          surface: options?.surface,
-          specular: options?.specular,
-          rim: options?.rim,
-          emissive: options?.emissive ?? 0.3,
-          map: options?.map,
-        })
+        return this.surfaceMaterial(
+          color,
+          {
+            hatch: options?.hatch,
+            hatchSpacing: options?.hatchSpacing,
+            surface: options?.surface,
+            specular: options?.specular,
+            rim: options?.rim,
+            emissive: options?.emissive ?? 0.3,
+            map: options?.map,
+          },
+          true,
+        )
       },
-      addInk: (mesh, pixels) => this.addInk(mesh, pixels),
+      // 第一人称武器是写实档里最不该被墨线勾边的一块：它离镜头 0.4m，
+      // 墨线会变成一圈黑描边，正好和 PBR 的金属高光打架。
+      addInk: (mesh, pixels) => {
+        if (!this.realistic) this.addInk(mesh, pixels)
+      },
       textures: {
         metal: this.hunterTextures.metal,
         wood: this.hunterTextures.wood,
@@ -720,6 +751,9 @@ export class Renderer {
       setInkDetail(true)
       this.minScale = 0.75
     }
+    // 接触阴影是写实档的固定项；performance 档是低端独显兜底，关掉省一次
+    // 全屏 8 步射线。强度在 quality 档给足，balanced 收一点。
+    this.post.setContactShadow(resolved !== 'performance', resolved === 'quality' ? 0.42 : 0.32)
   }
 
   setSize(width: number, height: number): void {
@@ -773,7 +807,9 @@ export class Renderer {
     root.traverse((object) => {
       if (!(object instanceof Mesh)) return
       const material = object.material
-      if (!(material instanceof MeshToonMaterial)) return
+      // 写实档会把 props/怪物的材质逐批换成 StandardMaterial；继续只认
+      // MeshToonMaterial 会让它们静默失去投影（编译通过、画面上只是没影子）。
+      if (!(material instanceof MeshToonMaterial) && !(material instanceof MeshStandardMaterial)) return
       if (material.transparent) return
       // 双面片：草叶、芦苇、旗布。它们在 2048 的阴影图上比一个 texel 还细，
       // 投出来只有噪点，还会让阴影相机多画几千个实例。
@@ -837,6 +873,79 @@ export class Renderer {
       specColor: opts.specColor,
       rim: opts.rim,
     })
+    this.disposables.push(mat)
+    return mat
+  }
+
+  /**
+   * 武器/猎人材质调度：写实档走 PBR，回退档仍走 toon。
+   *
+   * `view` 只影响雾：第一人称武器在独立场景里，没有世界雾；猎人要参与世界雾。
+   */
+  private surfaceMaterial(
+    color: number,
+    opts: {
+      fog?: boolean
+      hatch?: number
+      hatchSpacing?: number
+      surface?: ComicSurface
+      specular?: number
+      specColor?: number
+      rim?: number
+      emissive?: number
+      map?: Texture
+    } = {},
+    view = false,
+  ): Material {
+    if (!this.realistic) {
+      return this.toonMaterial(color, {
+        ...opts,
+        fog: view ? false : opts.fog,
+        // 武器场景里自发光只负责把最暗一档抬起来，沿用旧值。
+        emissive: view ? opts.emissive ?? 0.3 : opts.emissive,
+      })
+    }
+    return this.pbrMaterial(color, { ...opts, fog: view ? false : opts.fog ?? true })
+  }
+
+  /**
+   * PBR 材质：把原来的"假高光强度"翻译成粗糙度/金属度。
+   *
+   * 写实档不再有 44 次幂 Blinn 假高光 —— 真实的方向性反射由 IBL 和
+   * 月光/棚拍灯提供。`specular` 只是旧参数名，这里当作"表面有多亮"的意图：
+   * 金属按 1.0 金属度、粗糙度 0.12–0.55；非金属保持 0 金属度、0.35–0.8。
+   *
+   * 贴图目前只有启动时烘的灰度细节图（布/皮革/金属/木）。它作为 albedo
+   * 乘性细节使用；法线/ORM 贴图要等 M2 的 512² 五族资产。
+   */
+  private pbrMaterial(
+    color: number,
+    opts: {
+      fog?: boolean
+      surface?: ComicSurface
+      specular?: number
+      emissive?: number
+      map?: Texture
+    } = {},
+  ): MeshStandardMaterial {
+    const metal = opts.surface === 'metal'
+    const specular = opts.specular ?? (metal ? 0.4 : 0.05)
+    const roughness = metal
+      ? Math.min(0.55, Math.max(0.12, 0.55 - specular * 0.45))
+      : Math.min(0.82, Math.max(0.35, 0.76 - specular * 0.5))
+    const mat = new MeshStandardMaterial({
+      color,
+      metalness: metal ? 1 : 0,
+      roughness,
+      // 夜景 IBL 很暗，给一点加成；否则金属只剩棚拍灯的一点点直接高光，
+      // 仍然读成灰板。环境本身来自天空球，不会把暗部洗白。
+      envMapIntensity: metal ? 1.6 : 0.9,
+      fog: opts.fog ?? true,
+    })
+    if (opts.map !== undefined) mat.map = opts.map
+    if (opts.emissive !== undefined && opts.emissive > 0) {
+      mat.emissive = new Color(color).multiplyScalar(opts.emissive)
+    }
     this.disposables.push(mat)
     return mat
   }
@@ -1283,6 +1392,9 @@ export class Renderer {
     const moon = this.atmo.moonDirection
     setInkKeyDirection(moon.x, moon.y, moon.z)
     this.post.renderWorld(this.scene, this.camera)
+    // 深度已经写完：把相机矩阵与朝月亮的方向交给接触阴影。放在武器层之前，
+    // present 里就能直接用这一帧的深度，不需要额外 prepass。
+    this.post.updateContactShadow(this.camera, moon)
 
     setInkKeyDirection(-0.35, 0.78, 0.52)
     this.post.renderView(this.viewScene, this.viewCamera)
@@ -1400,6 +1512,12 @@ export class Renderer {
       if (fogTint !== 0) fog.color.setHex(fogTint)
       else fog.color.setHex(this.fogBase.color)
       this.atmo.setLevel(fog.color.getHex(), fog.density)
+      // 天光跟着雾色变了：重烘一次 IBL。capture 返回的是新纹理，两个场景
+      // 都要重新指过去，否则环境反射还停在上一种天气。
+      this.environment.capture()
+      const env = this.environment.environment
+      this.scene.environment = env
+      this.viewScene.environment = env
     }
   }
 
@@ -1410,7 +1528,8 @@ export class Renderer {
     this.viewmodel.dispose()
     this.props.dispose()
     // 大气在 props 之后：它会把自己那盏复用的 FogExp2 还原，props 里若有
-    // 依赖雾的材质先释放更安全。
+    // 依赖雾的材质先释放更安全。环境探针 clone 了天空，先于大气释放。
+    this.environment.dispose()
     this.atmo.dispose()
     for (const avatar of this.avatars.values()) avatar.model.dispose()
     this.avatars.clear()
