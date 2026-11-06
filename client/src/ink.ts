@@ -28,6 +28,30 @@
  * 沿 4 级色阶的边界切出一条锯齿带。smoothstep 让排线在阈值附近有一段渐变，
  * 色阶切换处被吃掉，才不会看到"台阶外面镶了一圈脏边"。
  *
+ * ## 为什么要加世界空间的三平面细节
+ *
+ * 关卡是纯色盒子、枪是程序化倒角块：4 级色阶 + 排线解决了"明暗"，但没解决
+ * "这是什么材质"。UV 在合批之后根本不存在（render.ts 把九百多个盒子烘进
+ * 一份几何），屏幕空间噪声又会跟着相机游泳。于是按世界坐标、按主导轴投影出
+ * 一个 2D 平面取样：砖缝、木纹、拉丝、泥点就永远钉在表面上，近看远看一致。
+ * 只取一个主导轴而不是三轴混合：三轴要 3 次取样再插值，而在盒子/枪械这种
+ * 九成是轴对齐面的几何上，混合的收益抵不上多出来的两次噪声。
+ *
+ * ## 为什么固有色调制压在 ±20% 以内
+ *
+ * 这是"让平面读成材质"，不是"贴壁纸"。细节一旦超过 ±20%，4 级色阶会被噪声
+ * 打散，卡通感立刻退化成低分辨率 PBR。砖缝/板缝是例外（30%）：那里本来就
+ * 该是断开的，断开得越干脆，墙才越像砖砌的。
+ *
+ * ## 为什么高光是假的
+ *
+ * 卡通材质只有 4 级漫反射，倒角、枪管、金属棱边在夜里会塌成同一块平色。
+ * 用月亮方向做一个 44 次幂的 Blinn 高光 + 菲涅尔轮廓光，成本是两次 dot 和
+ * 一次 pow，就能把"这是金属"这个信息补回来，而不必切到 PBR 材质 —— 后者会
+ * 引入环境贴图、粗糙度链和一条完全不同的 program，还要和 NoToneMapping 打架。
+ * 方向放在 INK_SHARED 里由渲染器每帧指向月亮；强度默认 0，所以不开的材质
+ * 像素一个都不变。
+ *
  * ## 为什么必须有 customProgramCacheKey
  *
  * three 的 program 缓存键只看材质类型与 defines / 光照分支 / 贴图槽，**不看
@@ -50,6 +74,9 @@
  *
  * 本文件自包含，不 import 任何东西 —— 补丁只碰材质的运行时字段与 GLSL 字符串。
  */
+
+/** 程序化细节的材质家族。默认 'default' 完全不产生细节，旧画面逐像素不变。 */
+export type ComicSurface = 'default' | 'stone' | 'wood' | 'metal' | 'mud' | 'foliage'
 
 export interface ComicOptions {
   /**
@@ -82,9 +109,75 @@ export interface ComicOptions {
   tint?: number
   /** 第二色混入量 0..1，默认 0（纯乘性压暗，不改变色相）。 */
   tintAmount?: number
+  /**
+   * 材质家族，决定世界空间三平面细节的图案，默认 'default'（关闭）。
+   *
+   * 只影响固有色级别的细节（砖缝/木纹/拉丝/泥点/叶簇），不改变光照模型；
+   * 强度刻意压在 ±20% 以内，砖缝等结构缝最多 30%。
+   */
+  surface?: ComicSurface
+  /** 假高光强度 0..1，默认 0。金属枪身的倒角靠它读出来。 */
+  specular?: number
+  /** 高光/轮廓光颜色（十六进制 sRGB），默认 0xffffff。 */
+  specColor?: number
+  /** 剪影轮廓光强度 0..1，默认 0。逆光时勾出枪管与怪物的边缘。 */
+  rim?: number
 }
 
-/** 挂在 userData.comicUniforms 上的四个可调项；运行时改 .value 即刻生效，不重编译。 */
+/**
+ * 共享 uniform：所有打补丁的材质引用**同一个对象**，于是渲染器每帧只需要
+ * 调一次 setInkKeyDirection 就能让全场高光跟着月亮转，而不必遍历材质。
+ */
+export const INK_SHARED: {
+  keyDir: { value: number[] }
+  /** 0 = 关闭世界空间程序化细节（性能档）；1 = 开。默认 1。 */
+  detail: { value: number }
+} = {
+  // 约等于 atmosphere.ts 的默认月亮方向（方位 149°、仰角 18°），
+  // 只在渲染器尚未调用 setInkKeyDirection 时兜底；specular 默认 0，不影响画面。
+  keyDir: { value: [0.489, 0.309, -0.815] },
+  detail: { value: 1 },
+}
+
+/** 性能档：跳过三平面材质细节的噪声采样（描边/排线/污渍保留）。 */
+export function setInkDetail(on: boolean): void {
+  INK_SHARED.detail.value = on ? 1 : 0
+}
+
+/** 把假高光的方向指向世界空间单位向量 (x, y, z)；内部归一化，原地改数组。 */
+export function setInkKeyDirection(x: number, y: number, z: number): void {
+  const dir = INK_SHARED.keyDir.value
+  const len = Math.hypot(x, y, z)
+  if (len < 1e-6) {
+    dir[0] = 0
+    dir[1] = 1
+    dir[2] = 0
+    return
+  }
+  dir[0] = x / len
+  dir[1] = y / len
+  dir[2] = z / len
+}
+
+/** 材质家族 → shader 里的整数编号。顺序即协议，改动要同步 INJECT_GLSL。 */
+function surfaceIdOf(surface: ComicSurface | undefined): number {
+  switch (surface) {
+    case 'stone':
+      return 1
+    case 'wood':
+      return 2
+    case 'metal':
+      return 3
+    case 'mud':
+      return 4
+    case 'foliage':
+      return 5
+    default:
+      return 0
+  }
+}
+
+/** 挂在 userData.comicUniforms 上的可调项；运行时改 .value 即刻生效，不重编译。 */
 type ComicUniforms = {
   uComicHatchSpacing: { value: number }
   uComicHatchStrength: { value: number }
@@ -93,6 +186,14 @@ type ComicUniforms = {
   uComicMottle: { value: number }
   uComicTint: { value: [number, number, number] }
   uComicTintAmount: { value: number }
+  uComicSurface: { value: number }
+  uComicSpecular: { value: number }
+  uComicSpecColor: { value: [number, number, number] }
+  uComicRim: { value: number }
+  /** 与 INK_SHARED.keyDir 是同一个对象，故意不做拷贝。 */
+  uInkKeyDir: { value: number[] }
+  /** 与 INK_SHARED.detail 是同一个对象。 */
+  uComicDetail: { value: number }
 }
 
 /**
@@ -101,8 +202,8 @@ type ComicUniforms = {
  */
 const FRAGMENT_HOOK = '#include <opaque_fragment>'
 
-/** 程序缓存键：版本号带在里面，将来升级注入内容时换 v2 即可全量失效。 */
-const CACHE_KEY = 'comic-ink-v1'
+/** 程序缓存键：版本号带在里面，将来升级注入内容时换版本即可全量失效。 */
+const CACHE_KEY = 'comic-ink-v2'
 
 /** 便宜的 2D→1D 整数哈希：不需要好看，只需要相邻格子不相关。 */
 const HASH_GLSL = [
@@ -138,23 +239,144 @@ const HASH_GLSL = [
 ].join('\n')
 
 /**
+ * 世界空间材质细节。
+ *
+ * 每个函数只返回**固有色乘数**（vec3），不碰光照：这样排线、污渍、tint 的
+ * 判断仍然基于同一条光照结果，色阶不会因为贴了细节就错位。
+ * horizon = 1 表示该片元的主导轴是 Y（地面/桌面），砖墙要换成不规则石板，
+ * 木纹/拉丝也要把纤维方向转 90°。
+ *
+ * 取样预算：每个函数最多 3 次 comicNoise2，加原有排线/污渍的 5 次仍在 8 次以内。
+ */
+const SURFACE_GLSL = [
+  '// Stone: brick courses on walls, irregular flagstones on horizontal faces.',
+  'vec3 comicStoneSurface(vec2 p, float horizon) {',
+  '  vec3 tint = vec3(1.0);',
+  '  if (horizon > 0.5) {',
+  '    // Flagstones: one jittered grid (a Voronoi needs neighbour loops we do not want).',
+  '    float warp = comicNoise2(p * 1.7 + vec2(3.1, 8.7));',
+  '    vec2 q = p / vec2(0.92, 0.74);',
+  '    q += (vec2(warp, comicNoise2(p * 1.7 + vec2(9.3, 2.1))) - 0.5) * 0.22;',
+  '    vec2 cell = floor(q);',
+  '    vec2 f = fract(q);',
+  '    float d = min(min(f.x, 1.0 - f.x) * 0.92, min(f.y, 1.0 - f.y) * 0.74);',
+  '    float gap = 1.0 - smoothstep(0.006, 0.022, d);',
+  '    float stone = 0.93 + 0.14 * comicHash21(cell + 3.7);',
+  '    tint *= stone * (1.0 - 0.28 * gap);',
+  '  } else {',
+  '    // Brick courses: 0.78m x 0.30m, every other row shifted half a brick.',
+  '    float row = floor(p.y / 0.30);',
+  '    float bxx = p.x + mod(row, 2.0) * 0.39;',
+  '    float col = floor(bxx / 0.78);',
+  '    vec2 f = vec2(fract(bxx / 0.78) * 0.78, fract(p.y / 0.30) * 0.30);',
+  '    float d = min(min(f.x, 0.78 - f.x), min(f.y, 0.30 - f.y));',
+  '    float mortar = 1.0 - smoothstep(0.006, 0.018, d);',
+  '    float brick = 0.93 + 0.14 * comicHash21(vec2(row, col) + 5.1);',
+  '    // A thin catch light along each brick top lip: sunlight on the chamfer.',
+  '    float lip = smoothstep(0.26, 0.298, f.y);',
+  '    tint *= brick * (1.0 - 0.30 * mortar);',
+  '    tint += vec3(0.05) * lip * (1.0 - mortar);',
+  '  }',
+  '  // Low-frequency weathering: moss, rain, years of sun.',
+  '  tint *= 0.90 + 0.20 * comicNoise2(p * 0.33 + vec2(4.7, 8.1));',
+  '  return tint;',
+  '}',
+  '// Wood: ~6.5x stretched grain, 0.42m board seams, sparse knots.',
+  'vec3 comicWoodSurface(vec2 p, float horizon) {',
+  '  float across = p.x;',
+  '  float along = p.y;',
+  '  if (horizon > 0.5) {',
+  '    across = p.y;',
+  '    along = p.x;',
+  '  }',
+  '  // Board seams and plank-to-plank value variation.',
+  '  float plank = floor(across / 0.42);',
+  '  float seamD = min(fract(across / 0.42), 1.0 - fract(across / 0.42)) * 0.42;',
+  '  float seam = 1.0 - smoothstep(0.004, 0.014, seamD);',
+  '  float plankVal = 0.93 + 0.14 * comicHash21(vec2(plank, 17.3));',
+  '  // Grain is the same noise stretched along the board, plus a finer fibre line.',
+  '  float grain = comicNoise2(vec2(across * 24.0, along * 3.7));',
+  '  grain = grain * 0.72 + 0.28 * comicNoise2(vec2(across * 61.0, along * 7.0) + 9.1);',
+  '  vec3 tint = vec3(plankVal * (0.90 + 0.18 * grain));',
+  '  // Knots: one cheap jittered cell per 1.6m, circular darkening, not all cells.',
+  '  vec2 kq = p / 1.6;',
+  '  vec2 kc = floor(kq);',
+  '  vec2 kf = fract(kq) - (0.30 + 0.40 * vec2(comicHash21(kc), comicHash21(kc + 7.1)));',
+  '  float knot = (1.0 - smoothstep(0.03, 0.10, length(kf))) * step(0.72, comicHash21(kc + 2.3));',
+  '  tint *= 1.0 - 0.22 * knot;',
+  '  tint *= 1.0 - 0.26 * seam;',
+  '  return tint;',
+  '}',
+  '// Metal: brushed streaks, weak oxidation patches, edge pits.',
+  'vec3 comicMetalSurface(vec2 p, float horizon) {',
+  '  float across = p.x;',
+  '  float along = p.y;',
+  '  if (horizon > 0.5) {',
+  '    across = p.y;',
+  '    along = p.x;',
+  '  }',
+  '  // ~17:1 anisotropic noise reads as a brushed finish instead of grey mottling.',
+  '  float brush = comicNoise2(vec2(across * 84.0, along * 5.0));',
+  '  brush = brush * 0.7 + 0.3 * comicNoise2(vec2(across * 190.0, along * 11.0) + 4.3);',
+  '  vec3 tint = vec3(0.94 + 0.12 * brush);',
+  '  // Oxidation pulled toward warm brown, deliberately weak: gunmetal stays gunmetal.',
+  '  float rust = smoothstep(0.60, 0.90, comicNoise2(p * 1.15 + vec2(19.2, 4.4)));',
+  '  tint = mix(tint, tint * vec3(1.10, 0.66, 0.40), 0.32 * rust);',
+  '  // Fine pitting along edges and recesses.',
+  '  float pit = smoothstep(0.72, 0.95, comicHash21(floor(p * 26.0)));',
+  '  tint *= 1.0 - 0.10 * pit;',
+  '  return tint;',
+  '}',
+  '// Mud/ground: damp patches, pooled water, pebble speckle.',
+  'vec3 comicMudSurface(vec2 p, float horizon) {',
+  '  // Damp patches: low frequency, darker and a touch cooler.',
+  '  float damp = smoothstep(0.42, 0.78, comicNoise2(p * 0.55 + vec2(2.7, 11.4)));',
+  '  vec3 tint = mix(vec3(1.0), vec3(0.82, 0.89, 1.00), 0.55 * damp);',
+  '  // Puddles sit inside the deepest damp patches. There is no height field here,',
+  '  // so "lowest" is read from the damp mask rather than absolute Y (an absolute-Y',
+  '  // term once took the whole flat ground plane down a stop).',
+  '  float pool = damp * (1.0 - smoothstep(0.25, 0.55, comicNoise2(p * 1.9 + vec2(33.1, 7.7))));',
+  '  tint = mix(tint, vec3(0.72, 0.80, 0.94), 0.35 * pool);',
+  '  // Fine aggregate: dark pebbles plus the occasional bright grain.',
+  '  float grit = comicHash21(floor(p * 46.0));',
+  '  tint *= 1.0 - 0.12 * smoothstep(0.80, 0.94, grit);',
+  '  tint += vec3(0.08) * step(0.96, comicHash21(floor(p * 23.0) + 7.7));',
+  '  return tint;',
+  '}',
+  '// Foliage: two scales of leaf clusters with a slight hue shift.',
+  'vec3 comicFoliageSurface(vec2 p, float horizon) {',
+  '  float coarse = comicNoise2(p * 6.5);',
+  '  float fine = comicNoise2(p * 19.0 + vec2(5.3, 9.7));',
+  '  float leaf = coarse * 0.62 + fine * 0.38;',
+  '  float clump = smoothstep(0.32, 0.72, leaf);',
+  '  vec3 tint = mix(vec3(0.84), vec3(1.14), clump);',
+  '  // Warm/cool leaf variation, kept under 10% so the 4 toon steps survive.',
+  '  tint *= mix(vec3(1.0), vec3(0.90, 1.03, 0.84), clump * 0.35);',
+  '  return tint;',
+  '}',
+].join('\n')
+
+/**
  * 顶点注入点。begin_vertex 之后 transformed 就是模型空间顶点（实例化还没
  * 乘上），拿它算世界坐标最省事；换成 project_vertex 之后再取就只剩裁剪空间。
  */
 const VERTEX_HOOK = '#include <begin_vertex>'
 
 /**
- * 世界坐标 varying。污渍必须按世界坐标取，按屏幕坐标取会跟着相机移动，
- * 墙面上的花纹会像贴了一层薄膜在游动。
+ * 世界坐标 + 世界法线 varying。污渍必须按世界坐标取，按屏幕坐标取会跟着相机
+ * 移动，墙面上的花纹会像贴了一层薄膜在游动。世界法线供三平面选轴与假高光用；
+ * 法线同样不能取视图空间，否则高光会跟着相机转头。
  */
-const WORLD_VARYING = 'varying vec3 vComicWorld;'
+const WORLD_VARYING = 'varying vec3 vComicWorld;\nvarying vec3 vComicNormal;'
 
 const VERTEX_INJECT = [
   VERTEX_HOOK,
   '#ifdef USE_INSTANCING',
   '  vComicWorld = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;',
+  '  vComicNormal = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);',
   '#else',
   '  vComicWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;',
+  '  vComicNormal = normalize(mat3(modelMatrix) * normal);',
   '#endif',
 ].join('\n')
 
@@ -166,15 +388,56 @@ const UNIFORMS_GLSL = [
   'uniform float uComicMottle;',
   'uniform vec3 uComicTint;',
   'uniform float uComicTintAmount;',
+  'uniform float uComicSurface;',
+  'uniform float uComicSpecular;',
+  'uniform vec3 uComicSpecColor;',
+  'uniform float uComicRim;',
+  'uniform vec3 uInkKeyDir;',
+  'uniform float uComicDetail;',
 ].join('\n')
 
 /**
  * 注入体：替换掉 `#include <opaque_fragment>`，改完 outgoingLight 再把原
  * include 放回去（opaque_fragment 负责把 outgoingLight 写进 gl_FragColor，
  * 少了它整个 shader 什么都不画）。
+ *
+ * 顺序很重要：材质细节先乘到固有色上，排线/污渍/tint 再照旧读取这条光照结果；
+ * 假高光最后加。倒过来会让排线的亮度阈值跟着细节抖，暗部出现一圈圈噪点。
  */
 const INJECT_GLSL = [
   '  {',
+  '    vec3 comicN = normalize(vComicNormal);',
+  '    // ---- Material detail: world space, dominant-axis projection. ----',
+  '    // Branching on a uniform is free (no divergence); default = 0 means the',
+  '    // whole block is skipped and existing materials are pixel-identical.',
+  '    if (uComicSurface > 0.5 && uComicDetail > 0.5) {',
+  '      vec3 an = abs(comicN);',
+  '      vec2 comicSurfP;',
+  '      float comicHorizon = 0.0;',
+  '      if (an.y >= an.x && an.y >= an.z) {',
+  '        comicSurfP = vComicWorld.xz;',
+  '        comicHorizon = 1.0;',
+  '      } else if (an.x >= an.z) {',
+  '        comicSurfP = vComicWorld.zy;',
+  '      } else {',
+  '        comicSurfP = vComicWorld.xy;',
+  '      }',
+  '      int comicId = int(uComicSurface + 0.5);',
+  '      vec3 comicSurf = vec3(1.0);',
+  '      if (comicId == 1) comicSurf = comicStoneSurface(comicSurfP, comicHorizon);',
+  '      else if (comicId == 2) comicSurf = comicWoodSurface(comicSurfP, comicHorizon);',
+  '      else if (comicId == 3) comicSurf = comicMetalSurface(comicSurfP, comicHorizon);',
+  '      else if (comicId == 4) comicSurf = comicMudSurface(comicSurfP, comicHorizon);',
+  '      else if (comicId == 5) comicSurf = comicFoliageSurface(comicSurfP, comicHorizon);',
+  '      // Albedo-level modulation only: the light response stays shared, so the',
+  '      // 4 toon steps do not turn into per-pixel noise.',
+  '      // Distance fade: the brick mortar and brushed metal are sub-pixel past',
+  '      // ~40m and have no mip chain (procedural, not a texture). Without this',
+  '      // the far walls shimmer as the camera moves. Keep the low-frequency',
+  '      // weathering (mottle below) at full strength; only the fine pattern fades.',
+  '      float comicDetail = 1.0 - smoothstep(16.0, 52.0, distance(cameraPosition, vComicWorld));',
+  '      outgoingLight *= mix(vec3(1.0), comicSurf, comicDetail);',
+  '    }',
   '    // Screen space: pixel units keep line width/density independent of distance.',
   '    // (GLSL comments stay ASCII on purpose: the shader source charset is not UTF-8 safe.)',
   '    vec2 comicPx = gl_FragCoord.xy;',
@@ -224,10 +487,25 @@ const INJECT_GLSL = [
   '    // the ambient occlusion the renderer never computes.',
   '    // Masked by facing: an up-facing surface *is* the bottom-most thing, so the unmasked',
   '    // term took a third of the exposure off the entire ground plane at night.',
-  '    float comicContact = 1.0 - clamp(abs(normal.y), 0.0, 1.0);',
+  '    float comicContact = 1.0 - clamp(abs(comicN.y), 0.0, 1.0);',
   '    outgoingLight *= 1.0 - 0.3 * smoothstep(2.4, 0.0, vComicWorld.y) * comicContact;',
   '    // Grime: a low-frequency cell hash (one sample per 2px) beats per-pixel white noise and is cheaper.',
   '    outgoingLight *= 1.0 - uComicGrime * comicHash21(floor(gl_FragCoord.xy * 0.5));',
+  '    // ---- Fake key-light specular + rim. ----',
+  '    // Added after albedo/grime so the highlight is not multiplied away by dirt,',
+  '    // and before opaque_fragment so it is still linear-lit when tonemapping runs.',
+  '    // A tight 44 exponent keeps it on chamfers and polished metal instead of',
+  '    // smearing a plastic sheen over every box.',
+  '    if (uComicSpecular > 0.001 || uComicRim > 0.001) {',
+  '      vec3 comicV = normalize(cameraPosition - vComicWorld);',
+  '      vec3 comicL = normalize(uInkKeyDir);',
+  '      vec3 comicH = normalize(comicV + comicL);',
+  '      float comicSpec = pow(max(dot(comicN, comicH), 0.0), 44.0);',
+  '      outgoingLight += uComicSpecColor * (comicSpec * uComicSpecular);',
+  '      // Fresnel silhouette: the moon behind a barrel draws its edge in one line.',
+  '      float comicRim = pow(1.0 - max(dot(comicN, comicV), 0.0), 3.0);',
+  '      outgoingLight += uComicSpecColor * (comicRim * uComicRim);',
+  '    }',
   '  }',
   '  ' + FRAGMENT_HOOK,
 ].join('\n')
@@ -247,7 +525,7 @@ function toLinearTriplet(hex: number): [number, number, number] {
   return [convert((hex >> 16) & 0xff), convert((hex >> 8) & 0xff), convert(hex & 0xff)]
 }
 
-/** 给一个标准/卡通材质打上"漫画排线 + 纸纹"补丁，返回同一个材质以便链式调用。 */
+/** 给一个标准/卡通材质打上"漫画排线 + 纸纹 + 材质细节"补丁，返回同一个材质以便链式调用。 */
 export function applyComicInk<T>(material: T, options?: ComicOptions): T {
   // three 的 Material 类型没有暴露 onBeforeCompile 的宽松签名，这里统一走 any：
   // 补丁本身是运行时行为，类型收窄并不会让它更安全。
@@ -266,6 +544,13 @@ export function applyComicInk<T>(material: T, options?: ComicOptions): T {
     uComicMottle: { value: options?.mottle ?? 0.7 },
     uComicTint: { value: toLinearTriplet(options?.tint ?? 0x2a3320) },
     uComicTintAmount: { value: options?.tintAmount ?? 0 },
+    uComicSurface: { value: surfaceIdOf(options?.surface) },
+    uComicSpecular: { value: options?.specular ?? 0 },
+    uComicSpecColor: { value: toLinearTriplet(options?.specColor ?? 0xffffff) },
+    uComicRim: { value: options?.rim ?? 0 },
+    // 共享对象，不拷贝：setInkKeyDirection 改一次，所有材质下一帧都生效。
+    uInkKeyDir: INK_SHARED.keyDir,
+    uComicDetail: INK_SHARED.detail,
   }
 
   // 引用同一批 uniform 对象：调用方之后拿到它改 .value，shader 里立刻生效。
@@ -278,9 +563,10 @@ export function applyComicInk<T>(material: T, options?: ComicOptions): T {
     // 只挂引用、不复制值：这样 setComicHatch 改的是真正上传的那一份。
     Object.assign(shader.uniforms, uniforms)
 
-    // 注入必须在 main() 之外：uniform 与工具函数都是全局声明。
+    // 注入必须在 main() 之外：uniform、varying 与工具函数都是全局声明。
     shader.vertexShader = WORLD_VARYING + '\n' + shader.vertexShader.replace(VERTEX_HOOK, VERTEX_INJECT)
-    shader.fragmentShader = UNIFORMS_GLSL + '\n' + WORLD_VARYING + '\n' + HASH_GLSL + '\n' + shader.fragmentShader
+    shader.fragmentShader =
+      UNIFORMS_GLSL + '\n' + WORLD_VARYING + '\n' + HASH_GLSL + '\n' + SURFACE_GLSL + '\n' + shader.fragmentShader
 
     // 认不出注入点就原样放过 —— 宁可这材质没排线，也别把画面改坏。
     //
