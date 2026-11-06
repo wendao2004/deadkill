@@ -59,6 +59,7 @@ import {
   Scene,
   ShaderMaterial,
   SphereGeometry,
+  Vector2,
   Vector3,
   WebGLRenderer,
   type Material,
@@ -75,6 +76,7 @@ import { PostFX } from './postfx.ts'
 import { probeGpu, type GpuInfo } from './gpu.ts'
 import { createHunterMaterials, createHunterModel, type HunterMaterials, type HunterModel } from './hunter.ts'
 import { createHunterTextures, type HunterTextures } from './baked-textures.ts'
+import { createSurfaceMaps, type SurfaceFamily, type SurfaceMaps } from './pbr-textures.ts'
 import type { GraphicsQuality } from './settings.ts'
 import { buildProps, type Props } from './props.ts'
 import { createMonsterRenderer, type MonsterRenderer, type MonsterView } from './monsters.ts'
@@ -226,6 +228,81 @@ function makeGradientMap(): DataTexture {
   return tex
 }
 
+/**
+ * 把 BoxGeometry 的 0..1 UV 改写成**米制盒投影** UV。
+ *
+ * 合批前的盒子仍在局部坐标（未旋转、未平移），所以直接按顶点位置和法线
+ * 选投影轴：|n.x| 主导用 (z,y)，|n.y| 主导用 (x,z)，否则 (x,y)。
+ * 每米 1/tile 个 UV 单位，贴图因此按真实尺度平铺，不会被盒子的长宽比拉伸。
+ *
+ * 必须在 rotateY/translate 之前调用：旋转后的世界位置会让相邻盒子的接缝
+ * 对不上，而 UV 应该钉在各自的表面上。
+ */
+/** ComicSurface 里的 'default' 没有对应贴图，落回石族（中性、不偏色）。 */
+function surfaceFamily(surface: ComicSurface | undefined): SurfaceFamily {
+  return surface === undefined || surface === 'default' ? 'stone' : surface
+}
+
+/**
+ * 给 PBR 材质加一条菲涅尔轮廓光。
+ *
+ * 写实档去掉了墨线壳，暗夜里低模/盒刷的剪影会和背景糊成一片；这条冷色
+ * 边缘只是把"那里有个形体"重新点出来，强度压得很低，不会变回卡通描边。
+ * 注入点在 `opaque_fragment` 之前：`normal` 已经过法线贴图扰动，
+ * `vViewPosition` 是视图空间位置，都是 MeshStandard/Physical 现成的量。
+ */
+function applyPbrRim(material: MeshStandardMaterial, strength: number): void {
+  const uniforms = {
+    color: { value: new Color(0x93a7c4) },
+    strength: { value: Math.max(0, strength) },
+  }
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uRimColor = uniforms.color
+    shader.uniforms.uRimStrength = uniforms.strength
+    shader.fragmentShader =
+      'uniform vec3 uRimColor;\nuniform float uRimStrength;\n' + shader.fragmentShader
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <opaque_fragment>',
+      [
+        '{',
+        '  float rimFres = pow(1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0), 3.0);',
+        '  outgoingLight += uRimColor * rimFres * uRimStrength;',
+        '}',
+        '#include <opaque_fragment>',
+      ].join('\n'),
+    )
+  }
+  // 所有带轮廓光的 PBR 材质共用一份 program；强度走 uniform，不进 cache key。
+  material.customProgramCacheKey = () => 'pbr-rim'
+}
+
+function applyBoxProjection(geo: BufferGeometry, tileMeters: number): void {
+  const pos = geo.getAttribute('position')
+  const nor = geo.getAttribute('normal')
+  const uv = geo.getAttribute('uv')
+  if (!pos || !nor || !uv) return
+  const inv = 1 / Math.max(0.05, tileMeters)
+  for (let i = 0; i < pos.count; i++) {
+    const nx = Math.abs(nor.getX(i))
+    const ny = Math.abs(nor.getY(i))
+    const nz = Math.abs(nor.getZ(i))
+    let u: number
+    let v: number
+    if (nx >= ny && nx >= nz) {
+      u = pos.getZ(i)
+      v = pos.getY(i)
+    } else if (ny >= nz) {
+      u = pos.getX(i)
+      v = pos.getZ(i)
+    } else {
+      u = pos.getX(i)
+      v = pos.getY(i)
+    }
+    uv.setXY(i, u * inv, v * inv)
+  }
+  uv.needsUpdate = true
+}
+
 // ------------------------------------------------------------------ 树冠
 
 /** 单位棱球：20 个面、非索引（hence 平直着色）。所有树冠都从它克隆。 */
@@ -358,6 +435,8 @@ export class Renderer {
   private readonly gradientMap: DataTexture
   /** 浏览器内烘焙的布料/皮革细节贴图（只给远端猎人用，整局共享）。 */
   private readonly hunterTextures: HunterTextures
+  /** 关卡五族程序化 PBR 贴图（albedo/normal/roughness），整局共享。 */
+  private readonly surfaceMaps: Record<SurfaceFamily, SurfaceMaps>
   /** 远端猎人材质（共享；几何每个玩家一份）。 */
   private readonly hunterMaterials: HunterMaterials
   /** 非碰撞装饰（水、芦苇、栅栏、雾墙）。纯视觉，不参与任何判定。 */
@@ -430,6 +509,7 @@ export class Renderer {
   constructor(container: HTMLElement, level: LevelDef) {
     this.gradientMap = makeGradientMap()
     this.disposables.push(this.gradientMap)
+    this.surfaceMaps = createSurfaceMaps()
 
     this.ink = createOutlineMaterial({ pixels: INK_PIXELS })
     this.disposables.push(this.ink)
@@ -520,8 +600,8 @@ export class Renderer {
     this.viewScene.add(this.viewCamera)
     // 枪身底色改成深发蓝钢/深胡桃木后，照度要相应抬高，否则夜里整把枪
     // 退成一块黑剪影。总照度约 3.8，金属仍有足够的暗部，不会冲成塑料白。
-    this.viewScene.add(new AmbientLight(0x9fb4cc, 0.42))
-    const vmKey = new DirectionalLight(0xfff1da, 2.2)
+    this.viewScene.add(new AmbientLight(0x9fb4cc, 0.30))
+    const vmKey = new DirectionalLight(0xffe9cf, 1.75)
     vmKey.position.set(-0.7, 1.3, 0.9)
     this.viewScene.add(vmKey)
     const vmFill = new DirectionalLight(0x8fb2e0, 0.7)
@@ -532,7 +612,7 @@ export class Renderer {
     this.viewScene.add(vmRim)
     // 正面补光：枪的可见面朝 +Z（镜头方向），主光从左后方来，右/正面只剩
     // 环境光时整把枪会掉黑。一盏低强度正面光只抬可见面，不改变形体关系。
-    const vmFront = new DirectionalLight(0xdfe8ff, 1.1)
+    const vmFront = new DirectionalLight(0xdfe8ff, 0.80)
     vmFront.position.set(0.1, 0.35, 1.4)
     this.viewScene.add(vmFront)
 
@@ -547,7 +627,11 @@ export class Renderer {
     // 反射才不像一块灰板，但世界层不能被环境光洗成灰白天。
     this.environment = createEnvironmentProbe(this.gl, this.atmo.sky)
     this.scene.environment = this.environment.environment
-    this.scene.environmentIntensity = 0.35
+    this.scene.environmentIntensity = 0.95
+    // PBR 与 toon 的响应完全不同：toon 的 4 级色阶会自己抬中间调，PBR 只会
+    // 老老实实按入射光算。补一盏天空/地面半球光，把背光面从纯黑抬到可读，
+    // 同时保留月光的方向性。0.3 是"能读出箱体侧面、又没把夜洗成阴天"的上限。
+    this.scene.add(new HemisphereLight(0x3d5270, 0x181410, 0.3))
     this.viewScene.environment = this.environment.environment
     this.viewScene.environmentIntensity = 1.0
     // 假高光的方向 = 月光方向。世界材质用它；武器场景在 render() 里会临时
@@ -726,11 +810,14 @@ export class Renderer {
    * auto 会按探测结果选起始档；之后的升降档由 Game 按实测帧时间做。
    */
   setQuality(quality: GraphicsQuality): void {
+    // 第三档（全面写实）不再把核显/软件渲染降级到 toon performance：
+    // 自动档在独显上直接给 quality，其余给 balanced（几何/材质仍是写实档，
+    // 只降 MSAA/阴影/泛光）。performance 保留为手动兜底，不再自动选中。
     const resolved: Exclude<GraphicsQuality, 'auto'> =
       quality === 'auto'
         ? this.gpu.integrated || this.gpu.software
-          ? 'performance'
-          : 'balanced'
+          ? 'balanced'
+          : 'quality'
         : quality
 
     if (resolved === 'performance') {
@@ -933,8 +1020,17 @@ export class Renderer {
     const roughness = metal
       ? Math.min(0.55, Math.max(0.12, 0.55 - specular * 0.45))
       : Math.min(0.82, Math.max(0.35, 0.76 - specular * 0.5))
+    // 旧 toon 的固有色是按"平涂色块"选的，直接搬进 PBR 会在 AgX + 棚拍灯下
+    // 变成高饱和塑料（木托尤其明显）。非金属向自身亮度靠 20% 并压暗一成，
+    // 得到更接近胡桃木/旧皮革的低饱和底色。
+    const base = new Color(color)
+    if (!metal) {
+      const lum = base.r * 0.2126 + base.g * 0.7152 + base.b * 0.0722
+      base.lerp(new Color(lum, lum, lum), 0.2)
+      base.multiplyScalar(0.9)
+    }
     const mat = new MeshStandardMaterial({
-      color,
+      color: base,
       metalness: metal ? 1 : 0,
       roughness,
       // 夜景 IBL 很暗，给一点加成；否则金属只剩棚拍灯的一点点直接高光，
@@ -946,11 +1042,49 @@ export class Renderer {
     if (opts.emissive !== undefined && opts.emissive > 0) {
       mat.emissive = new Color(color).multiplyScalar(opts.emissive)
     }
+    applyPbrRim(mat, metal ? 0.3 : 0.16)
     this.disposables.push(mat)
     return mat
   }
 
   // ------------------------------------------------------------ 关卡
+
+  /**
+   * 关卡表面 PBR：固有色 × 程序化 albedo 细节，法线/粗糙度来自同一高度场。
+   *
+   * 与 `pbrMaterial` 的区别是这里必须带贴图与米制 UV；武器/猎人是程序化
+   * 硬表面，暂时只吃固有色 + 环境反射。金属度按族给：只有 metal 族是真金属，
+   * 其余保持 0，避免整面墙泛出塑料高光。
+   */
+  private pbrSurfaceMaterial(
+    color: number,
+    surface: ComicSurface | undefined,
+    tint?: number,
+    tintAmount = 0,
+  ): MeshStandardMaterial {
+    const family = surfaceFamily(surface)
+    const maps = this.surfaceMaps[family]
+    const base = new Color(color)
+    if (tint !== undefined && tintAmount > 0) base.lerp(new Color(tint), tintAmount)
+    // PBR 的固有色是线性反射率；toon 色块是按显示效果挑的，直接搬会偏亮。
+    base.multiplyScalar(0.92)
+    const mat = new MeshStandardMaterial({
+      color: base,
+      // 程序化 albedo 细节暂不参与：砖缝/泥斑的明暗差在 mipmap 下会变成
+      // 大片斑点（实际截图可见）。颜色交给材质表，微结构交给法线/粗糙度。
+      normalMap: maps.normal,
+      roughnessMap: maps.roughness,
+      // 粗糙度由贴图逐像素给，材质层保持 1（乘性）。
+      roughness: 1,
+      metalness: family === 'metal' ? 0.85 : 0,
+      normalScale: new Vector2(0.42, 0.42),
+      envMapIntensity: family === 'metal' ? 1.3 : 0.8,
+      fog: true,
+    })
+    applyPbrRim(mat, family === 'metal' ? 0.22 : 0.12)
+    this.disposables.push(mat)
+    return mat
+  }
 
   private buildLevel(level: LevelDef): void {
 
@@ -961,13 +1095,17 @@ export class Renderer {
     // 地面是 80×80 米的无限平面，任何间距规律地铺上去都会读成地板革/菱格纹，
     // 而不是阴影 —— 远看尤其假。地面的暗靠色阶本身（4 级 toon 的最低一级）就够了。
     const palette = GROUND_PALETTE[level.groundMaterial ?? 'mud'] ?? GROUND_PALETTE.mud!
-    const groundMat = this.toonMaterial(palette.color, {
-      hatch: 0,
-      tint: palette.tint,
-      tintAmount: palette.tintAmount,
-      surface: palette.surface,
-      specular: palette.specular,
-    })
+    const groundFamily = surfaceFamily(palette.surface)
+    const groundMat: Material = this.realistic
+      ? this.pbrSurfaceMaterial(palette.color, palette.surface, palette.tint, palette.tintAmount)
+      : this.toonMaterial(palette.color, {
+          hatch: 0,
+          tint: palette.tint,
+          tintAmount: palette.tintAmount,
+          surface: palette.surface,
+          specular: palette.specular,
+        })
+    if (this.realistic) applyBoxProjection(groundGeo, this.surfaceMaps[groundFamily].tileMeters)
     const ground = new Mesh(groundGeo, groundMat)
     ground.position.set(0, level.groundY - 0.5 - 0.01, 0)
     // 地面只接收阴影，不投：它本身是最大的一块遮挡体，投进阴影图只会
@@ -992,12 +1130,17 @@ export class Renderer {
         list = []
         buckets.set(matKey, list)
       }
+      const spec = MATERIALS[matKey] ?? MATERIALS.wood!
+      const tile = this.surfaceMaps[surfaceFamily(spec.surface)].tileMeters
       // 树冠走棱球（见文件上方 canopyGeometry 的注释），其余仍是盒子。
       if (isCanopy(brush)) {
-        list.push(canopyGeometry(brush))
+        const geo = canopyGeometry(brush)
+        if (this.realistic) applyBoxProjection(geo, tile)
+        list.push(geo)
         continue
       }
       const geo = new BoxGeometry(brush.hx * 2, brush.hy * 2, brush.hz * 2)
+      if (this.realistic) applyBoxProjection(geo, tile)
       if (brush.rotY) geo.rotateY(brush.rotY)
       geo.translate(brush.x, brush.y, brush.z)
       list.push(geo)
@@ -1013,28 +1156,31 @@ export class Renderer {
 
       const spec = MATERIALS[matKey] ?? MATERIALS.wood!
       const tint = MATERIAL_TINT[matKey] ?? MATERIAL_TINT.wood!
-      const mesh = new Mesh(
-        merged,
-        this.toonMaterial(spec.color, {
-          tint: tint.tint,
-          tintAmount: tint.amount,
-          surface: spec.surface,
-          specular: spec.specular,
-          rim: spec.rim,
-        }),
-      )
+      const material: Material = this.realistic
+        ? this.pbrSurfaceMaterial(spec.color, spec.surface, tint.tint, tint.amount)
+        : this.toonMaterial(spec.color, {
+            tint: tint.tint,
+            tintAmount: tint.amount,
+            surface: spec.surface,
+            specular: spec.specular,
+            rim: spec.rim,
+          })
+      const mesh = new Mesh(merged, material)
       mesh.castShadow = true
       mesh.receiveShadow = true
       this.levelGroup.add(mesh)
-      this.addInk(mesh)
-
-      // 棱边再加一道细线：盒子内部没有曲面，只靠外轮廓时两个盒子贴在一起
-      // 会糊成一大块。顺着棱走线能重新切出体块 —— 这是手绘分面的做法。
-      // 合批后一次性算：盒子之间不共享顶点，EdgesGeometry 仍然给出每个盒子
-      // 自己的棱，视觉与逐盒一致，只是变成一次绘制。
-      const edgeGeo = new EdgesGeometry(merged)
-      this.disposables.push(edgeGeo)
-      this.levelGroup.add(new LineSegments(edgeGeo, this.edgeMaterial()))
+      // 写实档不再有关卡墨线/棱线：PBR 法线与阴影接替了"分面"的工作，
+      // 保留黑壳只会让像素级的砖缝、木纹被一圈 2.6px 黑线盖掉。
+      if (!this.realistic) {
+        this.addInk(mesh)
+        // 棱边再加一道细线：盒子内部没有曲面，只靠外轮廓时两个盒子贴在一起
+        // 会糊成一大块。顺着棱走线能重新切出体块 —— 这是手绘分面的做法。
+        // 合批后一次性算：盒子之间不共享顶点，EdgesGeometry 仍然给出每个盒子
+        // 自己的棱，视觉与逐盒一致，只是变成一次绘制。
+        const edgeGeo = new EdgesGeometry(merged)
+        this.disposables.push(edgeGeo)
+        this.levelGroup.add(new LineSegments(edgeGeo, this.edgeMaterial()))
+      }
     }
   }
 
@@ -1534,6 +1680,7 @@ export class Renderer {
     for (const avatar of this.avatars.values()) avatar.model.dispose()
     this.avatars.clear()
     this.hunterTextures.dispose()
+    for (const maps of Object.values(this.surfaceMaps)) maps.dispose()
     this.post.dispose()
     this.gl.dispose()
     for (const item of this.disposables) item.dispose()
