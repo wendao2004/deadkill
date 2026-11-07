@@ -253,16 +253,18 @@ function surfaceFamily(surface: ComicSurface | undefined): SurfaceFamily {
  * 注入点在 `opaque_fragment` 之前：`normal` 已经过法线贴图扰动，
  * `vViewPosition` 是视图空间位置，都是 MeshStandard/Physical 现成的量。
  */
-function applyPbrRim(material: MeshStandardMaterial, strength: number): void {
+function applyPbrRim(material: MeshStandardMaterial, strength: number, detailFamily?: number): void {
   const uniforms = {
     color: { value: new Color(0x93a7c4) },
     strength: { value: Math.max(0, strength) },
+    detail: { value: detailFamily ?? -1 },
   }
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uRimColor = uniforms.color
     shader.uniforms.uRimStrength = uniforms.strength
+    shader.uniforms.uDetailFamily = uniforms.detail
     shader.fragmentShader =
-      'uniform vec3 uRimColor;\nuniform float uRimStrength;\n' + shader.fragmentShader
+      'uniform vec3 uRimColor;\nuniform float uRimStrength;\nuniform int uDetailFamily;\n' + shader.fragmentShader
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <opaque_fragment>',
       [
@@ -273,9 +275,93 @@ function applyPbrRim(material: MeshStandardMaterial, strength: number): void {
         '#include <opaque_fragment>',
       ].join('\n'),
     )
+
+    if (detailFamily !== undefined && detailFamily >= 0) {
+      shader.vertexShader =
+        'varying vec3 vOwWorld;\nvarying vec3 vOwNormal;\n' + shader.vertexShader
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <beginnormal_vertex>',
+        '#include <beginnormal_vertex>\nvOwNormal = normalize(mat3(modelMatrix) * objectNormal);',
+      )
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvOwWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;',
+      )
+
+      shader.fragmentShader =
+        'varying vec3 vOwWorld;\nvarying vec3 vOwNormal;\n' +
+        [
+          'float owDetailHash(vec2 p) {',
+          '  p = fract(p * vec2(123.34, 456.21));',
+          '  p += dot(p, p + 45.32);',
+          '  return fract(p.x * p.y);',
+          '}',
+          'float owDetailNoise(vec2 p) {',
+          '  vec2 i = floor(p); vec2 f = fract(p);',
+          '  f = f * f * (3.0 - 2.0 * f);',
+          '  float a = owDetailHash(i);',
+          '  float b = owDetailHash(i + vec2(1.0, 0.0));',
+          '  float c = owDetailHash(i + vec2(0.0, 1.0));',
+          '  float d = owDetailHash(i + vec2(1.0, 1.0));',
+          '  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);',
+          '}',
+          'float owDetailFbm(vec2 p) {',
+          '  float v = 0.0; float a = 0.5;',
+          '  for (int i = 0; i < 4; i++) { v += a * owDetailNoise(p); p *= 2.03; a *= 0.5; }',
+          '  return v;',
+          '}',
+        ].join('\n') +
+        shader.fragmentShader
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <roughnessmap_fragment>',
+        [
+          '#include <roughnessmap_fragment>',
+          '{',
+          '  vec3 owN = normalize(vOwNormal);',
+          '  vec3 owW = abs(owN);',
+          '  vec2 owUV;',
+          '  if (owW.y > 0.7) owUV = vOwWorld.xz;',
+          '  else if (owW.x > owW.z) owUV = vOwWorld.zy;',
+          '  else owUV = vOwWorld.xy;',
+          '  float owDetail = 1.0;',
+          '  float owRough = 1.0;',
+          '  if (uDetailFamily == 0) {',
+          '    float p = fract(owUV.x / 0.32);',
+          '    float seam = smoothstep(0.0, 0.03, p) * smoothstep(1.0, 0.97, p);',
+          '    float grain = owDetailFbm(vec2(owUV.x * 4.0, owUV.y * 0.9));',
+          '    owDetail = mix(0.80, 1.04, seam) * mix(0.90, 1.06, grain);',
+          '    owRough = mix(1.06, 0.96, seam);',
+          '  } else if (uDetailFamily == 1) {',
+          '    float bh = 0.16; float bw = 0.36;',
+          '    float row = floor(owUV.y / bh);',
+          '    float off = mod(row, 2.0) * 0.5;',
+          '    vec2 cell = vec2(owUV.x / bw + off, owUV.y / bh);',
+          '    vec2 f = fract(cell);',
+          '    float mortar = smoothstep(0.0, 0.045, f.x) * smoothstep(1.0, 0.955, f.x)',
+          '                 * smoothstep(0.0, 0.08, f.y) * smoothstep(1.0, 0.92, f.y);',
+          '    float block = owDetailHash(floor(cell));',
+          '    owDetail = mix(0.66, 1.06, mortar) * mix(0.90, 1.08, block);',
+          '    owRough = mix(1.08, 0.94, mortar);',
+          '  } else if (uDetailFamily == 2) {',
+          '    float streak = owDetailFbm(vec2(owUV.x * 0.9, owUV.y * 0.16));',
+          '    float rust = smoothstep(0.58, 0.86, owDetailFbm(owUV * 0.55 + 11.0));',
+          '    owDetail = mix(0.84, 1.05, streak);',
+          '    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.34, 0.17, 0.08), rust * 0.35);',
+          '    owRough = mix(0.92, 1.25, rust);',
+          '  } else if (uDetailFamily == 3) {',
+          '    owDetail = mix(0.88, 1.08, owDetailFbm(owUV * 1.3));',
+          '  }',
+          '  float owFade = 1.0 - smoothstep(16.0, 52.0, distance(vOwWorld, cameraPosition));',
+          '  diffuseColor.rgb *= mix(1.0, owDetail, owFade);',
+          '  roughnessFactor = clamp(roughnessFactor * mix(1.0, owRough, owFade), 0.04, 1.0);',
+          '}',
+        ].join('\n'),
+      )
+    }
   }
-  // 所有带轮廓光的 PBR 材质共用一份 program；强度走 uniform，不进 cache key。
-  material.customProgramCacheKey = () => 'pbr-rim'
+  // 不同 detail family 必须各编一份 program；强度走 uniform，不进 cache key。
+  material.customProgramCacheKey = () => `pbr-rim-${detailFamily ?? -1}`
 }
 
 function applyBoxProjection(geo: BufferGeometry, tileMeters: number): void {
@@ -689,7 +775,8 @@ export class Renderer {
     // 核显/软件渲染时装饰密度减半：芦苇/断篱/枯树是纯视觉，不参与判定，
     // 砍掉一半能实打实减少 draw call，而关卡的可读性几乎不受影响。
     this.props = buildProps(this.scene, level, {
-      density: this.gpu.integrated || this.gpu.software ? 0.4 : 1,
+      // 独显给 1.25：芦苇/枯树/地面碎屑都按这个倍率长，夜景里"空"是最伤的。
+      density: this.gpu.integrated || this.gpu.software ? 0.45 : 1.25,
     })
     this.monsters = createMonsterRenderer(this.scene, {
       gradientMap: this.gradientMap,
@@ -1157,7 +1244,10 @@ export class Renderer {
       envMapIntensity: family === 'metal' ? 1.3 : 0.8,
       fog: true,
     })
-    applyPbrRim(mat, family === 'metal' ? 0.22 : 0.12)
+    // 0 木 / 1 石 / 2 金属 / 3 泥 / 4 植被：程序化砖缝/木纹/锈迹在这里注入。
+    const detailFamily =
+      family === 'wood' ? 0 : family === 'stone' ? 1 : family === 'metal' ? 2 : family === 'mud' ? 3 : 4
+    applyPbrRim(mat, family === 'metal' ? 0.22 : 0.12, detailFamily)
     this.disposables.push(mat)
     return mat
   }

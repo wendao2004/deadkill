@@ -117,6 +117,9 @@ export function createMapOverlay(level: LevelDef): MapOverlay {
 
     // 盒刷：静态几何画成半透明块，能读出街道/院子/房间的轮廓。
     for (const b of level.boxes) {
+      // 门窗框/檐口这类纯视觉细节不进小地图：它们薄而多，画上去只会把
+      // 900px 的地图糊成一层噪点。贴地装饰片（hy 很小）仍然保留。
+      if (b.noCollide && Math.min(b.hx, b.hz) < 0.18 && b.hy > 0.1) continue
       ctx.save()
       ctx.translate(toX(b.x), toY(b.z))
       ctx.rotate(-(b.rotY ?? 0))

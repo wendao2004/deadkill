@@ -18,10 +18,10 @@ import { buildLevelWorld } from '../shared/src/worldbuild.ts'
  *
  * 旧值 1100 来自“每盒一个 Mesh + 一条 EdgesGeometry”的时代；现在关卡按材质
  * 合批成 5~6 个 Mesh，盒子数更多只影响 Rapier 的碰撞体数量与生成时间。
- * 1600 是实测能稳住 1080p 60fps 的上限，也是“视觉细节不进 level.boxes”
+ * 1800 是实测能稳住 1080p 60fps 的上限，也是“视觉细节不进 level.boxes”
  * 这条规则的硬闸门 —— 需要更多细节时先考虑客户端视觉壳。
  */
-const MAX_BOXES = 1600
+const MAX_BOXES = 1800
 /** 角色控制器自动上台阶的高度；可攀爬高差必须严格等于它。 */
 const STEP = 0.4
 /** 出生点到最近的巢穴/线索的最小距离。 */

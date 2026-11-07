@@ -14,7 +14,7 @@
  *
  * 生成要显式给数量：墓碑、碎石、枕木这类重复元素用 mulberry32 摆，
  * 但每一处的数量都是 builder 的入参。客户端已按材质合批，盒子数不再等于
- * draw call 数；上限 1600 主要约束 Rapier 碰撞体与关卡生成时间。数量写死在
+ * draw call 数；上限 1800 主要约束 Rapier 碰撞体与关卡生成时间。数量写死在
  * builder 里，调密度就得改代码、看不出代价。
  */
 
@@ -122,6 +122,18 @@ export class BrushSet {
   }
 
   /**
+   * 纯视觉细节盒：窗框、门框、檐口、踢脚线、屋脊压条都走这里。
+   *
+   * `noCollide` 同时意味着：不生成碰撞体、不参与穿透、不进 Rapier。它只是
+   * 让“一个盒子”看起来像“一面有门窗的墙”—— 视觉与判定仍然同源，只是
+   * 判定仍然由下面那些大盒子负责。
+   */
+  detail(x: number, y: number, z: number, hx: number, hy: number, hz: number, material: Mat = 'wood'): this {
+    this.list.push({ x, y, z, hx, hy, hz, material, noCollide: true })
+    return this
+  }
+
+  /**
    * 沿 X 方向的墙（墙轴 = x，法线 = z）。gaps 是门洞区间。
    *
    * 墙被切成若干段而不是"整面墙 + 一个洞"：碰撞体只能是凸形状 ——
@@ -179,13 +191,29 @@ export class BrushSet {
       if (axis === 'x') this.slab((a + b) / 2, fixed, (b - a) / 2, t / 2, y0, y1, material)
       else this.slab(fixed, (a + b) / 2, t / 2, (b - a) / 2, y0, y1, material)
     }
+    // 窗框/门框与墙体用对比材质：木墙上用石框，石墙上用木框。
+    const trimMat: Mat = material === 'wood' ? 'stone' : 'wood'
+    /** 纯视觉细节：贴着墙面外凸一点，不参与碰撞。 */
+    const trim = (a0: number, a1: number, y0: number, y1: number, protrude: number, mat: Mat = trimMat): void => {
+      if (a1 - a0 <= 1e-6 || y1 - y0 <= 1e-6) return
+      const depth = t / 2 + protrude
+      if (axis === 'x') this.detail((a0 + a1) / 2, (y0 + y1) / 2, fixed, (a1 - a0) / 2, (y1 - y0) / 2, depth, mat)
+      else this.detail(fixed, (y0 + y1) / 2, (a0 + a1) / 2, depth, (y1 - y0) / 2, (a1 - a0) / 2, mat)
+    }
+
+    const solidSegments: [number, number][] = []
+    const fullSeg = (a: number, b: number): void => {
+      if (b - a <= 1e-6) return
+      seg(a, b, bottom, top)
+      solidSegments.push([a, b])
+    }
 
     let cursor = lo
     for (const [a, b] of merged) {
-      seg(cursor, a, bottom, top)
+      fullSeg(cursor, a)
       cursor = Math.max(cursor, b)
     }
-    seg(cursor, hi, bottom, top)
+    fullSeg(cursor, hi)
 
     // 窗台与过梁。与门洞重叠的窗直接跳过（门已经全高挖掉了）。
     for (const w of windows) {
@@ -197,6 +225,39 @@ export class BrushSet {
       const head = Math.max(bottom, Math.min(top, w.top))
       seg(wa, wb, bottom, sill)
       seg(wa, wb, head, top)
+
+      // 窗框：两侧立柱 + 上楣 + 下槛 + 外挑窗台 + 十字棂。
+      const fw = 0.1
+      trim(wa, wa + fw, sill, head, 0.035)
+      trim(wb - fw, wb, sill, head, 0.035)
+      trim(wa, wb, head - fw, head, 0.035)
+      trim(wa, wb, sill, sill + fw, 0.035)
+      trim(wa - 0.1, wb + 0.1, sill - 0.08, sill, 0.12, 'stone')
+      const mid = (wa + wb) / 2
+      trim(mid - 0.03, mid + 0.03, sill, head, 0.02)
+      const midY = (sill + head) / 2
+      trim(wa, wb, midY - 0.03, midY + 0.03, 0.02)
+    }
+
+    // 门框：两侧门柱 + 过梁 + 门槛。门洞本身是全高，过梁只是视觉框。
+    for (const [d0, d1] of doors) {
+      const da = Math.max(lo, Math.min(hi, Math.min(d0, d1)))
+      const db = Math.max(lo, Math.min(hi, Math.max(d0, d1)))
+      if (db - da <= 0.4) continue
+      const doorTop = Math.min(top, bottom + 2.4)
+      trim(da, da + 0.12, bottom, doorTop, 0.05)
+      trim(db - 0.12, db, bottom, doorTop, 0.05)
+      trim(da, db, doorTop, doorTop + 0.16, 0.05)
+      trim(da, db, bottom, bottom + 0.06, 0.08, 'stone')
+    }
+
+    // 檐口与踢脚线：每段实体墙两条，给纯色盒子一条可读的轮廓。
+    if (top - bottom >= 2.2) {
+      for (const [a, b] of solidSegments) {
+        if (b - a < 1.6) continue
+        trim(a, b, bottom, bottom + 0.12, 0.03)
+        trim(a, b, top - 0.14, top, 0.08)
+      }
     }
     return this
   }
