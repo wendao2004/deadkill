@@ -3,11 +3,13 @@ import assert from 'node:assert/strict'
 
 // 相对路径导入：仓库根 node_modules 下没有 @dk/* 的 workspace 链接。
 import {
+  BACK_SCALE,
   Buttons,
   computeMoveVelocity,
-  GROUND_FRICTION,
   SPEED_SPRINT,
   SPEED_WALK,
+  STOP_DECEL,
+  STRAFE_SCALE,
   TICK_DT,
   type MoveState,
   type PlayerInput,
@@ -32,10 +34,9 @@ function steadyState(start: Velocity, make: (frame: number) => PlayerInput, step
   return velocity
 }
 
-test('斜向移动不比直向快：同一输入模长下速度大小一致', () => {
-  // computeMoveVelocity 把 (forward, right) 归一化后再乘 wishSpeed，
-  // 所以 45 度斜走和直走必须收敛到同一个速率。差一点点就意味着角色斜着
-  // 走能跑赢直着走。
+test('斜向移动不比直向快：横移权重让斜走略慢，且永不超速', () => {
+  // 源码的 wish 方向先按 strafeScale=0.92 / backScale=0.8 缩放本地轴，再
+  // 归一化。因此"前 + 横"的斜走比直走略慢；但任何方向都不能超过直走速度。
   for (const magnitude of [0.25, 0.6, 1]) {
     for (const yaw of [0, 0.7, Math.PI / 2, -2.4]) {
       const straight = steadyState({ vx: 0, vz: 0 }, () => input({ forward: magnitude, right: 0, yaw }), 240)
@@ -46,27 +47,40 @@ test('斜向移动不比直向快：同一输入模长下速度大小一致', ()
       )
       const straightSpeed = Math.hypot(straight.vx, straight.vz)
       const diagonalSpeed = Math.hypot(diagonal.vx, diagonal.vz)
+      const weightedLen = Math.hypot((magnitude / Math.SQRT2) * STRAFE_SCALE, magnitude / Math.SQRT2)
       const label = 'magnitude=' + magnitude + ' yaw=' + yaw
+      assert.ok(straightSpeed <= SPEED_WALK * magnitude + 1e-6, label + ': 直走超速')
+      assert.ok(diagonalSpeed <= straightSpeed + 1e-9, label + ': 斜走比直走快')
       assert.ok(
-        Math.abs(straightSpeed - diagonalSpeed) <= 1e-6,
-        label + ': 直走 ' + straightSpeed + ' vs 斜走 ' + diagonalSpeed,
+        Math.abs(straightSpeed - SPEED_WALK * magnitude) <= 1e-6,
+        label + ': 直走速率偏离 wishSpeed',
       )
-      // 两者都必须命中 wishSpeed = SPEED_WALK * magnitude，而不是只有"彼此相等"。
-      assert.ok(Math.abs(straightSpeed - SPEED_WALK * magnitude) <= 1e-6, label + ': 直走速率偏离 wishSpeed')
-      assert.ok(Math.abs(diagonalSpeed - SPEED_WALK * magnitude) <= 1e-6, label + ': 斜走速率偏离 wishSpeed')
+      assert.ok(
+        Math.abs(diagonalSpeed - SPEED_WALK * weightedLen) <= 1e-6,
+        label + ': 斜走速率偏离加权 wishSpeed',
+      )
     }
   }
 })
 
-test('斜向移动的朝向是 45 度：右+前在水平面上各占一半', () => {
+test('倒退比前进慢：backScale 直接作用在纵轴', () => {
+  const forward = steadyState({ vx: 0, vz: 0 }, () => input({ forward: 1 }), 240)
+  const backward = steadyState({ vx: 0, vz: 0 }, () => input({ forward: -1 }), 240)
+  const f = Math.hypot(forward.vx, forward.vz)
+  const b = Math.hypot(backward.vx, backward.vz)
+  assert.ok(Math.abs(b - f * BACK_SCALE) <= 1e-6, '倒退 ' + b + ' vs 前进 ' + f)
+})
+
+test('斜向移动的朝向由 strafeScale 决定，不是几何 45 度', () => {
   const yaw = 0.35
   const velocity = steadyState({ vx: 0, vz: 0 }, () => input({ forward: 1, right: 1, yaw }), 240)
-  // wishDir 是 (forward + right) 归一化的结果，与 forward 夹角必须是 45 度。
+  // 本地轴先缩放 (right*0.92, forward*1) 再归一化；横移权重让小角度更偏前。
   const forwardX = -Math.sin(yaw)
   const forwardZ = -Math.cos(yaw)
   const speed = Math.hypot(velocity.vx, velocity.vz)
   const cosine = (velocity.vx * forwardX + velocity.vz * forwardZ) / speed
-  assert.ok(Math.abs(cosine - Math.SQRT1_2) <= 1e-9, 'cos(angle) = ' + cosine)
+  const expected = 1 / Math.hypot(1, STRAFE_SCALE)
+  assert.ok(Math.abs(cosine - expected) <= 1e-9, 'cos(angle) = ' + cosine + '，期望 ' + expected)
 })
 
 test('无输入时速度单调衰减到 0，且永不为负', () => {
@@ -81,14 +95,14 @@ test('无输入时速度单调衰减到 0，且永不为负', () => {
     speeds.push(Math.hypot(velocity.vx, velocity.vz))
   }
 
-  // 第一帧按 GROUND_FRICTION * dt 线性削减，验证衰减是不是真的在按摩擦力走。
+  // 第一帧按 STOP_DECEL * dt 线性削减，验证松手时走的是"停止减速度"而不是加速档。
   const initialSpeed = Math.hypot(start.vx, start.vz)
-  assert.ok(Math.abs(speeds[0]! - (initialSpeed - GROUND_FRICTION * TICK_DT)) <= 1e-9, '首帧衰减 = ' + speeds[0])
+  assert.ok(Math.abs(speeds[0]! - (initialSpeed - STOP_DECEL * TICK_DT)) <= 1e-9, '首帧衰减 = ' + speeds[0])
 
   for (let i = 1; i < speeds.length; i++) {
     assert.ok(speeds[i]! <= speeds[i - 1]! + 1e-12, '第 ' + i + ' 帧速度回升了')
   }
-  // 摩擦力是线性的，首速 5 m/s 大约 0.5s 停住；120 帧（2s）后必须精确为 0。
+  // 5 m/s 在 30 m/s² 下约 0.167s 停住；120 帧（2s）后必须精确为 0。
   assert.equal(speeds[speeds.length - 1], 0)
   assert.ok(speeds.every((speed) => speed >= 0), '出现了负速度')
   assert.ok(speeds.every((speed) => Number.isFinite(speed)), '出现了 NaN / Infinity')

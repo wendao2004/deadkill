@@ -110,18 +110,48 @@ export const PLAYER_CROUCH_HALF_HEIGHT = 0.35
 /** 角色控制器胶囊与地面之间保留的间隙，防止贴面抖动。 */
 export const CHARACTER_OFFSET = 0.02
 
-/** 重力刻意大于 9.81：真实重力下跳跃有种"月球感"，射击游戏都用这个值。 */
-export const GRAVITY = -18
-export const JUMP_SPEED = 5.4
+/**
+ * 重力与跳跃：-9.81 × 2.1，跳跃顶点 0.60m。
+ *
+ * 数值来自源码的 120Hz 手感调校；在 60Hz 下用同一组 dt 积分，顶点与滞空
+ * 时间不变（只取决于 v²/2g 与 2v/g），所以不需要按 tick 频率重调。
+ */
+export const GRAVITY = -20.601
+export const JUMP_SPEED = 4.972
 
-export const SPEED_WALK = 4.2
-export const SPEED_SPRINT = 6.4
-export const SPEED_CROUCH = 1.7
-export const SPEED_ADS = 2.1
+/** 站立 / 冲刺 / 蹲 / 开镜速度。ADS 是走速的 0.5 倍。 */
+export const SPEED_WALK = 4.57
+export const SPEED_SPRINT = 7.01
+export const SPEED_CROUCH = 2.44
+export const SPEED_ADS = 2.285
 
-export const GROUND_ACCEL = 55
-export const AIR_ACCEL = 12
-export const GROUND_FRICTION = 10
+/** 方向权重：横移慢 8%，倒退慢 20%。斜向不能比直向快。 */
+export const STRAFE_SCALE = 0.92
+export const BACK_SCALE = 0.8
+
+/**
+ * 地面响应（m/s²）。加速 92：0→走速约 50ms，这是"跟手"的来源；
+ * 减速 52 留一小段滑行尾巴；完全松手时用 30 的停止减速度。
+ */
+export const GROUND_ACCEL = 92
+export const GROUND_DECEL = 52
+export const STOP_DECEL = 30
+
+/** 空中控制：四分之一的权限，且只能把沿 wish 方向的速度补到 3.4 m/s。 */
+export const AIR_ACCEL_SCALE = 0.25
+export const AIR_SPEED_CAP = 3.4
+
+/** 终端下落速度。 */
+export const TERMINAL_SPEED = 55
+
+/** 冲刺：前向意图超过 0.55 才成立，按住 0.05s 后达到冲刺速度。 */
+export const SPRINT_FORWARD_DOT = 0.55
+export const SPRINT_START_DELAY = 0.05
+
+/** 跳跃的容错窗口：离地后仍可起跳 / 落地前预输入 / 两次跳跃间隔。 */
+export const COYOTE_TIME = 0.09
+export const JUMP_BUFFER = 0.13
+export const JUMP_COOLDOWN = 0.28
 
 /** 最大生命值。两枪躯干或一枪头致死 —— 猎杀类的核心节奏。 */
 export const MAX_HEALTH = 150

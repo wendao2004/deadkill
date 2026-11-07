@@ -22,22 +22,39 @@ import { Capsule, ColliderDesc, RigidBodyDesc } from '@dimforge/rapier3d-compat'
 import {
   Buttons,
   CHARACTER_OFFSET,
+  COYOTE_TIME,
+  GRAVITY,
+  JUMP_BUFFER,
+  JUMP_COOLDOWN,
+  JUMP_SPEED,
   MAX_HEALTH,
   PLAYER_CROUCH_HALF_HEIGHT,
   PLAYER_CROUCH_EYE_HEIGHT,
   PLAYER_EYE_HEIGHT,
   PLAYER_HALF_HEIGHT,
   PLAYER_RADIUS,
-  GRAVITY,
-  JUMP_SPEED,
+  SPRINT_FORWARD_DOT,
+  SPRINT_START_DELAY,
   StateFlags,
+  TERMINAL_SPEED,
 } from './constants.ts'
 import type { Vec3 } from './math.ts'
 import type { PlayerInput } from './protocol.ts'
 import { computeMoveVelocity, type MoveState } from './sim.ts'
 
 /** 站在地上时向下施加的贴地速度，避免角色控制器每帧"落地→离地→落地"抖动。 */
-const GROUND_STICK_VY = -2
+const GROUND_STICK_VY = 0
+
+/**
+ * 站在地上时不要每帧把重力积进 vy。
+ *
+ * Rapier 的角色控制器允许毫米级的向下穿透；如果 grounded 时仍然
+ * `vy += GRAVITY*dt`，角色每帧会往下走 g*dt²（约 5mm），几十帧后陷进地面，
+ * 控制器不再报告 grounded，角色突然自由落体。lagcomp 回归里表现为
+ * "瞄历史位姿 4/4 → 1/4"，因为 A 掉到地面以下后射线被地面挡住。
+ *
+ * 站在地上就清零垂直速度，走下台阶/斜坡交给 enableSnapToGround。
+ */
 
 export interface CharacterOptions {
   halfHeight?: number
@@ -57,6 +74,14 @@ export class Character {
   vz = 0
   grounded = false
   crouching = false
+  /** 冲刺状态（含 0.05s 起步延迟）。速度选择在 sim.ts 里读它。 */
+  sprinting = false
+  private sprintHold = 0
+  /** 跳跃容错窗口：预输入、coyote、冷却。三者都是"隐藏输入误差"的。 */
+  private jumpBuffer = 0
+  private jumpCooldown = 0
+  private coyote = 0
+  private prevJumpHeld = false
 
   /** 当前胶囊半高（蹲下与站立不同）。 */
   private halfHeight: number
@@ -120,6 +145,12 @@ export class Character {
     this.vx = 0
     this.vy = 0
     this.vz = 0
+    this.sprinting = false
+    this.sprintHold = 0
+    this.jumpBuffer = 0
+    this.jumpCooldown = 0
+    this.coyote = 0
+    this.prevJumpHeld = false
     this.body.setTranslation(
       {
         x: feet.x,
@@ -153,22 +184,69 @@ export class Character {
 
     if (this.grounded && this.vy < 0) this.vy = GROUND_STICK_VY
 
+    // 冲刺是状态而不是一次性判定：必须有 0.05s 按住延迟与"前向意图"。
+    // 这样倒退/横移不会意外冲刺，抬枪或蹲下会立刻退出。
+    const rawInput = Math.hypot(input.forward, input.right)
+    const forwardIntent = rawInput > 1e-4 ? input.forward / rawInput : 0
+    const wantSprint =
+      (input.buttons & Buttons.Sprint) !== 0 &&
+      rawInput > 0.45 &&
+      forwardIntent > SPRINT_FORWARD_DOT &&
+      !wantsCrouch &&
+      !ads &&
+      (this.grounded || this.sprinting)
+    if (wantSprint) {
+      this.sprintHold += dt
+      if (this.sprintHold >= SPRINT_START_DELAY) this.sprinting = true
+    } else {
+      this.sprintHold = 0
+      this.sprinting = false
+    }
+
     const state: MoveState = {
       vx: this.vx,
       vy: this.vy,
       vz: this.vz,
       grounded: this.grounded,
+      sprinting: this.sprinting,
     }
     const move = computeMoveVelocity(input, state, dt, ads)
     this.vx = move.vx
     this.vz = move.vz
 
-    // 垂直速度单独推：跳跃是瞬时赋值，之后交给重力。
-    if (this.grounded && (input.buttons & Buttons.Jump) !== 0) {
-      this.vy = JUMP_SPEED
+    // ---- 跳跃窗口：按住不算，边沿 + 预输入 + coyote + 冷却才起跳 ----
+    this.jumpCooldown = Math.max(0, this.jumpCooldown - dt)
+    this.jumpBuffer = Math.max(0, this.jumpBuffer - dt)
+    if (this.grounded) this.coyote = COYOTE_TIME
+    else this.coyote = Math.max(0, this.coyote - dt)
+
+    const jumpHeld = (input.buttons & Buttons.Jump) !== 0
+    if (jumpHeld && !this.prevJumpHeld) this.jumpBuffer = JUMP_BUFFER
+    this.prevJumpHeld = jumpHeld
+
+    if (this.jumpBuffer > 0 && this.jumpCooldown <= 0 && (this.grounded || this.coyote > 0)) {
+      // 蹲着起跳先站起；头顶被挡就不跳（和源码同一条规则）。
+      if (this.crouching && this.canStandUp(world)) {
+        this.setCapsuleHalfHeight(this.standHalfHeight)
+        this.crouching = false
+      }
+      if (!this.crouching) {
+        this.vy = JUMP_SPEED
+        this.jumpBuffer = 0
+        this.jumpCooldown = JUMP_COOLDOWN
+        this.coyote = 0
+        this.grounded = false
+      } else {
+        this.vy += GRAVITY * dt
+        if (this.vy < -TERMINAL_SPEED) this.vy = -TERMINAL_SPEED
+      }
+    } else if (this.grounded && this.vy <= 0) {
+      // 站定：不再累积重力，避免毫米级穿透逐帧累积（见文件头 GROUND_STICK_VY）。
+      this.vy = 0
     } else {
+      // 垂直速度单独推：跳跃是瞬时赋值，之后交给重力。
       this.vy += GRAVITY * dt
-      if (this.vy < -60) this.vy = -60
+      if (this.vy < -TERMINAL_SPEED) this.vy = -TERMINAL_SPEED
     }
 
     const desired = {

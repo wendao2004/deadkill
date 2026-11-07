@@ -10,16 +10,21 @@
  */
 
 import type { Vec3 } from './math.ts'
-import { vecNormalizeXZ, yawToForward, yawToRight } from './math.ts'
+import { yawToForward, yawToRight } from './math.ts'
 import {
-  AIR_ACCEL,
+  AIR_ACCEL_SCALE,
+  AIR_SPEED_CAP,
+  BACK_SCALE,
   Buttons,
   GROUND_ACCEL,
-  GROUND_FRICTION,
+  GROUND_DECEL,
   SPEED_ADS,
   SPEED_CROUCH,
   SPEED_SPRINT,
   SPEED_WALK,
+  SPRINT_FORWARD_DOT,
+  STOP_DECEL,
+  STRAFE_SCALE,
 } from './constants.ts'
 import type { PlayerInput } from './protocol.ts'
 
@@ -31,6 +36,11 @@ export interface MoveState {
   vz: number
   /** 上一帧是否站在地上，决定用地面加速还是空中加速。 */
   grounded: boolean
+  /**
+   * 是否处于冲刺。由 Character 维护（含 0.05s 起步延迟与抬枪/蹲伏取消）；
+   * 缺省时按本帧输入即时判定，方便纯函数测试与回放。
+   */
+  sprinting?: boolean
 }
 
 export interface MoveResult {
@@ -56,51 +66,75 @@ export function computeMoveVelocity(
   ads: boolean,
 ): MoveResult {
   const crouch = (input.buttons & Buttons.Crouch) !== 0
-  const sprint = (input.buttons & Buttons.Sprint) !== 0 && !crouch && !ads
+  const rawInput = Math.hypot(input.forward, input.right)
+  const forwardIntent = rawInput > 1e-4 ? input.forward / rawInput : 0
+  const sprintButton = (input.buttons & Buttons.Sprint) !== 0
+  // 冲刺是一个"状态"（起步延迟/取消条件都在 Character 里维护）；纯函数调用
+  // 时退化成按本帧输入即时判定，测试与回放不需要额外的状态机。
+  const sprinting =
+    state.sprinting ??
+    (sprintButton && rawInput > 0.45 && forwardIntent > SPRINT_FORWARD_DOT && !crouch && !ads)
 
   let speed = SPEED_WALK
   if (crouch) speed = SPEED_CROUCH
   else if (ads) speed = SPEED_ADS
-  else if (sprint) speed = SPEED_SPRINT
+  else if (sprinting) speed = SPEED_SPRINT
 
-  // 前 + 右合成后归一化：斜着走不能比直着走快。
+  // 方向权重：横移 0.92、倒退 0.8。先缩放本地轴，再合成世界方向并归一化，
+  // 这样斜着走不会比直着走快（源码的 strafe/back scale 也是这个顺序）。
   const fwd = yawToForward(input.yaw)
   const right = yawToRight(input.yaw)
-  const wish = vecNormalizeXZ({
-    x: fwd.x * input.forward + right.x * input.right,
-    y: 0,
-    z: fwd.z * input.forward + right.z * input.right,
-  })
-  const magnitude = Math.min(1, Math.hypot(input.forward, input.right))
-  const wishSpeed = speed * magnitude
+  const sx = input.right * STRAFE_SCALE
+  const sz = input.forward >= 0 ? input.forward : input.forward * BACK_SCALE
+  let wishLen = Math.hypot(sx, sz)
+  let wishX = 0
+  let wishZ = 0
+  if (wishLen > 1e-5) {
+    wishX = fwd.x * sz + right.x * sx
+    wishZ = fwd.z * sz + right.z * sx
+    const length = Math.hypot(wishX, wishZ)
+    wishX /= length
+    wishZ /= length
+    if (wishLen > 1) wishLen = 1
+  } else {
+    wishLen = 0
+  }
 
+  const targetSpeed = speed * wishLen
   let vx = state.vx
   let vz = state.vz
 
-  // 地面摩擦只在没有移动意图时施加，否则会和加速互相拉扯。
-  if (state.grounded && wishSpeed < 1e-3) {
+  if (state.grounded) {
+    // 三档响应：完全松手 30、减速 52、加速 92。不是固定摩擦 —— 松手和
+    // 反向输入要用不同的减速度，否则要么刹不住、要么急停得像撞墙。
     const cur = Math.hypot(vx, vz)
-    if (cur > 1e-4) {
-      const scale = Math.max(0, cur - GROUND_FRICTION * dt) / cur
-      vx *= scale
-      vz *= scale
+    const rate = rawInput < 0.02 ? STOP_DECEL : targetSpeed < cur * 0.92 ? GROUND_DECEL : GROUND_ACCEL
+    const step = rate * dt
+    const dx = wishX * targetSpeed - vx
+    const dz = wishZ * targetSpeed - vz
+    const distance = Math.hypot(dx, dz)
+    if (distance <= step) {
+      vx = wishX * targetSpeed
+      vz = wishZ * targetSpeed
+    } else if (distance > 1e-9) {
+      vx += (dx / distance) * step
+      vz += (dz / distance) * step
+    }
+  } else if (wishLen > 1e-4) {
+    // 空中只能"补"到 3.4 m/s，不能放大既有动量。滑铲/坠落带出去的速度
+    // 可以转向，但不会因为按方向键越飞越快。
+    const cap = AIR_SPEED_CAP * wishLen
+    const along = vx * wishX + vz * wishZ
+    const add = cap - along
+    if (add > 0) {
+      const accel = GROUND_ACCEL * AIR_ACCEL_SCALE * wishLen * dt
+      const gain = Math.min(accel, add)
+      vx += wishX * gain
+      vz += wishZ * gain
     }
   }
 
-  if (wishSpeed > 1e-3) {
-    const maxDelta = (state.grounded ? GROUND_ACCEL : AIR_ACCEL) * dt
-    vx = approach(vx, wish.x * wishSpeed, maxDelta)
-    vz = approach(vz, wish.z * wishSpeed, maxDelta)
-  }
-
-  return { vx, vz, wishSpeed }
-}
-
-/** 把 v 朝 target 推进一步，步长不超过 maxDelta。 */
-function approach(v: number, target: number, maxDelta: number): number {
-  const d = target - v
-  if (Math.abs(d) <= maxDelta) return target
-  return v + Math.sign(d) * maxDelta
+  return { vx, vz, wishSpeed: targetSpeed }
 }
 
 /** 眼睛位置 = 脚底 + 眼高。 */
