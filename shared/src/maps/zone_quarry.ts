@@ -63,6 +63,25 @@ export function buildQuarry(set: BrushSet, ox: number, oz: number, opts: QuarryO
   s.slab(-24, -2, 2.0, 6.0, 0, 2.4, 'stone') // 西侧挡土墙
   s.slab(24, -22, 3.0, 3.0, 0, 3.2, 'stone') // 东北角的碎石山
 
+  // ---- 工具棚：采石场唯一能关门的室内空间 ----
+  // 放在坑口西北角，避开三层台面与吊臂；碎石生成也要绕开它。
+  s.wallZ(-22, -24, -16, 0, 2.8, { t: 0.4, material: 'wood' }) // 西墙
+  s.wallZ(-14, -24, -16, 0, 2.8, {
+    t: 0.4,
+    material: 'wood',
+    windows: [{ gap: [-21.4, -19.4], sill: 1.2, top: 2.4 }],
+  }) // 东墙 + 窗
+  s.wallX(-24, -22, -14, 0, 2.8, {
+    t: 0.4,
+    material: 'wood',
+    windows: [{ gap: [-19.4, -17.4], sill: 1.2, top: 2.4 }],
+  }) // 北墙 + 窗
+  s.wallX(-16, -22, -14, 0, 2.8, { t: 0.4, material: 'wood', gaps: [[-19.0, -16.6]] }) // 南门
+  s.span(-18, 3.0, -20, 4.4, 0.2, 4.4, 'wood') // 平顶
+  s.slab(-20.4, -22.4, 1.2, 0.5, 0, 0.8, 'wood') // 工作台
+  s.slab(-15.6, -17.2, 0.6, 0.6, 0, 1.2, 'wood') // 木箱
+  s.slab(-20.8, -17.0, 0.5, 0.5, 0, 1.6, 'metal') // 油桶
+
   // ---- 碎石堆：确定性 RNG，数量显式可调 ----
   for (let i = 0; i < rubble; i++) {
     const x = -26 + rnd() * 52
@@ -70,6 +89,7 @@ export function buildQuarry(set: BrushSet, ox: number, oz: number, opts: QuarryO
     if (Math.abs(x) < 16.4 && z > -15 && z < 3) continue // 三层台面
     if (Math.abs(x - 16) < 3 && Math.abs(z + 16) < 3) continue // 吊臂塔
     if (Math.abs(x + 4) < 9.4 && Math.abs(z - 18) < 2.6) continue // 南料墙
+    if (Math.abs(x + 18) < 4.8 && Math.abs(z + 20) < 4.8) continue // 工具棚
     const tall = rnd() < 0.4
     s.slab(x, z, 0.6 + rnd() * 1.4, 0.6 + rnd() * 1.4, 0, tall ? 0.8 : 0.4, 'stone')
   }

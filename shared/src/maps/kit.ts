@@ -13,8 +13,8 @@
  * 不受这条约束 —— 它们不在脚下。
  *
  * 生成要显式给数量：墓碑、碎石、枕木这类重复元素用 mulberry32 摆，
- * 但每一处的数量都是 builder 的入参。客户端每个盒子一个 Mesh + 一条
- * EdgesGeometry 描边，超过 1100 个在 1080p 下就开始掉帧；数量写死在
+ * 但每一处的数量都是 builder 的入参。客户端已按材质合批，盒子数不再等于
+ * draw call 数；上限 1600 主要约束 Rapier 碰撞体与关卡生成时间。数量写死在
  * builder 里，调密度就得改代码、看不出代价。
  */
 
@@ -57,12 +57,26 @@ export function mulberry32(seed: number): () => number {
 /** 沿墙轴切门洞用的区间。 */
 export type Gap = readonly [number, number]
 
+/** 窗洞：只挖掉 sill..top 之间，下面留窗台、上面留过梁。 */
+export interface WindowOpening {
+  gap: Gap
+  /** 窗台顶面高度（世界 y）。需要落在 0.4m 网格上。 */
+  sill: number
+  /** 窗洞顶面高度（世界 y）。需要落在 0.4m 网格上。 */
+  top: number
+}
+
 export interface WallOpts {
   /** 墙厚（米）。石头 0.6~0.8、木墙 0.3、铁栅栏 0.12。 */
   t?: number
   material?: Mat
   /** 门洞（沿墙轴的世界坐标区间）。宽 2.4m 以上：窄门只会变成"谁先卡门口谁死"。 */
   gaps?: readonly Gap[]
+  /**
+   * 窗洞。碰撞上是真的洞（子弹能穿、视线能过），但窗台高度挡住人。
+   * 用盒子拼出来而不是"整面墙 + 洞"：Rapier 只认凸体，带洞的盒子就是实心墙。
+   */
+  windows?: readonly WindowOpening[]
 }
 
 export interface FenceOpts {
@@ -114,35 +128,76 @@ export class BrushSet {
    * 一个带洞的盒子在 Rapier 里就是一块实心墙。
    */
   wallX(z: number, from: number, to: number, bottom: number, top: number, opts: WallOpts = {}): this {
-    const t = opts.t ?? 0.6
-    const material = opts.material ?? 'stone'
-    const lo = Math.min(from, to)
-    const hi = Math.max(from, to)
-    let cursor = lo
-    for (const [g0, g1] of [...(opts.gaps ?? [])].sort((p, q) => p[0] - q[0])) {
-      const a = Math.max(lo, Math.min(hi, g0))
-      const c = Math.max(lo, Math.min(hi, g1))
-      if (a > cursor) this.slab((cursor + a) / 2, z, (a - cursor) / 2, t / 2, bottom, top, material)
-      cursor = Math.max(cursor, c)
-    }
-    if (cursor < hi) this.slab((cursor + hi) / 2, z, (hi - cursor) / 2, t / 2, bottom, top, material)
-    return this
+    return this.wall('x', z, from, to, bottom, top, opts)
   }
 
   /** 沿 Z 方向的墙（墙轴 = z，法线 = x）。参数语义同 wallX。 */
   wallZ(x: number, from: number, to: number, bottom: number, top: number, opts: WallOpts = {}): this {
+    return this.wall('z', x, from, to, bottom, top, opts)
+  }
+
+  /**
+   * 墙的共用实现：先按门洞/窗洞的并集切成整高墙段，再给窗洞补窗台与过梁。
+   *
+   * 为什么要求窗台/过梁落在 0.4m 网格：窗台本身是"能站上去的台面"。
+   * 1.2m 的窗台跨不上去（超过 0.4 台阶），但 0.8m 的可以 —— 设计时如果
+   * 写 0.75，玩家会看到一条"应该能踩、实际卡住"的边。
+   */
+  private wall(
+    axis: 'x' | 'z',
+    fixed: number,
+    from: number,
+    to: number,
+    bottom: number,
+    top: number,
+    opts: WallOpts,
+  ): this {
     const t = opts.t ?? 0.6
     const material = opts.material ?? 'stone'
     const lo = Math.min(from, to)
     const hi = Math.max(from, to)
-    let cursor = lo
-    for (const [g0, g1] of [...(opts.gaps ?? [])].sort((p, q) => p[0] - q[0])) {
-      const a = Math.max(lo, Math.min(hi, g0))
-      const c = Math.max(lo, Math.min(hi, g1))
-      if (a > cursor) this.slab(x, (cursor + a) / 2, t / 2, (a - cursor) / 2, bottom, top, material)
-      cursor = Math.max(cursor, c)
+    const doors = [...(opts.gaps ?? [])]
+    const windows = [...(opts.windows ?? [])]
+
+    // 所有切口（门 + 窗）的并集，按起点排序后合并重叠区间。
+    const cuts: [number, number][] = []
+    for (const [g0, g1] of [...doors, ...windows.map((w) => w.gap)]) {
+      const a = Math.max(lo, Math.min(hi, Math.min(g0, g1)))
+      const b = Math.max(lo, Math.min(hi, Math.max(g0, g1)))
+      if (b - a > 1e-6) cuts.push([a, b])
     }
-    if (cursor < hi) this.slab(x, (cursor + hi) / 2, t / 2, (hi - cursor) / 2, bottom, top, material)
+    cuts.sort((p, q) => p[0] - q[0])
+    const merged: [number, number][] = []
+    for (const [a, b] of cuts) {
+      const last = merged[merged.length - 1]
+      if (last && a <= last[1] + 1e-6) last[1] = Math.max(last[1], b)
+      else merged.push([a, b])
+    }
+
+    const seg = (a: number, b: number, y0: number, y1: number): void => {
+      if (b - a <= 1e-6 || y1 - y0 <= 1e-6) return
+      if (axis === 'x') this.slab((a + b) / 2, fixed, (b - a) / 2, t / 2, y0, y1, material)
+      else this.slab(fixed, (a + b) / 2, t / 2, (b - a) / 2, y0, y1, material)
+    }
+
+    let cursor = lo
+    for (const [a, b] of merged) {
+      seg(cursor, a, bottom, top)
+      cursor = Math.max(cursor, b)
+    }
+    seg(cursor, hi, bottom, top)
+
+    // 窗台与过梁。与门洞重叠的窗直接跳过（门已经全高挖掉了）。
+    for (const w of windows) {
+      const wa = Math.max(lo, Math.min(hi, Math.min(w.gap[0], w.gap[1])))
+      const wb = Math.max(lo, Math.min(hi, Math.max(w.gap[0], w.gap[1])))
+      if (wb - wa <= 1e-6) continue
+      if (doors.some(([d0, d1]) => Math.max(d0, d1) > wa + 1e-6 && Math.min(d0, d1) < wb - 1e-6)) continue
+      const sill = Math.max(bottom, Math.min(top, w.sill))
+      const head = Math.max(bottom, Math.min(top, w.top))
+      seg(wa, wb, bottom, sill)
+      seg(wa, wb, head, top)
+    }
     return this
   }
 

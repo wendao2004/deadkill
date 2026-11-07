@@ -30,7 +30,7 @@ export function buildChapel(set: BrushSet, ox: number, oz: number, opts: ChapelO
   // ---- 中殿：24 × 12，墙高 6.4m ----
   s.wallX(-18, -14, 10, 0, 6.4, { t: 0.8, material: 'stone', gaps: [[-6, -3], [3, 6]] }) // 北墙（两扇高窗）
   s.wallX(-6, -14, 10, 0, 6.4, { t: 0.8, material: 'stone', gaps: [[-2, 2]] }) // 南墙（正门 4m）
-  s.wallZ(10, -18, -6, 0, 6.4, { t: 0.8, material: 'stone' }) // 东端半圆室（简化成直墙）
+  s.wallZ(10, -18, -6, 0, 6.4, { t: 0.8, material: 'stone', gaps: [[-13, -11]] }) // 东端半圆室 + 圣器室门
   // 窗台：把窗洞下半截补实，窗只剩 3.6~5.6m 那一段 —— 贴着墙也射不出去
   s.slab(-4.5, -18, 1.5, 0.4, 0, 3.6, 'stone')
   s.slab(4.5, -18, 1.5, 0.4, 0, 3.6, 'stone')
@@ -49,8 +49,32 @@ export function buildChapel(set: BrushSet, ox: number, oz: number, opts: ChapelO
   }
   s.slab(6, -12, 2.0, 4.0, 0, 0.8, 'stone') // 祭坛台
 
+  // ---- 圣器室：中殿东侧的小房间，教堂里唯一能关门的空间 ----
+  // 以前东墙是整面实心；现在开一道 2m 门，接一间 4×5 的圣器室。
+  s.wallZ(14, -15, -10, 0, 3.2, {
+    t: 0.5,
+    material: 'stone',
+    windows: [{ gap: [-13.5, -11.5], sill: 1.2, top: 2.4 }],
+  }) // 东墙
+  s.wallX(-15, 10, 14, 0, 3.2, { t: 0.5, material: 'stone' }) // 北墙
+  s.wallX(-10, 10, 14, 0, 3.2, { t: 0.5, material: 'stone' }) // 南墙
+  s.span(12, 3.4, -12.5, 2.4, 0.2, 2.9, 'stone') // 平顶
+  s.slab(12.6, -14.2, 0.8, 0.6, 0, 0.8, 'stone') // 石台
+  s.slab(11.0, -13.0, 0.4, 0.4, 0, 1.2, 'wood') // 烛箱
+
   // ---- 钟楼：西端 8×8 方塔，14m 高 ----
-  s.slab(-18, -14, 4.0, 4.0, 0, 14.0, 'stone') // 塔身实心（不需要内部，也就不需要假门）
+  // 底层改成可进入的门厅，4.8m 以上仍是实心塔身（不需要爬塔）。
+  s.wallZ(-22, -18, -10, 0, 4.8, { t: 0.6, material: 'stone' }) // 西墙
+  s.wallZ(-14, -18, -10, 0, 4.8, { t: 0.6, material: 'stone', gaps: [[-15, -13]] }) // 东墙：通向中殿
+  s.wallX(-18, -22, -14, 0, 4.8, {
+    t: 0.6,
+    material: 'stone',
+    windows: [{ gap: [-20.0, -18.0], sill: 2.4, top: 3.6 }],
+  }) // 南墙：高窗
+  s.wallX(-10, -22, -14, 0, 4.8, { t: 0.6, material: 'stone' }) // 北墙
+  s.slab(-18, -14, 4.0, 4.0, 4.8, 14.0, 'stone') // 4.8m 以上实心塔身
+  s.slab(-19.6, -11.4, 0.8, 0.8, 0, 1.2, 'wood') // 门厅里的木箱
+  s.slab(-16.4, -15.8, 1.2, 0.4, 0, 0.8, 'stone') // 石凳
   s.slab(-18, -9.2, 1.6, 0.6, 0, 0.8, 'stone') // 塔脚台阶：坐上去刚好靠着塔身
   s.span(-18, 14.4, -14, 4.6, 0.4, 4.6, 'stone') // 钟室外挑
   s.span(-18, 15.6, -14, 3.0, 0.8, 3.0, 'stone', Math.PI / 4) // 钟室（转 45° 的八边形近似）
@@ -85,9 +109,23 @@ export function buildChapel(set: BrushSet, ox: number, oz: number, opts: ChapelO
   for (let i = 0; i < 4; i++) s.slab(-16 + i * 10, 21.2, 1.2, 0.6, 0, 0.4, 'stone')
 
   // ---- 祠堂：墓园东侧的小屋，墓园里唯一的室内掩体 ----
-  s.slab(16, 8, 3.0, 3.0, 0, 3.2, 'stone')
-  s.slab(16, 11.2, 1.6, 0.4, 0, 2.0, 'wood') // 门廊
-  s.span(16, 3.6, 8, 3.4, 0.4, 3.4, 'stone') // 平顶
+  // 从实心块改成真正的 6×6 石屋：南门、北窗、西窗，里面有石台与烛箱。
+  s.wallZ(13, 5, 11, 0, 3.2, {
+    t: 0.4,
+    material: 'stone',
+    windows: [{ gap: [7.0, 9.0], sill: 1.2, top: 2.4 }],
+  }) // 西墙
+  s.wallZ(19, 5, 11, 0, 3.2, { t: 0.4, material: 'stone' }) // 东墙
+  s.wallX(5, 13, 19, 0, 3.2, {
+    t: 0.4,
+    material: 'stone',
+    windows: [{ gap: [15.0, 17.0], sill: 1.2, top: 2.4 }],
+  }) // 北墙
+  s.wallX(11, 13, 19, 0, 3.2, { t: 0.4, material: 'stone', gaps: [[15.0, 17.0]] }) // 南门
+  s.span(16, 3.4, 8, 3.4, 0.2, 3.4, 'stone') // 平顶
+  s.slab(16, 11.2, 1.6, 0.4, 0, 0.4, 'stone') // 门口一级台阶
+  s.slab(16, 6.2, 1.2, 0.5, 0, 0.8, 'stone') // 石台
+  s.slab(14.2, 9.4, 0.4, 0.4, 0, 1.2, 'wood') // 烛箱
 
   // ---- 柏树：瘦高的 foliage 柱（树干 0.8m 见方），替墓园挡住高处视线 ----
   const cypress: [number, number][] = [

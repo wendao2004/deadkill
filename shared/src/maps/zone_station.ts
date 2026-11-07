@@ -72,12 +72,52 @@ export function buildStation(set: BrushSet, ox: number, oz: number, opts: Statio
   s.slab(47.6, 1.6, 2.4, 2.4, 0, 1.2, 'stone') // 塔基座
 
   // ---- 站房废墟：12 × 8，墙 3.6m，屋顶塌了一半 ----
-  s.wallZ(-40, 8, 16, 0, 3.6, { t: 0.6, material: 'stone' })
-  s.wallZ(-28, 8, 16, 0, 3.6, { t: 0.6, material: 'stone' })
-  s.wallX(8, -40, -28, 0, 3.6, { t: 0.6, material: 'stone', gaps: [[-36, -32]] }) // 南门 4m
-  s.wallX(16, -40, -28, 0, 3.6, { t: 0.6, material: 'stone' })
+  s.wallZ(-40, 8, 16, 0, 3.6, {
+    t: 0.6,
+    material: 'stone',
+    windows: [{ gap: [11.0, 13.0], sill: 1.2, top: 2.4 }],
+  }) // 西墙 + 窗
+  s.wallZ(-28, 8, 16, 0, 3.6, {
+    t: 0.6,
+    material: 'stone',
+    windows: [{ gap: [11.0, 13.0], sill: 1.2, top: 2.4 }],
+  }) // 东墙 + 窗
+  s.wallX(8, -40, -28, 0, 3.6, {
+    t: 0.6,
+    material: 'stone',
+    gaps: [[-36, -32]],
+    windows: [{ gap: [-39.0, -37.0], sill: 1.2, top: 2.4 }],
+  }) // 南门 4m + 西窗
+  s.wallX(16, -40, -28, 0, 3.6, {
+    t: 0.6,
+    material: 'stone',
+    windows: [{ gap: [-37.0, -35.0], sill: 1.2, top: 2.4 }],
+  }) // 北墙 + 窗
   s.span(-37, 3.8, 12, 3.2, 0.2, 4.2, 'wood') // 没塌的那半片屋顶（底面 3.6m）
+  s.wallX(12, -40, -28, 0, 2.4, { t: 0.2, material: 'wood', gaps: [[-36.0, -34.0]] }) // 售票间隔墙
   s.slab(-34, 10, 1.2, 0.8, 0, 0.8, 'wood') // 售票台
+  s.slab(-38.2, 14.4, 1.0, 0.6, 0, 0.8, 'wood') // 值班床架
+  s.slab(-29.6, 14.6, 0.6, 0.6, 0, 1.2, 'wood') // 木箱
+  s.slab(-33.0, 14.8, 0.8, 0.5, 0, 0.4, 'wood') // 条凳
+
+  // ---- 货棚：站台东侧的小仓库，补足站场的室内空间 ----
+  s.wallZ(30, 9, 15, 0, 3.2, { t: 0.4, material: 'wood', gaps: [[11.0, 13.4]] }) // 西墙：大门
+  s.wallZ(38, 9, 15, 0, 3.2, {
+    t: 0.4,
+    material: 'wood',
+    windows: [{ gap: [11.0, 13.0], sill: 1.2, top: 2.4 }],
+  }) // 东墙 + 窗
+  s.wallX(9, 30, 38, 0, 3.2, {
+    t: 0.4,
+    material: 'wood',
+    windows: [{ gap: [32.0, 34.0], sill: 1.2, top: 2.4 }],
+  }) // 北墙 + 窗
+  s.wallX(15, 30, 38, 0, 3.2, { t: 0.4, material: 'wood' }) // 南墙
+  s.span(34, 3.4, 12, 4.4, 0.2, 4.4, 'wood') // 平顶
+  s.slab(32.0, 13.8, 1.2, 0.5, 0, 0.8, 'wood') // 工作台
+  s.slab(36.4, 13.6, 0.6, 0.6, 0, 1.2, 'wood') // 木箱
+  s.slab(31.4, 10.4, 0.5, 0.5, 0, 1.6, 'metal') // 油桶
+  s.slab(36.8, 10.2, 0.8, 0.8, 0, 0.8, 'wood') // 货箱
 
   // ---- 煤场：车皮旁的煤堆，数量显式可调 ----
   for (let i = 0; i < coal; i++) {
