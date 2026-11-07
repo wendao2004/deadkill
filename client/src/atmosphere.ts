@@ -198,6 +198,10 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   const tmpDir = new Vector3()
   const tmpRight = new Vector3()
   const tmpUp = new Vector3()
+  // 阴影 texel 对齐用的光空间基（每帧复用，不在 update 里分配）。
+  const shadowRight = new Vector3()
+  const shadowUp = new Vector3()
+  const shadowAnchor = new Vector3()
   const tmpColor = new Color()
   const moonDir = new Vector3(
     Math.sin(moonAzimuth) * Math.cos(moonElevation),
@@ -807,11 +811,34 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     const step = Math.min(Math.max(dt, 0), 0.1)
     clock += step
 
-    // 阴影相机跟着玩家：方向不变，只平移光源与目标。texel 对齐由 three 的
-    // 阴影矩阵完成；这里不额外 snap，因为角色移动是连续的，阴影边缘的
-    // 亚像素抖动会被 postfx 的 FXAA 与 2.5px PCF 半径吃掉。
-    moon.position.copy(camera.position).addScaledVector(moonDir, 120)
+    // 阴影相机跟着玩家：方向不变，只平移光源与目标。
+    //
+    // 必须做 texel 对齐。正交阴影相机的光栅只认 texel 网格；目标点跟着相机
+    // 连续移动时，同一根柱子会每帧落在不同 texel 的亚像素位置上，边缘就会
+    // 爬行/闪烁。做法是把目标点在光空间里的 right/up 分量量化到 texel，
+    // 只平移、不转方向；光源位置由对齐后的目标点重新推导，方向严格不变。
     moon.target.position.copy(camera.position)
+    if (moon.castShadow && moon.shadow.mapSize.x > 0) {
+      // 光空间基：backward = 从目标指向光源；right = up × backward（与 three
+      // 的 Matrix4.lookAt 一致），up = backward × right。用世界 up 兜底。
+      shadowRight.crossVectors(tmpUp.set(0, 1, 0), moonDir)
+      if (shadowRight.lengthSq() > 1e-8) {
+        shadowRight.normalize()
+        shadowUp.crossVectors(moonDir, shadowRight).normalize()
+        // 一个 shadow texel 对应的世界距离。正交相机宽度 / 贴图分辨率。
+        const texel = (shadowCam.right - shadowCam.left) / moon.shadow.mapSize.x
+        if (texel > 1e-6) {
+          const r = moon.target.position.dot(shadowRight)
+          const u = moon.target.position.dot(shadowUp)
+          const dr = Math.round(r / texel) * texel - r
+          const du = Math.round(u / texel) * texel - u
+          moon.target.position
+            .addScaledVector(shadowRight, dr)
+            .addScaledVector(shadowUp, du)
+        }
+      }
+    }
+    moon.position.copy(moon.target.position).addScaledVector(moonDir, 120)
     moon.target.updateMatrixWorld()
     // 外部 time 若不可用（比如某些测试里传 0），退化成内部时钟。
     const t = Number.isFinite(time) && time > 0 ? time : clock

@@ -49,6 +49,7 @@ import {
 import type { Material, Texture } from 'three'
 import { wrapAngle } from '@dk/shared'
 import { mergeAll, ring, tubeZ } from './weapon-kit.ts'
+import { Spring } from './feel.ts'
 import {
   SIGHT_REAR_Z,
   SIGHT_Y,
@@ -105,6 +106,11 @@ export interface ViewmodelState {
   reloading: boolean
   /** 累计时间（秒），动画的相位来源。 */
   time: number
+  /**
+   * 步态相位（弧度，一步 = π）。由 render 按"走了多少米"推进后传进来；
+   * 缺省时退回时间正弦，旧调用方行为不变。
+   */
+  stepPhase?: number
   /** 抬头/低头幅度 -1..1（用于摆动与枪口下垂）。 */
   pitch: number
   /**
@@ -156,6 +162,12 @@ export interface Viewmodel {
   setWeapon(weaponId: number): void
   /** 每帧调用。dt 秒。 */
   update(state: ViewmodelState, dt: number): void
+  /**
+   * 开火时踢一脚枪模。位置/旋转各用一条 9Hz、ζ0.42 的欠阻尼弹簧：
+   * 后坐力先猛地推出去，再越过零点回弹一次 —— 单条指数衰减做不出这个。
+   * `ads` 用来按开镜比例压小幅度（贴腮时枪更"锁"在肩上）。
+   */
+  kick(scale: number, ads: number): void
   /** 扣扳机时调用一次：在枪口点一小片星芒火光。 */
   flash(): void
   /** 刀杀/收刀时转一圈手腕。只在刀上生效。 */
@@ -514,6 +526,30 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   let lagPitch = 0
   let lagVYaw = 0
   let lagVPitch = 0
+
+  // ---- 每发后坐力：位置 + 旋转各一条 9Hz / ζ0.42 弹簧 ----
+  // 源码用四条独立轴（back/up/pitch/yaw/roll），这里保持同样的分离：
+  // 位置和旋转的恢复速度不同，合成后才是"枪先撞肩、再回正"而不是整体平移。
+  const recBack = new Spring(9, 0.42)
+  const recUp = new Spring(9, 0.42)
+  const recPitch = new Spring(9, 0.42)
+  const recYaw = new Spring(9, 0.42)
+  const recRoll = new Spring(9, 0.42)
+  /** 递增相位给横摆一点"每发不一样"，但不用 Math.random（可复现）。 */
+  let kickPhase = 0.37
+  const kickWeapon = (scale: number, ads: number): void => {
+    // 开镜时枪更"锁"在肩上：幅度压到 54%。
+    const s = Math.max(0, scale) * (1 - Math.min(1, Math.max(0, ads)) * 0.46)
+    kickPhase += 0.61803398875
+    const jitter = Math.sin(kickPhase * 12.9898) * 43758.5453
+    const j = (jitter - Math.floor(jitter)) * 2 - 1
+    // 单位是米/弧度；0.018m 的推背在 0.3m 的枪模上约合屏幕 2~3px。
+    recBack.impulse(0.018 * s)
+    recUp.impulse(0.006 * s)
+    recPitch.impulse(0.02 * s)
+    recYaw.impulse(j * 0.009 * s)
+    recRoll.impulse(j * 0.012 * s)
+  }
 
   /**
    * 四把武器的几何全部由 weapon-models.ts 生成：倒角盒、车削枪管、挤出侧板、
@@ -1115,11 +1151,43 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     landOffset *= Math.exp(-dt / LAND_DECAY)
     const land = landOffset * settled
 
-    // 呼吸摆动：用 value noise 而不是 sin —— 站桩时看不出循环。
+    // 6 路不可公约噪声：任何两路的周期比都不是整数，站桩 60 秒也听不出循环。
+    // 位移 7.5/6/4mm、旋转 21/28/17mrad 来自源码 viewmodel.js 的噪声层。
     const swayScale = (0.6 + Math.min(speed / 6, 1) * 0.8) * motion * motionScale
-    const swayX = noise1(time * 0.33) * SWAY_X * swayScale
-    const swayY = noise1(time * 0.27 + 13.7) * SWAY_Y * swayScale
-    const bob = Math.sin(time * BOB_FREQ) * Math.min(speed / 6, 1) * BOB_AMP * motion * motionScale
+    const n1 = noise1(time * 0.13)
+    const n2 = noise1(time * 0.19 + 11.3)
+    const n3 = noise1(time * 0.271 + 31.7)
+    const n4 = noise1(time * 0.083 + 47.1)
+    const n5 = noise1(time * 0.117 + 61.9)
+    const n6 = noise1(time * 0.163 + 79.3)
+    const swayX = (n1 * 0.0075 + n2 * 0.004) * swayScale
+    const swayY = (n2 * 0.006 + n3 * 0.003) * swayScale
+    const swayRotX = (n4 * 0.021 + n6 * 0.01) * swayScale
+    const swayRotY = (n5 * 0.028 + n1 * 0.012) * swayScale
+    const swayRotZ = (n6 * 0.017 + n4 * 0.008) * swayScale
+
+    // 8 字 bob：相位优先用 render 传进来的步态（一步 = π）。
+    // 没有 stepPhase 的旧调用方退回时间正弦，行为与原来一致。
+    const hasStep = state.stepPhase !== undefined
+    const bobPhase = hasStep ? state.stepPhase! + Math.PI * 0.5 : time * BOB_FREQ
+    const bobWeight = hasStep
+      ? Math.min(1.55, Math.pow(Math.max(0, speed) / 4.57, 0.85)) *
+        (state.airborne ? 0 : 1) *
+        motion *
+        motionScale
+      : Math.min(speed / 6, 1) * motion * motionScale
+    const bobX = Math.sin(bobPhase) * 0.0165 * bobWeight
+    const bobY = Math.sin(bobPhase * 2) * 0.0115 * bobWeight
+    const bobZ = Math.cos(bobPhase * 2) * 0.006 * bobWeight
+    const bobRoll = -Math.sin(bobPhase) * (0.42 * Math.PI) / 180 * bobWeight
+    const bobPitch = (Math.cos(bobPhase * 2) * (0.16 * Math.PI)) / 180 * bobWeight
+
+    // 后坐力弹簧：先推进，再叠加到下面的姿态。
+    const recBackOff = recBack.step(dt)
+    const recUpOff = recUp.step(dt)
+    const recPitchOff = recPitch.step(dt)
+    const recYawOff = recYaw.step(dt)
+    const recRollOff = recRoll.step(dt)
 
     // 疾跑摆动：1.1Hz 的椭圆摆动（横摆 sin、竖摆 cos），另有同频滚转。
     const sprintPhase = time * SPRINT_HZ * Math.PI * 2
@@ -1220,6 +1288,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       (rig.adsX - rig.hipX) * ads +
       wall * 0.03 +
       swayX +
+      bobX +
       swaySprintX +
       SPRINT_X * sprint +
       RELOAD_X * reload +
@@ -1230,14 +1299,22 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       (rig.adsY - rig.hipY) * ads -
       wall * 0.11 +
       swayY +
-      bob * 0.6 +
+      bobY +
+      recUpOff +
       swaySprintY +
       SPRINT_Y * sprint +
       RELOAD_Y * reload +
       land +
       shakeY -
       SWITCH_DIP * slotK * dip
-    const pz = rig.hipZ + (rig.adsZ - rig.hipZ) * ads + SPRINT_Z * sprint + RELOAD_Z * reload + SWITCH_PULL * slotK * pull
+    const pz =
+      rig.hipZ +
+      (rig.adsZ - rig.hipZ) * ads +
+      bobZ +
+      recBackOff +
+      SPRINT_Z * sprint +
+      RELOAD_Z * reload +
+      SWITCH_PULL * slotK * pull
 
     // 相机滞后弹簧：目标由"这一帧转了多少"决定，欠阻尼让停手后有过冲。
     // 开镜时压到 30%，否则镜心会跟着手臂一起飘。
@@ -1281,6 +1358,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       wall * 0.4 +
       state.recoil * 0.22 * settled +
       state.pitch * 0.06 * motion +
+      bobPitch +
+      swayRotX +
+      recPitchOff +
       SPRINT_PITCH * sprint -
       (RELOAD_PITCH_DOWN + rig.pitch * motion) * reload +
       shakeRoll * 0.4 -
@@ -1288,6 +1368,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       lagPitch * lagScale
     const ry =
       rig.yaw * motion +
+      swayRotY +
+      recYawOff +
       SPRINT_YAW * sprint +
       RELOAD_YAW * reload -
       SWITCH_YAW * slotK * yawK +
@@ -1296,6 +1378,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       rig.roll * motion +
       SPRINT_ROLL * sprint +
       swaySprintRoll +
+      bobRoll +
+      swayRotZ +
+      recRollOff +
       RELOAD_ROLL * reload +
       shakeRoll -
       SWITCH_ROLL * slotK * rollK +
@@ -1491,6 +1576,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     root,
     setWeapon,
     update,
+    kick: kickWeapon,
     flash: triggerFlash,
     flourish: () => {
       if (current.isMelee) flourishTimer = FLOURISH_TIME

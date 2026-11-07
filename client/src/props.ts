@@ -39,7 +39,7 @@ import {
   Matrix4,
   Mesh,
   MeshBasicMaterial,
-  MeshToonMaterial,
+  MeshStandardMaterial,
   NearestFilter,
   Object3D,
   PlaneGeometry,
@@ -51,7 +51,7 @@ import {
   type Side,
 } from 'three'
 
-import { applyComicInk, type ComicSurface } from './ink.ts'
+import type { ComicSurface } from './ink.ts'
 import { OUTLINE_SHARED } from './outline.ts'
 import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './shadows.ts'
 
@@ -312,10 +312,12 @@ function makeGradientMap(): DataTexture {
 }
 
 /**
- * 卡通材质工厂。
+ * 道具材质工厂。
  *
- * gradientMap 可选：主程想省一张贴图时，把 render.ts 里那张共享的传进来即可；
- * 不传就自己生成一张同参数、同色阶的（多 4 字节显存）。
+ * 关卡已经全面 PBR（normal/roughness + IBL），道具如果继续用 toon + 墨线，
+ * 就会出现截图里最刺眼的那一幕：写实墙面前立着几棵"带黑边的卡通树"。
+ * 这里改成 MeshStandardMaterial，按表面类型给一组粗糙度/金属度近似值；
+ * 道具没有展开 UV，所以不挂贴图，只靠平滑光照 + 环境反射融入场景。
  */
 function makeToon(
   color: number,
@@ -327,24 +329,38 @@ function makeToon(
     surface?: ComicSurface
     specular?: number
   } = {},
-): MeshToonMaterial {
-  let map = opts.gradientMap
-  if (!map) {
-    map = makeGradientMap()
-    bag.add(map)
+): MeshStandardMaterial {
+  let metalness = 0
+  let roughness = 0.88
+  switch (opts.surface) {
+    case 'metal':
+      metalness = 0.55
+      roughness = 0.42
+      break
+    case 'wood':
+      roughness = 0.82
+      break
+    case 'foliage':
+      roughness = 0.94
+      break
+    case 'mud':
+    case 'stone':
+      roughness = 0.9
+      break
+    default:
+      break
   }
-  const mat = new MeshToonMaterial({ color, gradientMap: map, fog: opts.fog ?? true })
-  if (opts.side !== undefined) mat.side = opts.side
-  // 与世界其余部分用同一套墨线/程序化细节。这里刻意比关卡轻一档：
-  // 树和栅栏是小物件，排线太满会读成一团黑噪点。
-  applyComicInk(mat, {
-    hatchSpacing: 14,
-    hatchStrength: 0.38,
-    hatchThreshold: 0.42,
-    grime: 0.045,
-    surface: opts.surface,
-    specular: opts.specular,
+  // specular 是旧 toon 的假高光强度 0..1；这里反向映射成粗糙度。
+  if (opts.specular !== undefined) {
+    roughness = Math.min(1, Math.max(0.18, 1 - opts.specular * 0.8))
+  }
+  const mat = new MeshStandardMaterial({
+    color,
+    metalness,
+    roughness,
+    fog: opts.fog ?? true,
   })
+  if (opts.side !== undefined) mat.side = opts.side
   bag.add(mat)
   return mat
 }
@@ -390,6 +406,9 @@ function makeInkMaterial(bag: GpuBag, width = INK_BASE): ShaderMaterial {
       '}',
     ].join('\n'),
   })
+  // 写实档不再给道具描边：关卡是 PBR，黑边会把树/栅栏读成贴纸。
+  // 不删几何、不改调用方，只让材质不参与渲染（Mesh 会被整棵跳过）。
+  mat.visible = false
   bag.add(mat)
   return mat
 }
@@ -455,20 +474,17 @@ function assemble(parts: BufferGeometry[]): BufferGeometry {
 }
 
 /**
- * 顶点色 toon 材质：颜色全在几何里，材质保持纯白，不去乘它第二次。
+ * 顶点色材质：颜色全在几何里，材质保持纯白，不去乘它第二次。
  * side 只有破布用得上 —— 一块布从背面也要看得见。
  */
-function makePartMaterial(bag: GpuBag, gradientMap: DataTexture, side?: Side): MeshToonMaterial {
-  const mat = new MeshToonMaterial({ color: 0xffffff, vertexColors: true, gradientMap })
-  if (side !== undefined) mat.side = side
-  // 顶点色决定固有色，补丁只加排线/污渍。这里不指定 surface：同一份材质
-  // 同时被木栅栏、铁件和布条复用，贴任何一种材质纹理都会有至少一半物体错。
-  applyComicInk(mat, {
-    hatchSpacing: 16,
-    hatchStrength: 0.35,
-    hatchThreshold: 0.42,
-    grime: 0.045,
+function makePartMaterial(bag: GpuBag, _gradientMap: DataTexture, side?: Side): MeshStandardMaterial {
+  const mat = new MeshStandardMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    roughness: 0.88,
+    metalness: 0,
   })
+  if (side !== undefined) mat.side = side
   bag.add(mat)
   return mat
 }
@@ -721,7 +737,7 @@ function makeReedGeometry(): BufferGeometry {
  * 打过补丁和没打补丁的 MeshToonMaterial 会共用同一个 program，谁先编译谁赢，
  * 表现就是"只有一部分芦苇会动"。（client/src/ink.ts 里踩过同一个坑。）
  */
-function patchReedSway(material: MeshToonMaterial, uReedTime: { value: number }): void {
+function patchReedSway(material: MeshStandardMaterial, uReedTime: { value: number }): void {
   const swayUniforms = {
     uReedTime,
     uReedSway: { value: 0.16 },

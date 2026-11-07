@@ -86,6 +86,7 @@ import { createAtmosphere, type Atmosphere } from './atmosphere.ts'
 import { createEnvironmentProbe, type EnvironmentProbe } from './environment.ts'
 import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './shadows.ts'
 import { createViewmodel, type Viewmodel, type ViewmodelKit, type ViewmodelState } from './viewmodel.ts'
+import { CAMERA_FEEL, Spring, angleDelta, approach, clamp, clamp01, hashNoise } from './feel.ts'
 
 import {
   BODY_CACHE_TTL_MS,
@@ -502,6 +503,26 @@ export class Renderer {
   private punchPitch = 0
   private punchYaw = 0
   private punchRoll = 0
+
+  // ---- 相机手感（源码 player/camera.js 的移植）----
+  /** 每一步落脚的垂直微冲量（5.4Hz 欠阻尼弹簧）。 */
+  private readonly stepSpring = new Spring(CAMERA_FEEL.step.freq, CAMERA_FEEL.step.damping)
+  /** 落地下沉（3.05Hz 欠阻尼弹簧）。 */
+  private readonly landSpring = new Spring(CAMERA_FEEL.land.freq, CAMERA_FEEL.land.damping)
+  private bobPhase = 0
+  private bobWeight = 0
+  private stepDistance = 0
+  private prevFeetX = 0
+  private prevFeetZ = 0
+  private stepSampleReady = false
+  private trauma = 0
+  private strafeRoll = 0
+  private turnRoll = 0
+  private prevYaw = 0
+  private yawSampleReady = false
+  private fovMove = 1
+  private prevAirborne = false
+  private prevVy = 0
   /** 枪口闪光剩余时间。 */
   private flash = 0
   /** 当前 ADS 混合系数（0 腰射，1 完全瞄准），用于插值 FOV 与枪位。 */
@@ -874,6 +895,41 @@ export class Renderer {
     setOutlineResolution(width, height)
   }
 
+  /**
+   * 进局前预编译着色器。
+   *
+   * 不预编译时，第一帧看到新材质/第一枪打出新效果会在主线程同步编译
+   * program，单帧能卡 100ms~3s。这里分两步：
+   * 1. `compileAsync` 走 KHR_parallel_shader_compile 并行编译材质变体；
+   * 2. 真实渲染一帧世界 + 武器并跑一次后处理 —— 深度/shadow 变体没有独立的
+   *    编译 API，必须让 three 真的把它画一遍才会生成 program。
+   *
+   * 只渲染、不推进模拟，也不改相机/时钟；失败时降级为不预热，不能挡进局。
+   */
+  async prewarm(): Promise<void> {
+    const r = this.gl
+    const prevTarget = r.getRenderTarget()
+    try {
+      // 编译 variant 的 cache key 含 outputColorSpace/toneMapping，必须绑在
+      // 和正式渲染相同的 HDR 目标上，否则会编出 canvas 版的错误变体。
+      r.setRenderTarget(this.post.worldTarget)
+      await r.compileAsync(this.scene, this.camera)
+      r.setRenderTarget(this.post.viewTarget)
+      await r.compileAsync(this.viewScene, this.viewCamera)
+
+      // 第二遍：真正画一帧，覆盖 shadow/depth 与首帧才暴露的变体。
+      r.setRenderTarget(this.post.worldTarget)
+      r.render(this.scene, this.camera)
+      r.setRenderTarget(this.post.viewTarget)
+      r.render(this.viewScene, this.viewCamera)
+      this.post.present()
+    } catch (error) {
+      console.warn('[prewarm] 预热失败，继续进局', error)
+    } finally {
+      r.setRenderTarget(prevTarget)
+    }
+  }
+
   // ------------------------------------------------------------ 墨线
 
   /**
@@ -1221,6 +1277,10 @@ export class Renderer {
     ads: boolean,
     dt: number,
     speed: number,
+    /** 本地速度分量：侧移 roll 与落地冲击要用，不能只看速度大小。 */
+    vx: number,
+    vz: number,
+    vy: number,
     sprinting: boolean,
     airborne: boolean,
     reloading: boolean,
@@ -1240,7 +1300,17 @@ export class Renderer {
 
     const target = ads ? 1 : 0
     // ADS 过渡用指数逼近而不是线性：线性到位那一下会有"咔"的停顿感。
-    this.adsBlend += (target - this.adsBlend) * Math.min(1, dt * 14)
+    // tau 0.052 是源码的 ADS 时间常数 —— 比旧版（约 0.071s）更脆。
+    this.adsBlend = approach(this.adsBlend, target, CAMERA_FEEL.fov.adsTau, dt)
+
+    // 速度 FOV：冲刺/坠落时视野轻微拉开，静止时回 1。ADS 必须比它更硬，
+    // 否则开镜途中冲刺会让准星在屏幕上"呼吸"。
+    const moveTarget = sprinting
+      ? CAMERA_FEEL.fov.sprint
+      : airborne && vy < -6
+        ? CAMERA_FEEL.fov.air
+        : 1
+    this.fovMove = approach(this.fovMove, moveTarget, CAMERA_FEEL.fov.moveTau, dt)
 
     // 带镜的枪在常规 ADS 收束之上再除一次倍数；不带镜时 adsZoom = 1，
     // 公式退化成原来那条 baseFov - PULL * blend，观感一字不变。
@@ -1248,7 +1318,7 @@ export class Renderer {
     // 带镜的枪才把 FOV 除以倍数；机械瞄具只做 ADS_FOV_PULL 的收束。
     // 低倍镜（1.3/1.7）如果也除倍数，1.7 会得到 32°，再叠镜圈就是黑屏。
     const zoom = adsZoom >= SCOPE_MIN_ZOOM ? 1 + (adsZoom - 1) * this.adsBlend : 1
-    const fov = (this.baseFov - ADS_FOV_PULL * this.adsBlend) / zoom
+    const fov = (this.baseFov * this.fovMove - ADS_FOV_PULL * this.adsBlend) / zoom
     if (Math.abs(this.camera.fov - fov) > 0.01) {
       this.camera.fov = fov
       this.camera.updateProjectionMatrix()
@@ -1262,29 +1332,166 @@ export class Renderer {
     // 夜空、月亮、边缘光、雾片与萤火虫全部按 time 推进；dt 只用于火光闪烁
     // 这类有状态的东西。放在相机摆位之前：边缘光每帧要跟着 camera 走。
     this.atmo.update(dt, this.camera, this.time)
-    // 走动时的头部起伏：频率跟着速度走，静止时归零。
-    const bobAmp = Math.min(speed / 6, 1) * 0.018
-    const bob = Math.sin(this.time * 10.5) * bobAmp * (1 - this.adsBlend * 0.8)
 
-    // 眼高直接取角色控制器的值（蹲下时更矮），不要再自己插一遍 ——
-    // 两处插值不同步会让镜头和实际射线起点对不上，近距离会"打中了不算"。
-    // 视角后坐力按同一份 dt 指数回落。收得比枪的快（枪 6/s、视角 11/s）：
-    // 视野如果和枪一样慢地爬回来，玩家会以为自己一直在被往上推。
+    // ---- 步态相位：按"走了多少米"推进，而不是按时间 ----
+    // 时间驱动的 bob 会在起停/跳跃后和脚步事件错开，走起来像在原地踩空气。
+    if (!this.stepSampleReady) {
+      this.prevFeetX = feet.x
+      this.prevFeetZ = feet.z
+      this.stepSampleReady = true
+    }
+    const moved = Math.hypot(feet.x - this.prevFeetX, feet.z - this.prevFeetZ)
+    this.prevFeetX = feet.x
+    this.prevFeetZ = feet.z
+    const crouching = eyeHeight < 1.3
+    const stride = (crouching ? 1.05 : 1.48) * (sprinting ? 1.28 : 1)
+    if (!airborne) {
+      this.stepDistance += moved
+      // 一步 = π 相位：横向极值正好落在落脚那一帧。
+      this.bobPhase += (moved / stride) * Math.PI
+      if (this.bobPhase > Math.PI * 4) this.bobPhase -= Math.PI * 4
+      if (this.stepDistance >= stride && speed > 0.55) {
+        this.stepDistance -= stride
+        const amp =
+          CAMERA_FEEL.step.impulse *
+          (sprinting ? CAMERA_FEEL.step.sprintScale : 1) *
+          (crouching ? 0.55 : 1)
+        this.stepSpring.impulse(-amp)
+      }
+    } else {
+      this.stepDistance = stride * 0.55
+    }
+
+    // ---- 8 字 bob：速度越高越明显，但按 0.85 次幂压住冲刺的夸张感 ----
+    let bobTarget = Math.min(
+      CAMERA_FEEL.bob.speedCap,
+      Math.pow(Math.max(0, speed) / 4.57, CAMERA_FEEL.bob.speedExp),
+    )
+    if (airborne) bobTarget = 0
+    bobTarget *= 1 + (CAMERA_FEEL.bob.adsScale - 1) * this.adsBlend
+    this.bobWeight = approach(this.bobWeight, bobTarget, CAMERA_FEEL.bob.airFade, dt)
+    const theta = this.bobPhase + Math.PI * 0.5
+    const bobX = Math.sin(theta) * CAMERA_FEEL.bob.ampX * this.bobWeight
+    const bobY = Math.sin(theta * 2) * CAMERA_FEEL.bob.ampY * this.bobWeight
+    const bobZ = Math.cos(theta * 2) * CAMERA_FEEL.bob.ampZ * this.bobWeight
+    const bobRoll = -Math.sin(theta) * CAMERA_FEEL.bob.roll * this.bobWeight
+    const bobPitch = Math.cos(theta * 2) * CAMERA_FEEL.bob.pitch * this.bobWeight
+
+    // ---- 落地：冲击速度决定下沉、pitch/roll 与 trauma ----
+    if (this.prevAirborne && !airborne) {
+      const impact = Math.max(0, -Math.min(0, this.prevVy))
+      const t = clamp01(
+        (impact - CAMERA_FEEL.land.minSpeed) /
+          (CAMERA_FEEL.land.fullSpeed - CAMERA_FEEL.land.minSpeed),
+      )
+      if (t > 0) {
+        const mag = Math.pow(t, 0.72)
+        this.landSpring.impulse(-CAMERA_FEEL.land.dipImpulse * mag)
+        this.punchPitch += CAMERA_FEEL.land.pitch * mag
+        this.punchRoll += CAMERA_FEEL.land.roll * mag
+        this.trauma = clamp01(this.trauma + CAMERA_FEEL.land.trauma * mag * mag)
+      }
+    }
+    this.prevAirborne = airborne
+    this.prevVy = vy
+    const stepOff = this.stepSpring.step(dt)
+    const landOff = this.landSpring.step(dt)
+
+    // ---- 横移 / 转向 roll：只在余光里感觉得到，但去掉就像镜头焊死 ----
+    const rightX = Math.cos(yaw)
+    const rightZ = -Math.sin(yaw)
+    const lateral = vx * rightX + vz * rightZ
+    const strafeTarget =
+      clamp(
+        -lateral / 4.57,
+        -1,
+        1,
+      ) *
+      CAMERA_FEEL.roll.strafe *
+      (airborne ? 0.45 : 1) *
+      (1 - 0.6 * this.adsBlend)
+    this.strafeRoll = approach(this.strafeRoll, strafeTarget, CAMERA_FEEL.roll.tau, dt)
+
+    if (!this.yawSampleReady) {
+      this.prevYaw = yaw
+      this.yawSampleReady = true
+    }
+    const yawRate = dt > 1e-6 ? angleDelta(this.prevYaw, yaw) / dt : 0
+    this.prevYaw = yaw
+    const turnTarget = clamp(
+      yawRate * CAMERA_FEEL.roll.yawRate,
+      -CAMERA_FEEL.roll.yawRateMax,
+      CAMERA_FEEL.roll.yawRateMax,
+    ) * (1 - 0.5 * this.adsBlend)
+    this.turnRoll = approach(this.turnRoll, turnTarget, CAMERA_FEEL.roll.tau * 1.4, dt)
+    const airRoll = airborne ? clamp(-vy * 0.02, -1, 1) * CAMERA_FEEL.roll.air : 0
+
+    // ---- trauma：爆炸/重击/落地共用的噪声抖动 ----
+    this.trauma = Math.max(0, this.trauma - CAMERA_FEEL.shake.decay * dt)
+    const shakeAmount = this.trauma * this.trauma
+    const shakeTime = this.time * CAMERA_FEEL.shake.freq
+    let shakePitch = 0
+    let shakeYaw = 0
+    let shakeRoll = 0
+    let shakeX = 0
+    let shakeY = 0
+    if (shakeAmount > 1e-4) {
+      shakePitch = hashNoise(shakeTime, 11) * shakeAmount * CAMERA_FEEL.shake.rot
+      shakeYaw = hashNoise(shakeTime + 31.7, 23) * shakeAmount * CAMERA_FEEL.shake.rot
+      shakeRoll = hashNoise(shakeTime + 57.1, 37) * shakeAmount * CAMERA_FEEL.shake.rot * 0.7
+      shakeX = hashNoise(shakeTime * 0.8 + 13.3, 41) * shakeAmount * CAMERA_FEEL.shake.pos
+      shakeY = hashNoise(shakeTime * 0.8 + 71.9, 53) * shakeAmount * CAMERA_FEEL.shake.pos
+    }
+
+    // ---- 呼吸：静止时几乎看不见，开镜时被放大成"手在飘" ----
+    const moveFactor = clamp01(speed / 2.2)
+    const breathAmp =
+      CAMERA_FEEL.breath.amp *
+      (1 + (CAMERA_FEEL.breath.adsScale - 1) * this.adsBlend) *
+      (1 - CAMERA_FEEL.breath.moveDamp * moveFactor)
+    const breathA = Math.sin(this.time * Math.PI * 2 * CAMERA_FEEL.breath.freqA)
+    const breathB = Math.sin(this.time * Math.PI * 2 * CAMERA_FEEL.breath.freqB + 1.7)
+    const breathPitch = (breathA * 0.7 + breathB * 0.3) * breathAmp
+    const breathYaw = (breathB * 0.75 - breathA * 0.25) * breathAmp * 1.15
+    const breathPos =
+      (breathA * 0.6 + breathB * 0.4) *
+      CAMERA_FEEL.breath.posAmp *
+      (1 - 0.8 * moveFactor)
+
+    // ---- 视角后坐力：先按 11/s 回落，再叠加进相机 ----
+    // 收得比枪快（枪 6/s）：视野如果和枪一样慢地爬回来，玩家会以为一直在被往上推。
     const punchDecay = Math.min(1, dt * 11)
     this.punchPitch -= this.punchPitch * punchDecay
     this.punchYaw -= this.punchYaw * punchDecay
     this.punchRoll -= this.punchRoll * punchDecay
 
-    this.camera.position.set(feet.x, feet.y + eyeHeight + bob, feet.z)
+    // 位置：bob 的 x/z 在水平面里，y 叠加落脚/落地/抖动/呼吸。
+    const forwardX = -Math.sin(yaw)
+    const forwardZ = -Math.cos(yaw)
+    this.camera.position.set(
+      feet.x + rightX * (bobX + shakeX) + forwardX * bobZ,
+      feet.y + eyeHeight + bobY + stepOff + landOff + shakeY + breathPos,
+      feet.z + rightZ * (bobX + shakeX) + forwardZ * bobZ,
+    )
     this.camera.rotation.set(0, 0, 0)
-    this.camera.rotateY(yaw + this.punchYaw)
+    this.camera.rotateY(yaw + this.punchYaw + breathYaw + shakeYaw)
     // 俯仰要夹住：punch 加到极限值上会翻过头，抬头打天花板时视角会自己回弹。
     const limit = Math.PI / 2 - 0.02
-    this.camera.rotateX(Math.min(limit, Math.max(-limit, pitch + this.punchPitch)))
+    this.camera.rotateX(
+      Math.min(limit, Math.max(-limit, pitch + this.punchPitch + bobPitch + breathPitch + shakePitch)),
+    )
     // 挥刀的相机滚转来自 viewmodel（它才知道刀劈到第几段）。滞后一帧：
     // updateCamera 排在 viewmodel.update 之前，60fps 下 16ms 看不出来，
     // 而反过来先把相机转好再算武器会让开镜的共线约束差一帧。
-    this.camera.rotateZ(this.punchRoll + this.viewmodel.cameraRoll)
+    this.camera.rotateZ(
+      this.punchRoll +
+        this.viewmodel.cameraRoll +
+        bobRoll +
+        this.strafeRoll +
+        this.turnRoll +
+        airRoll +
+        shakeRoll,
+    )
 
     // 水面波纹与芦苇摆动只依赖时间。放在这里是因为 updateCamera 是每帧
     // 唯一保证被调用的入口，而它已经拿到了 dt。
@@ -1305,6 +1512,7 @@ export class Renderer {
     vm.reloading = reloading
     vm.reloadProgress = reloadProgress
     vm.time = this.time
+    vm.stepPhase = this.bobPhase
     vm.pitch = pitch
     vm.yaw = yaw
     vm.weaponId = weaponId
@@ -1409,6 +1617,8 @@ export class Renderer {
 
   onLocalShot(kick = 1, muzzle = true): void {
     this.recoil = Math.min(1, this.recoil + 0.55 * kick)
+    // 枪模的推背独立于相机：两条弹簧各自过冲，合成后才是"枪撞肩 + 视野抬"。
+    this.viewmodel.kick(kick, this.adsBlend)
     if (muzzle) {
       this.flash = 0.05
       // 枪口星芒由 viewmodel 画（它知道当前枪的枪口在哪），这里的闪光计时器

@@ -496,6 +496,35 @@ export class Game {
     this.audio.startAmbience()
   }
 
+  /** 防止 onWelcome 重入时启动两条 rAF 循环。 */
+  private starting = false
+
+  /**
+   * 进局前的最后一步：预编译着色器 → 显示 GPU 提示 → 启动帧循环。
+   *
+   * 预编译失败只记日志；任何情况下都要把 running 打开，不能让玩家卡在
+   * 加载页上。预热期间收到的快照照常写状态，只是不渲染。
+   */
+  private async beginAfterPrewarm(): Promise<void> {
+    if (this.starting) return
+    this.starting = true
+    try {
+      await this.renderer.prewarm()
+    } finally {
+      const gpu = this.renderer.gpuInfo()
+      // 核显/软件渲染时给一条看得见的提示。第三档已放弃这两类硬件：
+      // 仍然允许进游戏看画面，但不再承诺帧率，也不再自动退回卡通档。
+      this.options.onStatus(
+        gpu.integrated || gpu.software
+          ? '核显/软件渲染不在支持范围 · 已使用均衡写实画质 · 独显设置见 docs/显卡与性能.md'
+          : '',
+      )
+      this.running = true
+      this.lastFrameAt = performance.now()
+      this.raf = requestAnimationFrame(this.frame)
+    }
+  }
+
   async start(): Promise<void> {
     await initPhysics()
     await this.kernel.init(this.ctx)
@@ -531,15 +560,10 @@ export class Game {
         // 沼泽/室内/开阔三种环境底噪的配比不同：进沼泽要听见虫与水，
         // 开阔地上风压过人声。地图群系决定一个初值，足够。
         this.audio.setAmbienceBias(this.options.level.biome === 'swamp' ? 'marsh' : 'open')
-        this.options.onStatus('')
-        // 核显/软件渲染时给一条看得见的提示。第三档已放弃这两类硬件：
-        // 仍然允许进游戏看画面，但不再承诺帧率，也不再自动退回卡通档。
-        if (this.renderer.gpuInfo().integrated || this.renderer.gpuInfo().software) {
-          this.options.onStatus('核显/软件渲染不在支持范围 · 已使用均衡写实画质 · 独显设置见 docs/显卡与性能.md')
-        }
-        this.running = true
-        this.lastFrameAt = performance.now()
-        this.raf = requestAnimationFrame(this.frame)
+        // 先编译再开帧循环：否则第一帧见到的每个新材质都在主线程同步编译，
+        // 玩家进局的第一眼就是几百毫秒的定格。预热只渲染、不推进模拟。
+        this.options.onStatus('正在预编译着色器…')
+        void this.beginAfterPrewarm()
       },
       onSnapshot: (snapshot) => this.onSnapshot(snapshot),
       onEvents: (events) => this.onEvents(events),
@@ -2075,6 +2099,9 @@ export class Game {
       sample.ads,
       dt,
       Math.hypot(character.vx, character.vz),
+      character.vx,
+      character.vz,
+      character.vy,
       sample.sprinting,
       !character.grounded,
       this.wasReloading,
