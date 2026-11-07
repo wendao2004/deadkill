@@ -76,7 +76,7 @@ import { PostFX } from './postfx.ts'
 import { probeGpu, type GpuInfo } from './gpu.ts'
 import { createHunterMaterials, createHunterModel, type HunterMaterials, type HunterModel } from './hunter.ts'
 import { createHunterTextures, type HunterTextures } from './baked-textures.ts'
-import { createSurfaceMaps, type SurfaceFamily, type SurfaceMaps } from './pbr-textures.ts'
+import { createSurfaceMaps, loadSurfaceTextures, type SurfaceFamily, type SurfaceMaps } from './pbr-textures.ts'
 import type { GraphicsQuality } from './settings.ts'
 import { buildProps, type Props } from './props.ts'
 import { createMonsterRenderer, type MonsterRenderer, type MonsterView } from './monsters.ts'
@@ -353,8 +353,8 @@ function applyPbrRim(material: MeshStandardMaterial, strength: number, detailFam
           '    owDetail = mix(0.88, 1.08, owDetailFbm(owUV * 1.3));',
           '  }',
           '  float owFade = 1.0 - smoothstep(16.0, 52.0, distance(vOwWorld, cameraPosition));',
-          '  diffuseColor.rgb *= mix(1.0, owDetail, owFade);',
-          '  roughnessFactor = clamp(roughnessFactor * mix(1.0, owRough, owFade), 0.04, 1.0);',
+          '  diffuseColor.rgb *= mix(1.0, owDetail, owFade * 0.6);',
+          '  roughnessFactor = clamp(roughnessFactor * mix(1.0, owRough, owFade * 0.6), 0.04, 1.0);',
           '}',
         ].join('\n'),
       )
@@ -983,6 +983,20 @@ export class Renderer {
   }
 
   /**
+   * 进局前加载 CC0 PBR 贴图（Poly Haven），替换启动时的程序化占位图。
+   *
+   * 失败不致命：占位图仍然能跑，只是墙面细节弱一档。所以这里 catch 掉，
+   * 不能让一张 404 把整局挡在加载页。
+   */
+  async loadTextures(): Promise<void> {
+    try {
+      await loadSurfaceTextures(this.surfaceMaps, this.gl)
+    } catch (error) {
+      console.warn('[textures] PBR 贴图加载失败，继续使用程序化占位图', error)
+    }
+  }
+
+  /**
    * 进局前预编译着色器。
    *
    * 不预编译时，第一帧看到新材质/第一枪打出新效果会在主线程同步编译
@@ -1230,17 +1244,17 @@ export class Renderer {
     const base = new Color(color)
     if (tint !== undefined && tintAmount > 0) base.lerp(new Color(tint), tintAmount)
     // PBR 的固有色是线性反射率；toon 色块是按显示效果挑的，直接搬会偏亮。
-    base.multiplyScalar(0.92)
+    // authored 贴图自带固有色；材质色只做轻微染色，直接相乘会发黑。
+    base.lerp(new Color(0xffffff), 0.55)
     const mat = new MeshStandardMaterial({
       color: base,
-      // 程序化 albedo 细节暂不参与：砖缝/泥斑的明暗差在 mipmap 下会变成
-      // 大片斑点（实际截图可见）。颜色交给材质表，微结构交给法线/粗糙度。
+      map: maps.albedo,
       normalMap: maps.normal,
       roughnessMap: maps.roughness,
       // 粗糙度由贴图逐像素给，材质层保持 1（乘性）。
       roughness: 1,
-      metalness: family === 'metal' ? 0.85 : 0,
-      normalScale: new Vector2(0.42, 0.42),
+      metalness: family === 'metal' ? 0.45 : 0,
+      normalScale: new Vector2(0.55, 0.55),
       envMapIntensity: family === 'metal' ? 1.3 : 0.8,
       fog: true,
     })

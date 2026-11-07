@@ -25,9 +25,12 @@ import {
   CanvasTexture,
   LinearFilter,
   LinearMipmapLinearFilter,
+  NoColorSpace,
   RepeatWrapping,
   SRGBColorSpace,
+  TextureLoader,
   type Texture,
+  type WebGLRenderer,
 } from 'three'
 
 export type SurfaceFamily = 'stone' | 'wood' | 'metal' | 'mud' | 'foliage'
@@ -49,11 +52,11 @@ const SIZE = 256
 
 /** 每种材质一张图铺多少米：砖缝/木板/拉丝的真实尺度。 */
 const TILE_METERS: Record<SurfaceFamily, number> = {
-  // 地面占屏面积最大，1.2m 的泥斑会在 20m 内重复几十次，读成"地板革"；
-  // 放到 2.4m 后中景只看到 8–10 个周期，细节交给 mipmap 收敛。
-  stone: 1.2,
-  wood: 0.9,
-  metal: 0.7,
+  // 这些值对应贴图里的真实尺度（Poly Haven 的 1K 图约 1.5–3m 一个周期）。
+  // 地面占屏面积最大，放得太小会在 20m 内重复几十次，读成"地板革"。
+  stone: 2.4,
+  wood: 1.6,
+  metal: 1.8,
   mud: 3.0,
   foliage: 1.2,
 }
@@ -241,4 +244,49 @@ export function createSurfaceMaps(): Record<SurfaceFamily, SurfaceMaps> {
     mud: build('mud'),
     foliage: build('foliage'),
   }
+}
+
+/** 有 authored 贴图的族；foliage 继续用程序化（树冠没有展开 UV）。 */
+const EXTERNAL_FAMILIES: readonly SurfaceFamily[] = ['wood', 'stone', 'metal', 'mud']
+
+/**
+ * 把 Poly Haven 的 CC0 PBR 贴图装进已有的 Texture 对象。
+ *
+ * 为什么替换 `image` 而不是换 Texture：材质在构造关卡时已经引用了这些
+ * Texture；换对象要遍历所有材质重新赋值，还要触发一次 program 重编译。
+ * 直接换 image + needsUpdate 只上传像素，不换 program，加载完成不会有卡顿。
+ *
+ * 路径用 `document.baseURI` 拼相对路径：宿主把游戏挂在 `/dead-kill/` 子路径，
+ * 绝对 `/textures/...` 会 404；`./textures/...` 在开发和部署两种环境下都对。
+ */
+export async function loadSurfaceTextures(
+  maps: Record<SurfaceFamily, SurfaceMaps>,
+  renderer: WebGLRenderer,
+): Promise<void> {
+  const loader = new TextureLoader()
+  const anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy())
+  await Promise.all(
+    EXTERNAL_FAMILIES.map(async (family) => {
+      const dir = new URL(`./textures/${family}/`, document.baseURI)
+      const [albedo, normal, roughness] = await Promise.all([
+        loader.loadAsync(new URL('albedo.jpg', dir).href),
+        loader.loadAsync(new URL('normal.jpg', dir).href),
+        loader.loadAsync(new URL('roughness.jpg', dir).href),
+      ])
+      adopt(maps[family].albedo, albedo, true, anisotropy)
+      adopt(maps[family].normal, normal, false, anisotropy)
+      adopt(maps[family].roughness, roughness, false, anisotropy)
+    }),
+  )
+}
+
+function adopt(target: Texture, source: Texture, srgb: boolean, anisotropy: number): void {
+  target.image = source.image
+  target.colorSpace = srgb ? SRGBColorSpace : NoColorSpace
+  target.wrapS = RepeatWrapping
+  target.wrapT = RepeatWrapping
+  target.minFilter = LinearMipmapLinearFilter
+  target.magFilter = LinearFilter
+  target.anisotropy = anisotropy
+  target.needsUpdate = true
 }
