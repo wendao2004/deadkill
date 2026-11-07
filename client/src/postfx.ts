@@ -31,7 +31,6 @@
  * 就够了。少一层抽象，也少一处"颜色空间到底在哪转"的坑。
  */
 import {
-  AdditiveBlending,
   BufferAttribute,
   BufferGeometry,
   Camera,
@@ -43,6 +42,7 @@ import {
   LinearFilter,
   Mesh,
   NoBlending,
+  NormalBlending,
   RGBAFormat,
   Scene,
   ShaderMaterial,
@@ -133,6 +133,7 @@ precision highp float;
 uniform sampler2D tSrc;
 uniform vec2 uTexel;      // 源纹理的 texel 尺寸
 uniform vec4 uParams;     // x: 是否做 Karis 预过滤, y: threshold, z: knee
+uniform float uExposure;  // 曝光倍率：阈值必须在显示参考空间里判，否则换个曝光就是一个效果
 varying vec2 vUv;
 
 ${LUM}
@@ -166,6 +167,11 @@ void main() {
 
   vec3 result;
   if ( uParams.x > 0.5 ) {
+    // 先乘曝光再判阈值：prefilter 是非线性的，必须逐样本乘，不能求和后补。
+    a *= uExposure; b *= uExposure; c *= uExposure; d *= uExposure;
+    e *= uExposure; f *= uExposure; g *= uExposure; h *= uExposure;
+    i *= uExposure; j *= uExposure; k *= uExposure; l *= uExposure;
+    m *= uExposure;
     float thr = uParams.y;
     float knee = max( uParams.z, 1e-4 );
     a = prefilter( a, thr, knee ); b = prefilter( b, thr, knee );
@@ -201,10 +207,11 @@ void main() {
 `
 
 /**
- * 9 采样 tent 上采样，**加法**叠加到上一级 mip。
+ * 9 采样 tent 上采样，**按权重 lerp** 回上一级 mip。
  *
- * 加法而不是替换：金字塔每一级都已经带着下一级的能量，替换会把低频光晕
- * 越叠越少；加法让粗级的宽光晕保留下来，同时细级的近距离辉光不会被抹掉。
+ * 不能用加法：每一级 mip 都从上一级重新采样，加法会把同一份能量按层数累加，
+ * 5 层金字塔就得到 5 倍光晕，画面变成奶白雾。源码用的是 NormalBlending +
+ * alpha=weight，等价于 lerp(dst, src, weight)，能量守恒。
  * 最宽的两级把半径收紧、权重压低 —— 它们是唯一能跨过整个轮廓的 halo，
  * 过强会把屋顶/树冠的边缘泡掉。
  */
@@ -228,7 +235,8 @@ void main() {
   vec3 h = texture2D( tSrc, vUv + vec2(  0.0, -t.y ) ).rgb;
   vec3 i = texture2D( tSrc, vUv + vec2(  t.x, -t.y ) ).rgb;
   vec3 sum = e * 4.0 + ( b + d + f + h ) * 2.0 + ( a + c + g + i );
-  gl_FragColor = vec4( sum * 0.0625 * uWeight, 1.0 );
+  // 颜色不预乘权重；权重放在 alpha 里，靠 NormalBlending 做 lerp。
+  gl_FragColor = vec4( sum * 0.0625, uWeight );
 }
 `
 
@@ -286,34 +294,27 @@ vec3 owAgX( vec3 color, float slope, float power, float sat ) {
 `
 
 /**
- * 合成：世界 + 武器 → Bloom → 曝光 → 暗角 → AgX → sRGB → 调色 → 颗粒 → 抖动。
+ * 世界层合成：世界 + 接触阴影 + 武器 → sceneRT。
  *
- * 只做一遍全屏读写：每个效果都只是几行 ALU，合成到一张 LDR RT 里，
- * 避免"每个效果一张 RT"的带宽开销。
+ * 放在 bloom 之前，原因有两条：
+ * 1. 源码的 step 14 就是先 resolve 视图模型、step 16 才 bloom；枪口闪光属于
+ *    武器层，只有先合成进场景颜色，它才会真正产生光晕。
+ * 2. 接触阴影与锐化都只应该作用于世界层：武器离镜头 0.4m，屏幕空间接触
+ *    阴影在它身上没有意义，锐化也会让枪管边缘出现白边。先把它们在世界层
+ *    做完，再叠加预乘 alpha 的武器，两个不变量都保住了。
  */
-const COMPOSITE = /* glsl */ `
+const COMBINE = /* glsl */ `
 precision highp float;
 uniform sampler2D tWorld;
 uniform sampler2D tView;
-uniform sampler2D tBloom;
 uniform sampler2D tContact;
 uniform vec2 uWorldTexel;
-uniform float uExposure;
-uniform float uBloom;
-uniform float uGrain;
-uniform float uVignette;
 uniform float uSharpness;
 uniform float uChromatic;
 uniform float uContact;
 varying vec2 vUv;
 
 ${LUM}
-${TONEMAP}
-
-vec3 linearToSrgb( vec3 c ) {
-  c = max( c, vec3( 0.0 ) );
-  return mix( c * 12.92, 1.055 * pow( c, vec3( 0.41666667 ) ) - 0.055, step( vec3( 0.0031308 ), c ) );
-}
 
 void main() {
   vec2 d = vUv - 0.5;
@@ -358,25 +359,58 @@ void main() {
   float gain = clamp( ( lc + ( lc - lblur ) * amount ) / max( lc, 1e-4 ), 0.0, 4.0 );
   world *= gain;
 
-  // --- 武器层合成 ---
-  // MSAA resolve 后边缘像素是"覆盖率 × 颜色 / 覆盖率 alpha"，本质是预乘。
-  // 先乘 (1-a) 再相加，剪影处既不会漏出世界，也不会出现一圈黑边。
   // --- 接触阴影：只乘世界层。武器层有自己的深度，且离镜头 0.4m，
   //     屏幕空间射线在它身上没有意义。---
   if ( uContact > 0.0001 ) {
-    float lit = texture2D( tContact, vUv ).r;
-    world *= mix( 1.0, lit, uContact );
+    world *= texture2D( tContact, vUv ).r;
   }
 
+  // --- 武器层合成 ---
+  // MSAA resolve 后边缘像素是"覆盖率 × 颜色 / 覆盖率 alpha"，本质是预乘。
+  // 先乘 (1-a) 再相加，剪影处既不会漏出世界，也不会出现一圈黑边。
   vec4 vm = max( texture2D( tView, vUv ), vec4( 0.0 ) );
   float alpha = clamp( vm.a, 0.0, 1.0 );
-  vec3 hdr = world * ( 1.0 - alpha ) + vm.rgb;
+  gl_FragColor = vec4( world * ( 1.0 - alpha ) + vm.rgb, 1.0 );
+}
+`
+
+/**
+ * 合成：scene → Bloom → 曝光 → 暗角 → AgX → sRGB → 调色 → 颗粒 → 抖动。
+ *
+ * 只做一遍全屏读写：每个效果都只是几行 ALU，合成到一张 LDR RT 里，
+ * 避免"每个效果一张 RT"的带宽开销。世界/武器的合成、锐化、接触阴影与
+ * 色差已经在 COMBINE 里完成，这里只处理与全画面有关的部分。
+ */
+const COMPOSITE = /* glsl */ `
+precision highp float;
+uniform sampler2D tScene;
+uniform sampler2D tBloom;
+uniform float uExposure;
+uniform float uBloom;
+uniform float uGrain;
+uniform float uVignette;
+varying vec2 vUv;
+
+${LUM}
+${TONEMAP}
+
+vec3 linearToSrgb( vec3 c ) {
+  c = max( c, vec3( 0.0 ) );
+  return mix( c * 12.92, 1.055 * pow( c, vec3( 0.41666667 ) ) - 0.055, step( vec3( 0.0031308 ), c ) );
+}
+
+void main() {
+  vec2 d = vUv - 0.5;
+  float r2 = dot( d, d );
+
+  vec3 hdr = max( texture2D( tScene, vUv ).rgb, vec3( 0.0 ) );
 
   // --- Bloom：加法。预过滤已经只留下高于显示白的部分，叠上去才是"光晕"，
-  //     而不是把整帧替换成模糊副本的奶白雾。---
-  hdr += max( texture2D( tBloom, vUv ).rgb, vec3( 0.0 ) ) * max( uBloom, 0.0 );
-
+  //     而不是把整帧替换成模糊副本的奶白雾。bloom 在预过滤时已经乘过曝光
+  //     （阈值必须落在显示参考空间），所以这里先曝光场景、再叠 bloom，
+  //     不能再把 bloom 乘一遍。---
   hdr *= uExposure;
+  hdr += max( texture2D( tBloom, vUv ).rgb, vec3( 0.0 ) ) * max( uBloom, 0.0 );
 
   // --- 暗角：cos^4 是镜头的透射损失，属于线性光。放在色调映射之后会变成
   //     对码值的平乘，把天空的显示白硬压下来，四角永远到不了白。---
@@ -589,6 +623,14 @@ export class PostFX {
 
   private worldRT: WebGLRenderTarget
   private viewRT: WebGLRenderTarget
+  /**
+   * 世界 + 武器合成后的场景颜色（全分辨率、无 MSAA）。
+   *
+   * 必须是原生分辨率：世界 RT 可以按 renderScale 降，但武器层是"玩家会盯着
+   * 看"的唯一物体，合成时不能把它降到世界分辨率再放大，否则枪管边缘会糊。
+   * 它也是 bloom 的输入 —— 枪口闪光只有进到这张图里才会产生光晕。
+   */
+  private sceneRT: WebGLRenderTarget
   private ldrRT: WebGLRenderTarget
   /**
    * 世界层的深度纹理。
@@ -619,6 +661,7 @@ export class PostFX {
 
   private readonly downMaterial: ShaderMaterial
   private readonly upMaterial: ShaderMaterial
+  private readonly combineMaterial: ShaderMaterial
   private readonly compositeMaterial: ShaderMaterial
   private readonly fxaaMaterial: ShaderMaterial
 
@@ -652,6 +695,7 @@ export class PostFX {
         tSrc: { value: null as Texture | null },
         uTexel: { value: new Vector2(1, 1) },
         uParams: { value: new Vector4(1, BLOOM_THRESHOLD, BLOOM_KNEE, 0) },
+        uExposure: { value: DEFAULTS.exposure },
       },
       vertexShader: FS_VERT,
       fragmentShader: BLOOM_DOWN,
@@ -672,26 +716,39 @@ export class PostFX {
       fragmentShader: BLOOM_UP,
       depthTest: false,
       depthWrite: false,
-      // 加法叠加到目标 mip 上：粗级的光晕是"叠加"，不是"替换"。
-      blending: AdditiveBlending,
+      // NormalBlending + alpha=uWeight = lerp(dst, src, weight)，能量守恒。
+      blending: NormalBlending,
       transparent: true,
+      premultipliedAlpha: false,
+      toneMapped: false,
+    })
+
+    this.combineMaterial = new ShaderMaterial({
+      uniforms: {
+        tWorld: { value: null as Texture | null },
+        tView: { value: null as Texture | null },
+        tContact: { value: null as Texture | null },
+        uWorldTexel: { value: new Vector2(1, 1) },
+        uContact: { value: 0 },
+        uSharpness: { value: DEFAULTS.sharpness },
+        uChromatic: { value: DEFAULTS.chromatic },
+      },
+      vertexShader: FS_VERT,
+      fragmentShader: COMBINE,
+      depthTest: false,
+      depthWrite: false,
+      blending: NoBlending,
       toneMapped: false,
     })
 
     this.compositeMaterial = new ShaderMaterial({
       uniforms: {
-        tWorld: { value: null as Texture | null },
-        tView: { value: null as Texture | null },
+        tScene: { value: null as Texture | null },
         tBloom: { value: null as Texture | null },
-        tContact: { value: null as Texture | null },
-        uWorldTexel: { value: new Vector2(1, 1) },
-        uContact: { value: 0 },
         uExposure: { value: DEFAULTS.exposure },
         uBloom: { value: DEFAULTS.bloom },
         uGrain: { value: DEFAULTS.grain },
         uVignette: { value: DEFAULTS.vignette },
-        uSharpness: { value: DEFAULTS.sharpness },
-        uChromatic: { value: DEFAULTS.chromatic },
       },
       vertexShader: FS_VERT,
       fragmentShader: COMPOSITE,
@@ -755,6 +812,7 @@ export class PostFX {
     // 真实尺寸要等 setSize；先用 1x1 占位，保证 setSize 之前调用 render/present 不会炸。
     this.worldRT = this.makeHdrTarget(1, 1, true, true)
     this.viewRT = this.makeHdrTarget(1, 1, true)
+    this.sceneRT = this.makeSceneTarget(1, 1)
     this.ldrRT = this.makeLdrTarget(1, 1)
     this.contactRT = this.makeContactTarget(1, 1)
     this.rebuildBloom(1, 1)
@@ -824,11 +882,15 @@ export class PostFX {
       const oldView = this.viewRT
       this.viewRT = this.makeHdrTarget(vw, vh, true)
       oldView.dispose()
+      // 场景合成与 bloom 都在原生分辨率上跑：武器不能跟着世界降分辨率。
+      const oldScene = this.sceneRT
+      this.sceneRT = this.makeSceneTarget(vw, vh)
+      oldScene.dispose()
       const oldLdr = this.ldrRT
       this.ldrRT = this.makeLdrTarget(vw, vh)
       oldLdr.dispose()
       // 窗口尺寸变了才重建金字塔（此时世界尺寸也一起变了）。
-      this.rebuildBloom(this.worldSize.width, this.worldSize.height)
+      this.rebuildBloom(vw, vh)
     }
 
     this.worldTexel.set(1 / ww, 1 / wh)
@@ -845,8 +907,8 @@ export class PostFX {
   setContactShadow(enabled: boolean, strength = 0.38): void {
     this.contactEnabled = enabled
     this.contactStrength = Math.min(0.6, Math.max(0, strength))
-    this.compositeMaterial.uniforms.uContact.value =
-      enabled && this.contactReady ? this.contactStrength : 0
+    // uContact 只是 0/1 开关；强度已经在 contact shader 里乘过一次了。
+    this.combineMaterial.uniforms.uContact.value = enabled && this.contactReady ? 1 : 0
   }
 
   /**
@@ -865,7 +927,8 @@ export class PostFX {
     u.uStrength.value = this.contactStrength
     u.tDepth.value = this.worldDepth
     this.contactReady = true
-    this.compositeMaterial.uniforms.uContact.value = this.contactEnabled ? this.contactStrength : 0
+    // 同 setContactShadow：强度只在 contact shader 里应用一次。
+    this.combineMaterial.uniforms.uContact.value = this.contactEnabled ? 1 : 0
   }
 
   setSettings(settings: PostSettings): void {
@@ -881,8 +944,11 @@ export class PostFX {
     u.uBloom.value = this.bloomEnabled ? this.bloomStrength : 0
     u.uGrain.value = this.grain
     u.uVignette.value = this.vignette
-    u.uSharpness.value = this.sharpness
-    u.uChromatic.value = this.chromatic
+
+    // 锐化/色差属于世界层，在 COMBINE 里应用；下采样时每帧从字段再写一次。
+    const ku = this.combineMaterial.uniforms
+    ku.uSharpness.value = this.sharpness
+    ku.uChromatic.value = this.chromatic
   }
 
   /**
@@ -1001,6 +1067,8 @@ export class PostFX {
     r.autoClear = false
     try {
       if (this.contactEnabled && this.contactReady && this.worldDepth !== null) this.runContact()
+      // 武器必须在 bloom 之前进场景：枪口闪光属于武器层，晚合成就不发光。
+      this.runCombine()
       this.runBloom()
       if (this.fxaaEnabled) {
         this.runComposite(this.ldrRT)
@@ -1022,6 +1090,7 @@ export class PostFX {
 
     this.worldRT.dispose()
     this.viewRT.dispose()
+    this.sceneRT.dispose()
     this.ldrRT.dispose()
     this.contactRT.dispose()
     for (const mip of this.bloomMips) mip.rt.dispose()
@@ -1029,6 +1098,7 @@ export class PostFX {
 
     this.downMaterial.dispose()
     this.upMaterial.dispose()
+    this.combineMaterial.dispose()
     this.compositeMaterial.dispose()
     this.fxaaMaterial.dispose()
     this.contactMaterial.dispose()
@@ -1067,6 +1137,22 @@ export class PostFX {
       this.worldDepth = depthTexture
     }
     return target
+  }
+
+  /** 合成后的场景颜色：全分辨率、无 MSAA（输入已经 resolve 过）。 */
+  private makeSceneTarget(width: number, height: number): WebGLRenderTarget {
+    return new WebGLRenderTarget(width, height, {
+      type: this.hdrType,
+      format: RGBAFormat,
+      minFilter: LinearFilter,
+      magFilter: LinearFilter,
+      wrapS: ClampToEdgeWrapping,
+      wrapT: ClampToEdgeWrapping,
+      depthBuffer: false,
+      stencilBuffer: false,
+      generateMipmaps: false,
+      samples: 0,
+    })
   }
 
   private makeContactTarget(width: number, height: number): WebGLRenderTarget {
@@ -1131,12 +1217,15 @@ export class PostFX {
 
   /** 把刚重建过的 RT 重新绑定到材质上。setSize 只在尺寸变化时走到这里。 */
   private bindTargets(): void {
+    const ku = this.combineMaterial.uniforms
+    ku.tWorld.value = this.worldRT.texture
+    ku.tView.value = this.viewRT.texture
+    ku.tContact.value = this.contactRT.texture
+    ku.uWorldTexel.value.copy(this.worldTexel)
+
     const cu = this.compositeMaterial.uniforms
-    cu.tWorld.value = this.worldRT.texture
-    cu.tView.value = this.viewRT.texture
+    cu.tScene.value = this.sceneRT.texture
     cu.tBloom.value = this.bloomMips.length > 0 ? this.bloomMips[0]!.rt.texture : null
-    cu.tContact.value = this.contactRT.texture
-    cu.uWorldTexel.value.copy(this.worldTexel)
 
     const fu = this.fxaaMaterial.uniforms
     fu.tColor.value = this.ldrRT.texture
@@ -1155,13 +1244,15 @@ export class PostFX {
     if (count === 0) return
 
     const down = this.downMaterial.uniforms
+    down.uExposure.value = this.exposure
     for (let i = 0; i < count; i++) {
       const mip = this.bloomMips[i]!
       const prev = i > 0 ? this.bloomMips[i - 1]! : null
-      const srcW = prev ? prev.width : this.worldSize.width
-      const srcH = prev ? prev.height : this.worldSize.height
+      const srcW = prev ? prev.width : this.viewWidth
+      const srcH = prev ? prev.height : this.viewHeight
 
-      down.tSrc.value = prev ? prev.rt.texture : this.worldRT.texture
+      // 源是合成后的场景（世界 + 武器），不是 worldRT：枪口闪光必须能 bloom。
+      down.tSrc.value = prev ? prev.rt.texture : this.sceneRT.texture
       this.bloomTexel.set(1 / srcW, 1 / srcH)
       down.uTexel.value.copy(this.bloomTexel)
       // 只有第一层做阈值与 Karis 平均；后面的层已经是纯扩散。
@@ -1195,10 +1286,17 @@ export class PostFX {
     this.blit(this.contactMaterial, this.contactRT)
   }
 
+  private runCombine(): void {
+    const ku = this.combineMaterial.uniforms
+    ku.tWorld.value = this.worldRT.texture
+    ku.tView.value = this.viewRT.texture
+    ku.tContact.value = this.contactRT.texture
+    this.blit(this.combineMaterial, this.sceneRT)
+  }
+
   private runComposite(target: WebGLRenderTarget | null): void {
     const cu = this.compositeMaterial.uniforms
-    cu.tWorld.value = this.worldRT.texture
-    cu.tView.value = this.viewRT.texture
+    cu.tScene.value = this.sceneRT.texture
     this.blit(this.compositeMaterial, target)
   }
 
