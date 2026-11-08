@@ -178,7 +178,17 @@ export class Character {
     return this.crouching ? this.crouchEyeHeight : this.eyeHeight
   }
 
-  teleport(feet: Vec3): void {
+  /**
+   * 传送到某个位置。
+   *
+   * `keepInputState` 给**预测回滚**用：回滚会把角色拨回服务端确认的位置，
+   * 再重放尚未确认的输入。如果这里把跳跃的边沿状态（prevJumpHeld / jumpLatch）
+   * 清零，重放的第一帧就会把"正按住的空格"当成一次新的按下 —— 长按空格时
+   * 每次网络修正都多跳一次，表现就是人物/镜头持续抖动。
+   *
+   * 复活/出生仍然用默认值，它们本来就该把输入状态全部重置。
+   */
+  teleport(feet: Vec3, keepInputState = false): void {
     this.vx = 0
     this.vy = 0
     this.vz = 0
@@ -187,14 +197,16 @@ export class Character {
     this.sliding = false
     this.slideTime = 0
     this.slideCooldown = 0
-    this.prevCrouchHeld = false
     this.vaulting = false
     this.vaultTime = 0
-    this.jumpBuffer = 0
-    this.jumpCooldown = 0
-    this.coyote = 0
-    this.prevJumpHeld = false
-    this.jumpLatch = false
+    if (!keepInputState) {
+      this.prevCrouchHeld = false
+      this.jumpBuffer = 0
+      this.jumpCooldown = 0
+      this.coyote = 0
+      this.prevJumpHeld = false
+      this.jumpLatch = false
+    }
     this.body.setTranslation(
       {
         x: feet.x,

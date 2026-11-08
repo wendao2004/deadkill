@@ -1102,7 +1102,9 @@ export class Game {
     const before = character.feet
 
     // 把自己拨回权威位置，速度也用服务端的。
-    character.teleport({ x: me.x, y: me.y, z: me.z })
+    // keepInputState：回滚后要重放输入，不能把"正按住的空格"当成新的按下，
+    // 否则每次网络修正都会多跳一次（长按空格的抖动就是这么来的）。
+    character.teleport({ x: me.x, y: me.y, z: me.z }, true)
     character.vx = me.vx
     character.vy = me.vy
     character.vz = me.vz
