@@ -54,6 +54,7 @@ import {
   WALL_JUMP_UP,
   SPEED_SPRINT,
   SPRINT_FORWARD_DOT,
+  SPRINT_FADE_TIME,
   SPRINT_START_DELAY,
   StateFlags,
   TERMINAL_SPEED,
@@ -102,6 +103,8 @@ export class Character {
   /** 冲刺状态（含 0.05s 起步延迟）。速度选择在 sim.ts 里读它。 */
   sprinting = false
   private sprintHold = 0
+  /** 冲刺退出渐变 0..1：松 Shift 后从 1 衰减到 0，速度目标随之回落。 */
+  private sprintFade = 1
   /** 滑铲状态：冲刺中按下蹲触发，胶囊立刻变蹲姿。 */
   sliding = false
   private slideTime = 0
@@ -224,6 +227,7 @@ export class Character {
     this.vz = 0
     this.sprinting = false
     this.sprintHold = 0
+    this.sprintFade = 1
     this.sliding = false
     this.slideTime = 0
     this.slideCooldown = 0
@@ -354,10 +358,28 @@ export class Character {
       (this.grounded || this.sprinting)
     if (wantSprint) {
       this.sprintHold += dt
-      if (this.sprintHold >= SPRINT_START_DELAY) this.sprinting = true
+      if (this.sprintHold >= SPRINT_START_DELAY) {
+        this.sprinting = true
+        this.sprintFade = 1
+      }
+    } else if (
+      // 只松开 Shift、但仍按住前进：不要瞬间掉回步行，让冲刺速度在
+      // SPRINT_FADE_TIME 内平滑回落到步行。蹲下/开镜/停手仍然立刻断。
+      this.sprinting &&
+      (input.buttons & Buttons.Sprint) === 0 &&
+      rawInput > 0.45 &&
+      forwardIntent > SPRINT_FORWARD_DOT &&
+      !wantsCrouch &&
+      !ads &&
+      !this.sliding
+    ) {
+      this.sprintHold = 0
+      this.sprintFade = Math.max(0, this.sprintFade - dt / SPRINT_FADE_TIME)
+      if (this.sprintFade <= 0) this.sprinting = false
     } else {
       this.sprintHold = 0
       this.sprinting = false
+      this.sprintFade = 1
     }
 
     if (this.sliding) {
@@ -369,6 +391,7 @@ export class Character {
         vz: this.vz,
         grounded: this.grounded,
         sprinting: this.sprinting,
+        sprintFade: this.sprintFade,
       }
       const move = computeMoveVelocity(input, state, dt, ads)
       this.vx = move.vx

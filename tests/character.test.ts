@@ -87,6 +87,35 @@ test('预测回滚重放不会把按住空格当成新的按下', () => {
   assert.ok(Math.abs(after - before) < 0.01, `重放不应该再次起跳（${before} → ${after}）`)
 })
 
+test('松开 Shift 后冲刺速度平滑回落到步行', () => {
+  const world = buildLevelWorld(FLAT)
+  const c = makeCharacter(world)
+  const sprint = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: Buttons.Sprint }
+  for (let i = 0; i < 40; i++) {
+    c.step(world, sprint, DT)
+    world.step()
+  }
+  const before = Math.hypot(c.vx, c.vz)
+  assert.ok(before > 6.5, `冲刺速度应该到 7 左右（${before.toFixed(2)}）`)
+
+  // 松开 Shift 的第一帧：不能原地掉成步行
+  c.step(world, RUN_FORWARD, DT)
+  world.step()
+  const after1 = Math.hypot(c.vx, c.vz)
+  assert.ok(after1 > 6.0, `松手第一帧不应该骤降到步行（${after1.toFixed(2)}）`)
+
+  // 渐变结束：回到步行速度附近
+  for (let i = 0; i < 30; i++) {
+    c.step(world, RUN_FORWARD, DT)
+    world.step()
+  }
+  const after2 = Math.hypot(c.vx, c.vz)
+  const sprinting = c.sprinting
+  world.free()
+  assert.ok(after2 > 4.0 && after2 < 5.2, `最终应回落到步行速度（${after2.toFixed(2)}）`)
+  assert.equal(sprinting, false, '渐变结束后冲刺状态应关闭')
+})
+
 test('硬着陆后 0.16s 内不能起跑，之后恢复', () => {
   const world = buildLevelWorld(FLAT)
   const c = makeCharacter(world)

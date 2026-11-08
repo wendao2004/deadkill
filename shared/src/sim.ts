@@ -41,6 +41,11 @@ export interface MoveState {
    * 缺省时按本帧输入即时判定，方便纯函数测试与回放。
    */
   sprinting?: boolean
+  /**
+   * 冲刺退出渐变 0..1：松开 Shift 后从 1 衰减到 0，目标速度在步行与冲刺
+   * 之间插值。缺省 1，旧调用方行为不变。
+   */
+  sprintFade?: number
 }
 
 export interface MoveResult {
@@ -78,7 +83,11 @@ export function computeMoveVelocity(
   let speed = SPEED_WALK
   if (crouch) speed = SPEED_CROUCH
   else if (ads) speed = SPEED_ADS
-  else if (sprinting) speed = SPEED_SPRINT
+  else if (sprinting) {
+    // 松开 Shift 的渐变：目标速度从冲刺平滑落到步行，而不是当帧骤降。
+    const fade = state.sprintFade === undefined ? 1 : Math.max(0, Math.min(1, state.sprintFade))
+    speed = SPEED_WALK + (SPEED_SPRINT - SPEED_WALK) * fade
+  }
 
   // 方向权重：横移 0.92、倒退 0.8。先缩放本地轴，再合成世界方向并归一化，
   // 这样斜着走不会比直着走快（源码的 strafe/back scale 也是这个顺序）。

@@ -147,6 +147,13 @@ export const TERMINAL_SPEED = 55
 /** 冲刺：前向意图超过 0.55 才成立，按住 0.05s 后达到冲刺速度。 */
 export const SPRINT_FORWARD_DOT = 0.55
 export const SPRINT_START_DELAY = 0.05
+/**
+ * 松开 Shift 后冲刺速度回落到步行的时间（秒）。
+ *
+ * 之前松手当帧就切回 SPEED_WALK，速度目标骤降 2.4m/s，50 多的减速度
+ * 让角色像"撞了一下空气"。0.34s 的渐变让收步是"滑停"而不是"急刹"。
+ */
+export const SPRINT_FADE_TIME = 0.34
 
 /** 跳跃的容错窗口：离地后仍可起跳 / 落地前预输入 / 两次跳跃间隔。 */
 export const COYOTE_TIME = 0.09
@@ -197,8 +204,13 @@ export const VAULT_SPEED = 4.2
 
 /** 贴墙后的爬升速度（米/秒）。 */
 export const CLIMB_SPEED = 2.4
-/** 一次攀爬的持续时间：2.4 × 1.1 ≈ 2.6m 的爬行距离。 */
-export const CLIMB_TIME = 1.1
+/**
+ * 一次攀爬的持续时间。
+ *
+ * 2.4 × 0.55 ≈ 1.3m：够完成"扒墙 → 蹬墙跳"，但爬不到 3m 高的房顶。
+ * 之前 1.1s（2.6m）+ 顶部自动翻越，配合普通箱子就能直接上楼顶。
+ */
+export const CLIMB_TIME = 0.55
 /** 从胸口到墙面的探测距离。 */
 export const CLIMB_REACH = 0.62
 /** 松手/蹬墙跳后的再抓取冷却。 */
