@@ -78,6 +78,8 @@ export const LEVEL_STATION: LevelDef = {
   fogColor: 0x2a2f33,
   fogDensity: 0.012,
   boxes: boxes.list,
+  // 信号塔顶的红灯：站场里唯一在雾里发光的点，也是"往哪走"的夜航标。
+  heroes: [{ asset: 'signal_lamp', x: 47.6, z: 1.6, y: 13.6 }],
   zones: [
     { name: '月台与站台', x: 0, z: 5, radius: 24 },
     { name: '货运场', x: 0, z: 30, radius: 40 },

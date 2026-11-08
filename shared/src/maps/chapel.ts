@@ -67,6 +67,8 @@ export const LEVEL_CHAPEL: LevelDef = {
   fogColor: 0x101620,
   fogDensity: 0.016,
   boxes: boxes.list,
+  // 钟楼塔尖的风向标：给 20m 的石塔一个金属收尾，远远看也有"这是教堂"的尖。
+  heroes: [{ asset: 'weather_vane', x: -18, z: -14, y: 19.6 }],
   zones: [
     { name: '教堂与墓园', x: 0, z: 0, radius: 32 },
     { name: '修士宿舍', x: -33, z: -20, radius: 16 },

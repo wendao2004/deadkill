@@ -81,6 +81,8 @@ export const LEVEL_QUARRY: LevelDef = {
   fogColor: 0x3a3a30,
   fogDensity: 0.011,
   boxes: boxes.list,
+  // 吊臂顶的警示灯：10m 高的铁塔在石粉雾里本来只是一根灰柱，红点给它一个"顶"。
+  heroes: [{ asset: 'signal_lamp', x: 16, z: -34, y: 10.0 }],
   zones: [
     { name: '三层阶梯石台', x: 0, z: -24, radius: 20 },
     { name: '矿石溜槽', x: 20, z: 40, radius: 18 },

@@ -89,7 +89,7 @@ export function decorateGenerated(
   const byAsset = new Map<string, Placement[]>()
   for (const h of level.heroes ?? []) {
     const list = byAsset.get(h.asset) ?? []
-    list.push({ x: h.x, z: h.z, y: level.groundY, rotY: h.rotY ?? 0, scale: h.scale ?? 1 })
+    list.push({ x: h.x, z: h.z, y: h.y ?? level.groundY, rotY: h.rotY ?? 0, scale: h.scale ?? 1 })
     byAsset.set(h.asset, list)
   }
   for (const [name, list] of byAsset) {

@@ -1,5 +1,5 @@
 {
-  "generated": "2026-11-08T02:15:34.951Z",
+  "generated": "2026-11-08T02:45:07.052Z",
   "assets": {
     "pine_a": {
       "file": "pine_a.glb",
@@ -288,6 +288,64 @@
         4.85,
         5.194,
         2.21
+      ]
+    },
+    "signal_lamp": {
+      "file": "signal_lamp.glb",
+      "tags": [
+        "prop",
+        "light"
+      ],
+      "triangles": 92,
+      "materials": [
+        "iron",
+        "glow"
+      ],
+      "bytes": 14796,
+      "bounds": {
+        "min": [
+          -0.139,
+          0,
+          -0.16
+        ],
+        "max": [
+          0.668,
+          1.66,
+          0.16
+        ]
+      },
+      "size": [
+        0.807,
+        1.66,
+        0.32
+      ]
+    },
+    "weather_vane": {
+      "file": "weather_vane.glb",
+      "tags": [
+        "prop"
+      ],
+      "triangles": 88,
+      "materials": [
+        "iron"
+      ],
+      "bytes": 13008,
+      "bounds": {
+        "min": [
+          -0.43,
+          0,
+          -0.11
+        ],
+        "max": [
+          0.77,
+          1.635,
+          0.11
+        ]
+      },
+      "size": [
+        1.2,
+        1.635,
+        0.22
       ]
     },
     "lantern_post": {

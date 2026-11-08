@@ -469,6 +469,33 @@ function lanternPost(seed) {
   return { parts }
 }
 
+/** 信号灯：铁柱 + 横臂 + 灯箱 + 灯罩。给车站信号塔/采石场吊臂当顶部剪影。 */
+function signalLamp(seed) {
+  const rand = rng(seed)
+  const parts = []
+  part(parts, new CylinderGeometry(0.05, 0.075, 1.6, 6), { pos: [0, 0.8, 0], color: 0x4a4d50, variance: 0.06, rand, mat: 'iron' })
+  part(parts, new BoxGeometry(0.52, 0.06, 0.06), { pos: [0.26, 1.56, 0], color: 0x4a4d50, mat: 'iron' })
+  part(parts, new BoxGeometry(0.26, 0.34, 0.26), { pos: [0.52, 1.38, 0], color: 0x2e3134, mat: 'iron' })
+  part(parts, new BoxGeometry(0.17, 0.24, 0.17), { pos: [0.52, 1.38, 0], color: 0xff6a3a, mat: 'glow' })
+  part(parts, new ConeGeometry(0.21, 0.12, 4), { pos: [0.52, 1.6, 0], rot: [0, Math.PI / 4, 0], color: 0x2e3134, mat: 'iron' })
+  // 底座：插在塔顶/横臂上
+  part(parts, new CylinderGeometry(0.12, 0.16, 0.22, 6), { pos: [0, 0.11, 0], color: 0x3a3d40, mat: 'iron' })
+  return { parts }
+}
+
+/** 风向标：铁杆 + 十字臂 + 箭头 + 顶球。教堂塔尖的收尾。 */
+function weatherVane(seed) {
+  const rand = rng(seed)
+  const parts = []
+  part(parts, new CylinderGeometry(0.035, 0.05, 1.5, 6), { pos: [0, 0.75, 0], color: 0x4a4d50, variance: 0.05, rand, mat: 'iron' })
+  part(parts, new BoxGeometry(0.86, 0.055, 0.055), { pos: [0, 1.0, 0], color: 0x4a4d50, mat: 'iron' })
+  part(parts, new BoxGeometry(0.055, 0.55, 0.055), { pos: [0, 1.22, 0], color: 0x4a4d50, mat: 'iron' })
+  part(parts, new BoxGeometry(0.5, 0.1, 0.035), { pos: [0.3, 1.26, 0], rot: [0, 0, -0.08], color: 0x8d9196, mat: 'iron' })
+  part(parts, new ConeGeometry(0.11, 0.3, 4), { pos: [0.62, 1.28, 0], rot: [0, 0, -Math.PI / 2], color: 0x8d9196, mat: 'iron' })
+  part(parts, new IcosahedronGeometry(0.1, 0), { pos: [0, 1.55, 0], color: 0x8d9196, mat: 'iron' })
+  return { parts }
+}
+
 function bonfire(seed) {
   const rand = rng(seed)
   const parts = []
@@ -505,6 +532,8 @@ const ASSETS = [
   { name: 'stump', build: () => stump(0x51a8), tags: ['prop'] },
   { name: 'rock_a', build: () => rock(0x51a9, 1.0), tags: ['prop'] },
   { name: 'water_wheel', build: () => waterWheel(0x51ac), tags: ['building'] },
+  { name: 'signal_lamp', build: () => signalLamp(0x51ad), tags: ['prop', 'light'] },
+  { name: 'weather_vane', build: () => weatherVane(0x51ae), tags: ['prop'] },
   { name: 'lantern_post', build: () => lanternPost(0x51aa), tags: ['prop', 'light'] },
   { name: 'bonfire', build: () => bonfire(0x51ab), tags: ['prop', 'light'] },
 ]

@@ -126,6 +126,8 @@ export interface HeroAnchor {
   asset: string
   x: number
   z: number
+  /** 绝对高度（米）。缺省 = 关卡地面高度；塔尖、桅顶这类地标要抬高。 */
+  y?: number
   rotY?: number
   /** 只缩放外观；碰撞盒不受影响。 */
   scale?: number

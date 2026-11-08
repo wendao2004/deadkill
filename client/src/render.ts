@@ -1101,7 +1101,17 @@ export class Renderer {
         const source = object.material as Material
         let toon = cache.get(source)
         if (!toon) {
-          toon = this.surfaceMaterial(0xffffff, { hatch: 0.3, hatchSpacing: 10, surface, specular: 0.03, rim })
+          // 灯箱/火焰在原材质里是独立的发光材质；切成卡通材质时把自发光带上，
+          // 否则路灯和水车在夜里会变成两块灰铁。
+          const glow = source.name === 'glow' || source.name === 'ember'
+          toon = this.surfaceMaterial(0xffffff, {
+            hatch: 0.3,
+            hatchSpacing: 10,
+            surface,
+            specular: 0.03,
+            rim,
+            emissive: glow ? 0.9 : 0,
+          })
           ;(toon as Material & { vertexColors: boolean }).vertexColors = true
           toon.needsUpdate = true
           cache.set(source, toon)

@@ -35,6 +35,7 @@ import {
   PLAYER_RADIUS,
   SLIDE_BOOST_TIME,
   SLIDE_BRAKE,
+  SLIDE_CANCEL_BOOST,
   SLIDE_COOLDOWN,
   SLIDE_DRAG,
   SLIDE_DRAG_LOW,
@@ -276,8 +277,11 @@ export class Character {
     }
     if (this.sliding) {
       // 松开蹲、超时、或速度掉到退出阈值以下，都结束滑铲。
+      // 只有"主动早松蹲"算取消，给一小口速度奖励；超时/掉速是自然结束。
+      const cancelled =
+        !wantsCrouch && this.slideTime < SLIDE_DURATION && speedNow > SLIDE_EXIT_SPEED
       if (!wantsCrouch || this.slideTime > SLIDE_DURATION || speedNow < SLIDE_EXIT_SPEED) {
-        this.endSlide()
+        this.endSlide(cancelled)
       }
     }
 
@@ -492,7 +496,23 @@ export class Character {
     if (speed < SLIDE_EXIT_SPEED || this.slideTime > SLIDE_DURATION) this.endSlide()
   }
 
-  private endSlide(): void {
+  /**
+   * 结束滑铲。
+   *
+   * `cancelled` = 玩家主动松开蹲键（而不是超时/掉速自然结束）。取消时补
+   * 一口速度：早松蹲的回报是"站起来还能跑"，而不是白白浪费一次滑铲。
+   * 上限仍是入场速度，不能靠反复滑铲叠加速度。
+   */
+  private endSlide(cancelled = false): void {
+    if (cancelled) {
+      const speed = Math.hypot(this.vx, this.vz)
+      if (speed > 1e-4) {
+        const target = Math.min(SLIDE_ENTRY_SPEED, speed + SLIDE_CANCEL_BOOST)
+        const k = target / speed
+        this.vx *= k
+        this.vz *= k
+      }
+    }
     this.sliding = false
     this.slideTime = 0
     this.slideCooldown = SLIDE_COOLDOWN

@@ -175,6 +175,8 @@ export const SLIDE_BRAKE = 0.55
 export const SLIDE_COOLDOWN = 0.42
 export const SLIDE_MIN_SPEED_TO_START = 5.4
 export const SLIDE_STEER = 3.4
+/** 滑铲取消（早松蹲）时补的一小口速度：给"站得起来"一点回报。 */
+export const SLIDE_CANCEL_BOOST = 0.8
 
 // ---------------------------------------------------------------- 翻越
 
