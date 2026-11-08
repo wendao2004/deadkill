@@ -229,7 +229,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     uTrees: { value: new Color() },
     uHorizon: { value: new Color() },
     uBelow: { value: new Color() },
-    uEmber: { value: new Color(0x2a1d13) },
+    uEmber: { value: new Color(0x1a1712) },
     uMoonDir: { value: moonDir.clone() },
     uMoonColor: { value: lin(MOON_COLOR).multiplyScalar(1.35) },
     uCloudDark: { value: new Color() },
@@ -755,7 +755,10 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     // 天空地平线对齐到雾色：远景物体淡出成雾色，如果天空那一圈比雾色亮很多，
     // 就会看到一条"地平线台阶"。对齐之后远景是一块连续的冷蓝黑，
     // 暖色余晖只在最底下一小条叠加，不会盖过雾色。
-    skyUniforms.uHorizon.value.setHex(fogColor).multiplyScalar(1.18)
+    skyUniforms.uHorizon.value
+      .setHex(fogColor)
+      .multiplyScalar(1.18)
+      .lerp(tmpColor.setHex(0x35506a), 0.22)
     skyUniforms.uBelow.value.setHex(fogColor).multiplyScalar(0.5)
     // 中景：比地平线暗、比天顶亮，三段色带才有"层"。
     skyUniforms.uMid.value

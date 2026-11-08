@@ -109,6 +109,8 @@ export class Character {
   private vaultFromY = 0
   private vaultToY = 0
   private vaultProgressY = 0
+  /** 空中攀沿的冷却：避免贴着一面墙每帧重试。 */
+  private mantleCooldown = 0
   /** 跳跃容错窗口：预输入、coyote、冷却。三者都是"隐藏输入误差"的。 */
   private jumpBuffer = 0
   private jumpCooldown = 0
@@ -199,6 +201,7 @@ export class Character {
     this.slideCooldown = 0
     this.vaulting = false
     this.vaultTime = 0
+    this.mantleCooldown = 0
     if (!keepInputState) {
       this.prevCrouchHeld = false
       this.jumpBuffer = 0
@@ -323,9 +326,23 @@ export class Character {
       this.applyCrouch(world, wantsCrouch)
     }
 
+    // ---- 空中攀沿：贴着一个 0.5~1.3m 的台面下落时自动抓上去 ----
+    // 这是 Apex 里"跳一下扒住矮墙"的动作；不触发跳跃，所以玩家不需要
+    // 在落地前一帧再按一次空格。0.6s 冷却防止贴着墙每帧重试。
+    this.mantleCooldown = Math.max(0, this.mantleCooldown - dt)
+    if (
+      !this.vaulting &&
+      !this.grounded &&
+      this.mantleCooldown <= 0 &&
+      this.vy < 1.5 &&
+      input.forward > 0.5
+    ) {
+      if (this.tryVault(world, input)) this.mantleCooldown = 0.6
+    }
+
     // ---- 起跳：蹲着/滑铲先站起，头顶被挡就不跳 ----
     let jumpedThisTick = false
-    if (!this.jumpLatch && this.jumpBuffer > 0 && this.jumpCooldown <= 0 && (this.grounded || this.coyote > 0)) {
+    if (!this.vaulting && !this.jumpLatch && this.jumpBuffer > 0 && this.jumpCooldown <= 0 && (this.grounded || this.coyote > 0)) {
       let canJump = true
       if (this.crouching) {
         if (this.canStandUp(world)) {

@@ -125,7 +125,7 @@ export const LEVEL_PINE_CAMP: LevelDef = {
   boundsHalf: 100,
   groundMaterial: 'mud',
   // 雾比教堂淡一档：松林要靠树干的层次读距离，雾太浓会糊成一块。
-  fogColor: 0x141b1a,
+  fogColor: 0x16202a,
   fogDensity: 0.0125,
   boxes: boxes.list,
   heroes,

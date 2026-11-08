@@ -32,8 +32,17 @@ const FLAT: LevelDef = {
   extracts: [],
 }
 
+/** 前方 0.9m 高的台面：翻越与空中攀沿都用它。 */
+const LEDGE: LevelDef = {
+  ...FLAT,
+  id: 'ledge-test',
+  name: '台面测试场',
+  boxes: [{ x: 0, y: 0.45, z: -2.2, hx: 2, hy: 0.45, hz: 0.7, material: 'stone' }],
+}
+
 const DT = 1 / 60
 const HELD_JUMP = { forward: 0, right: 0, yaw: 0, pitch: 0, buttons: Buttons.Jump }
+const RUN_FORWARD = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: 0 }
 
 await initPhysics()
 
@@ -76,4 +85,21 @@ test('预测回滚重放不会把按住空格当成新的按下', () => {
   const after = c.feet.y
   world.free()
   assert.ok(Math.abs(after - before) < 0.01, `重放不应该再次起跳（${before} → ${after}）`)
+})
+
+test('空中贴着 0.9m 台面会自动攀沿', () => {
+  const world = buildLevelWorld(LEDGE)
+  const c = makeCharacter(world)
+  // 悬在台面前方，脚比台面低；向前推，不按跳跃
+  c.teleport({ x: 0, y: 0.3, z: -1.2 })
+  let vaulted = false
+  for (let i = 0; i < 30; i++) {
+    c.step(world, RUN_FORWARD, DT)
+    world.step()
+    if (c.vaulting) vaulted = true
+  }
+  const top = c.feet.y
+  world.free()
+  assert.ok(vaulted, '应该触发一次空中攀沿')
+  assert.ok(top > 0.7, `攀沿后应该站上台面（feet.y=${top.toFixed(2)}）`)
 })
