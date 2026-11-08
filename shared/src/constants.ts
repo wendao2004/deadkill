@@ -224,8 +224,8 @@ export const WALL_JUMP_UP = 4.7
 /** 最大生命值。两枪躯干或一枪头致死 —— 猎杀类的核心节奏。 */
 export const MAX_HEALTH = 150
 
-/** 死亡到复活的等待时间。30 秒：让"这一趟作废"有分量，又不至于把人锁在观战里。 */
-export const RESPAWN_DELAY_MS = 30_000
+/** 死亡到复活的等待时间。15 秒：比 30 秒更快回到战场，但不至于死亡没有代价。 */
+export const RESPAWN_DELAY_MS = 15_000
 
 /**
  * 击杀一名玩家直接进击杀者携带价值的现金。

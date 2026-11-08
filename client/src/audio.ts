@@ -1428,18 +1428,36 @@ export class AudioKit {
     this.seal(o)
   }
 
-  /** 自己被击中：一记闷响 + 低频下坠。高频全没，因为血在身体里响。 */
-  hurt(): void {
+  /**
+   * 自己被击中：一记**高频脆响 + 闷响 + 低频下坠**三层。
+   *
+   * 只有低频闷响时，混在枪声里几乎听不出来"是我中弹了"；最前面补一个
+   * 1.4k→500Hz 的短脆响（像子弹擦过耳边），再接身体的低频冲击。
+   * damage 决定低频层的重量：霰弹贴脸和手枪擦伤不该一样沉。
+   */
+  hurt(damage = 30): void {
     const noise = this.noise
-    const o = this.open({ priority: PRIORITY.self, level: 0.8, wet: 0.04 })
+    const weight = Math.min(1, Math.max(0.35, damage / 90))
+    const o = this.open({ priority: PRIORITY.self, level: 0.85, wet: 0.04 })
     if (o === null) return
     const { ctx, recipe, input } = o
     const t = ctx.currentTime + 0.002
+    // 第一层：高频脆响。120ms 内从 1.4kHz 扫到 500Hz，只给 0.24 峰值，
+    // 够刺耳但不至于盖过后续的低频体重。
+    tone(ctx, recipe, input, { type: 'square', from: 1400, to: 500, at: t, peak: 0.22, attack: 0.002, dur: 0.09 })
     if (noise !== null) {
-      shake(ctx, recipe, input, { noise, at: t, peak: 0.55, attack: 0.008, dur: 0.2, type: 'lowpass', freq: 520, rate: 0.7 })
+      shake(ctx, recipe, input, {
+        noise, at: t, peak: 0.5, attack: 0.005, dur: 0.16, type: 'bandpass', freq: 900, rate: 1.2,
+      })
+      // 第二层：身体被撞的闷响。
+      shake(ctx, recipe, input, {
+        noise, at: t + 0.01, peak: 0.55, attack: 0.008, dur: 0.24, type: 'lowpass', freq: 420, rate: 0.7,
+      })
     }
-    tone(ctx, recipe, input, { type: 'sine', from: 120, to: 45, at: t, peak: 0.4, attack: 0.012, dur: 0.28 })
-    // 受伤的低吼：比纯下坠更"人"，靠 74Hz 的短锯齿 + 呼吸噪声
+    // 第三层：低频下坠，按伤害加重。
+    tone(ctx, recipe, input, {
+      type: 'sine', from: 130, to: 42, at: t + 0.006, peak: 0.3 + weight * 0.2, attack: 0.012, dur: 0.3,
+    })
     this.seal(o)
   }
 

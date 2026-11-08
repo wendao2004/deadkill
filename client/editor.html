@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>DEAD KILL · 地图编辑器</title>
+    <style>
+      :root {
+        --ink: #0c0b0a;
+        --bone: #d8cfba;
+        --ash: #8d8578;
+        --amber: #d99a4a;
+        --blood: #7d2b22;
+        --slate: #171b1f;
+        --panel: #11151a;
+        --line: #2a3138;
+        --wood: #6b4a2e;
+        --stone: #6a6a62;
+        --mud: #51493a;
+        --metal: #4a4d50;
+        --foliage: #2f4a2a;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--ink); color: var(--bone); }
+      body {
+        font: 13px/1.45 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        display: grid;
+        grid-template-rows: 46px 1fr 26px;
+        overflow: hidden;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--line);
+        background: var(--slate);
+      }
+      header h1 { font-size: 15px; letter-spacing: 0.16em; margin: 0 12px 0 0; color: var(--bone); }
+      header h1 span { color: var(--amber); }
+      header .spacer { flex: 1; }
+      button, input, select {
+        font: inherit;
+        color: var(--bone);
+        background: #1b2026;
+        border: 1px solid var(--line);
+        border-radius: 2px;
+        padding: 5px 9px;
+      }
+      button { cursor: pointer; }
+      button:hover { border-color: var(--amber); color: var(--amber); }
+      button.active { background: var(--amber); color: #14100c; border-color: var(--amber); }
+      main { display: grid; grid-template-columns: 132px 1fr 268px; min-height: 0; }
+      #tools {
+        border-right: 1px solid var(--line);
+        padding: 10px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        background: var(--panel);
+      }
+      #tools button { text-align: left; }
+      #tools .group { color: var(--ash); font-size: 11px; letter-spacing: 0.12em; margin: 8px 2px 2px; }
+      #view { width: 100%; height: 100%; display: block; cursor: crosshair; background: #0f1214; }
+      #panel {
+        border-left: 1px solid var(--line);
+        padding: 10px;
+        overflow: auto;
+        background: var(--panel);
+      }
+      #panel h2 { font-size: 12px; letter-spacing: 0.12em; color: var(--ash); margin: 4px 0 8px; }
+      .field { display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 6px; margin: 5px 0; }
+      .field label { color: var(--ash); font-size: 12px; }
+      .field input, .field select { width: 100%; padding: 3px 6px; }
+      .row { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+      .row button { flex: 1; }
+      .check { display: flex; align-items: center; gap: 6px; margin: 5px 0; color: var(--ash); }
+      #status {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+        padding: 0 14px;
+        border-top: 1px solid var(--line);
+        background: var(--slate);
+        color: var(--ash);
+        font-size: 12px;
+      }
+      #status b { color: var(--bone); font-weight: 500; }
+      #report { white-space: pre-wrap; font-size: 12px; line-height: 1.6; }
+      #report .ok { color: #8fbf6f; }
+      #report .bad { color: #e06a5a; }
+      .hint { color: var(--ash); font-size: 11px; line-height: 1.6; }
+      .marker-chip { display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; vertical-align: -1px; }
+      dialog { background: var(--panel); color: var(--bone); border: 1px solid var(--line); border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>DEAD KILL <span>· 地图编辑器</span></h1>
+      <input id="mapName" value="新地图" style="width: 180px" title="地图名" />
+      <button id="newMap">新建</button>
+      <button id="saveLocal">保存到浏览器</button>
+      <button id="loadLocal">读取</button>
+      <button id="importJson">导入 JSON</button>
+      <button id="exportJson">导出 JSON</button>
+      <button id="exportTs">导出 .ts</button>
+      <button id="validate">检查</button>
+      <span class="spacer"></span>
+      <span id="hint" class="hint">滚轮缩放 · 中键拖动平移 · Delete 删除</span>
+    </header>
+    <main>
+      <aside id="tools">
+        <div class="group">工具</div>
+        <button data-tool="select">选择 / 移动</button>
+        <button data-tool="box">画盒刷</button>
+        <div class="group">标记</div>
+        <button data-tool="spawn">出生点</button>
+        <button data-tool="nest">巢穴</button>
+        <button data-tool="clue">线索</button>
+        <button data-tool="extract">撤离点</button>
+        <button data-tool="zone">区域</button>
+        <button data-tool="water">水面</button>
+        <div class="group">编辑</div>
+        <button id="undo">撤销 Ctrl+Z</button>
+        <button id="redo">重做 Ctrl+Y</button>
+      </aside>
+      <canvas id="view"></canvas>
+      <aside id="panel">
+        <div id="props"><p class="hint">选中一个盒刷或标记后，在这里改属性。</p></div>
+        <h2>地图设置</h2>
+        <div id="mapSettings"></div>
+        <h2>检查</h2>
+        <div id="report" class="hint">点「检查」运行关卡约束。</div>
+      </aside>
+    </main>
+    <footer id="status">
+      <span>坐标 <b id="cur">0.0, 0.0</b></span>
+      <span>缩放 <b id="zoom">20</b> px/m</span>
+      <span>盒刷 <b id="count">0</b></span>
+      <span>选中 <b id="sel">无</b></span>
+    </footer>
+    <input id="fileInput" type="file" accept="application/json,.json" style="display: none" />
+    <script type="module" src="/src/editor/main.ts"></script>
+  </body>
+</html>

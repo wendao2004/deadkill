@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 
 /**
@@ -34,6 +35,12 @@ export default defineConfig({
     // rollup，对象形式（{ rapier: [...] }）会直接报
     // "Invalid type: Expected Function but received Object" 并中止构建。
     rollupOptions: {
+      // 多页入口：游戏主页面 + 地图编辑器。编辑器是纯 2D canvas，
+      // 不引 three/rapier，单独一个 chunk，不会拖慢游戏首包。
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        editor: fileURLToPath(new URL('./editor.html', import.meta.url)),
+      },
       output: {
         manualChunks(id: string) {
           if (id.includes('@dimforge/rapier3d-compat')) return 'rapier'

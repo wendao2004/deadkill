@@ -1294,11 +1294,11 @@ export class Game {
           this.spawnImpact(event.point, 'flesh')
           // 打中了人：血花 + 音效都在本地给，不再借用状态栏（状态栏会被
           // 后面的提示覆盖掉，而命中反馈必须立刻、且必须有声音）。
-          if (event.victimId === this.myId) this.audio.hurt()
+          if (event.victimId === this.myId) this.audio.hurt(event.damage)
         } else if (event.victimId === this.myId) {
           // 我被打中：方向指示 + 受伤音。方向来自命中点相对我的位置，
           // 这样即使我在看别处也知道该往哪转向。
-          this.audio.hurt()
+          this.audio.hurt(event.damage)
           // 自己中弹也要有"打进身体"的一下；方向指示是战术信息，这声是体感。
           this.audio.fleshImpact(event.point, event.damage, event.headshot, false)
           this.options.onTraitFx?.(Trait.Bulwark)
