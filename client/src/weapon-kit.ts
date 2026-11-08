@@ -46,7 +46,9 @@ const _s = new Vector3(1, 1, 1)
 const _mirrorT: Transform = {}
 
 /** merge 只认这三样；其它属性（color/tangent 等）在两个几何不一致时会合并失败。 */
-const KEEP_ATTRS: readonly string[] = ['position', 'normal', 'uv']
+// color 是顶点色：程序化角色（hunter.ts）用它把布料/皮革/金属烘进一份几何。
+// 武器零件没有这个属性，合并时两组属性集各自一致，不会互相污染。
+const KEEP_ATTRS: readonly string[] = ['position', 'normal', 'uv', 'color']
 
 /**
  * 统一属性集：删掉多余属性、补 UV、补法线、清空 group/morph。

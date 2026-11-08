@@ -153,16 +153,43 @@ export const COYOTE_TIME = 0.09
 export const JUMP_BUFFER = 0.13
 export const JUMP_COOLDOWN = 0.28
 
-/** 滑铲：冲刺中按下蹲触发。数值来自源码 tuning.js 的 slide 表。 */
-export const SLIDE_ENTRY_SPEED = 8.84
-export const SLIDE_MIN_ENTRY = 6.2
-export const SLIDE_EXIT_SPEED = 2.95
-export const SLIDE_DURATION = 0.9
-export const SLIDE_DRAG = 0.75
-export const SLIDE_BRAKE = 0.85
-export const SLIDE_COOLDOWN = 0.55
-export const SLIDE_MIN_SPEED_TO_START = 5.2
-export const SLIDE_STEER = 2.6
+/**
+ * 滑铲：冲刺中按下蹲触发。
+ *
+ * 手感的关键是**两段阻力**而不是一条曲线：前 0.22s 几乎不减速（人还在
+ * 惯性里），之后才明显刹车。把两段压成一段，要么"滑不远"，要么"一直是
+ * 全速"，两种都不像滑铲。
+ */
+export const SLIDE_ENTRY_SPEED = 9.2
+export const SLIDE_MIN_ENTRY = 6.4
+export const SLIDE_EXIT_SPEED = 2.4
+export const SLIDE_DURATION = 1.15
+/** 爆发段时长：这之前只受很小的阻力。 */
+export const SLIDE_BOOST_TIME = 0.22
+/** 爆发段的阻力系数。 */
+export const SLIDE_DRAG_LOW = 0.18
+/** 刹车段的指数阻力。 */
+export const SLIDE_DRAG = 1.05
+/** 刹车段的线性制动（m/s²）。 */
+export const SLIDE_BRAKE = 0.55
+export const SLIDE_COOLDOWN = 0.42
+export const SLIDE_MIN_SPEED_TO_START = 5.4
+export const SLIDE_STEER = 3.4
+
+// ---------------------------------------------------------------- 翻越
+
+/**
+ * 自动翻越：跳向一个 0.5~1.3m 的台面时，不再"撞墙 + 原地跳"，而是
+ * 撑上去。下界高于自动台阶（0.4m），上界低于一堵必须绕的墙。
+ */
+export const VAULT_MIN_HEIGHT = 0.5
+export const VAULT_MAX_HEIGHT = 1.3
+/** 从胸口向前的探测距离（米）。 */
+export const VAULT_REACH = 0.95
+/** 翻越过程时长（秒）。 */
+export const VAULT_TIME = 0.34
+/** 翻越时的水平推进速度（米/秒）。0.34s × 4.2 ≈ 1.4m，正好越过一个台面。 */
+export const VAULT_SPEED = 4.2
 
 /** 最大生命值。两枪躯干或一枪头致死 —— 猎杀类的核心节奏。 */
 export const MAX_HEALTH = 150
@@ -263,6 +290,8 @@ export const StateFlags = {
   Switching: 1 << 5,
   /** 滑铲中：客户端用它做镜头滚转与枪模压低。 */
   Sliding: 1 << 6,
+  /** 翻越中：客户端用它播翻越姿势（撑手、收腿、越过台面）。 */
+  Vaulting: 1 << 7,
 } as const
 
 // ---------------------------------------------------------------- 搜刮

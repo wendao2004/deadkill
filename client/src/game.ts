@@ -529,9 +529,10 @@ export class Game {
     await initPhysics()
     // 先换掉程序化占位贴图，再建世界/进局：避免进图后贴图才"啪"地跳出来。
     await this.renderer.loadTextures()
+    // 程序化松树先加载：它决定 nature-assets 是否还要种那套 CC0 枯树。
+    await this.renderer.loadGenerated()
     await this.renderer.loadNature()
     await this.renderer.loadVillage()
-    await this.renderer.loadGenerated()
     await this.kernel.init(this.ctx)
     this.world = buildLevelWorld(this.options.level)
 

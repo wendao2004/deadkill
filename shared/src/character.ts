@@ -17,7 +17,7 @@ import type {
   RigidBody,
   World,
 } from '@dimforge/rapier3d-compat'
-import { Capsule, ColliderDesc, RigidBodyDesc } from '@dimforge/rapier3d-compat'
+import { Capsule, ColliderDesc, Ray, RigidBodyDesc } from '@dimforge/rapier3d-compat'
 
 import {
   Buttons,
@@ -33,9 +33,11 @@ import {
   PLAYER_EYE_HEIGHT,
   PLAYER_HALF_HEIGHT,
   PLAYER_RADIUS,
+  SLIDE_BOOST_TIME,
   SLIDE_BRAKE,
   SLIDE_COOLDOWN,
   SLIDE_DRAG,
+  SLIDE_DRAG_LOW,
   SLIDE_DURATION,
   SLIDE_ENTRY_SPEED,
   SLIDE_EXIT_SPEED,
@@ -47,6 +49,11 @@ import {
   SPRINT_START_DELAY,
   StateFlags,
   TERMINAL_SPEED,
+  VAULT_MAX_HEIGHT,
+  VAULT_MIN_HEIGHT,
+  VAULT_REACH,
+  VAULT_SPEED,
+  VAULT_TIME,
 } from './constants.ts'
 import { yawToForward, yawToRight, type Vec3 } from './math.ts'
 import type { PlayerInput } from './protocol.ts'
@@ -94,6 +101,14 @@ export class Character {
   private slideDirX = 0
   private slideDirZ = 0
   private prevCrouchHeld = false
+  /** 翻越状态：一段短促的脚本位移，期间不接受普通移动输入。 */
+  vaulting = false
+  private vaultTime = 0
+  private vaultDirX = 0
+  private vaultDirZ = 0
+  private vaultFromY = 0
+  private vaultToY = 0
+  private vaultProgressY = 0
   /** 跳跃容错窗口：预输入、coyote、冷却。三者都是"隐藏输入误差"的。 */
   private jumpBuffer = 0
   private jumpCooldown = 0
@@ -173,6 +188,8 @@ export class Character {
     this.slideTime = 0
     this.slideCooldown = 0
     this.prevCrouchHeld = false
+    this.vaulting = false
+    this.vaultTime = 0
     this.jumpBuffer = 0
     this.jumpCooldown = 0
     this.coyote = 0
@@ -210,6 +227,12 @@ export class Character {
     const crouchPressed = wantsCrouch && !this.prevCrouchHeld
     this.prevCrouchHeld = wantsCrouch
     this.slideCooldown = Math.max(0, this.slideCooldown - dt)
+
+    // 翻越是一段脚本位移：期间不接受普通移动/跳跃输入，结束后自动落地。
+    if (this.vaulting) {
+      this.stepVault(dt)
+      return
+    }
 
     if (this.grounded && this.vy < 0) this.vy = GROUND_STICK_VY
 
@@ -300,11 +323,21 @@ export class Character {
           canJump = false
         }
       }
+      // 跳向 0.5~1.3m 的台面时优先翻越：不再"撞墙再原地起跳"，而是撑上去。
+      if (canJump && !this.sliding && !wantsCrouch && this.tryVault(world, input)) {
+        this.jumpBuffer = 0
+        this.jumpCooldown = JUMP_COOLDOWN
+        this.coyote = 0
+        this.jumpLatch = true
+        jumpedThisTick = true
+        canJump = false
+      }
       if (canJump) {
         if (this.sliding) {
-          // 滑铲跳：保留爆发但不能变成速度叠加漏洞。
+          // 滑铲跳：保留入场爆发。空中只能补充、不能放大动量（见 sim.ts），
+          // 所以这里给到 SLIDE_ENTRY_SPEED 不会变成速度叠加漏洞。
           const sp = Math.hypot(this.vx, this.vz)
-          const cap = SPEED_SPRINT * 1.06
+          const cap = SLIDE_ENTRY_SPEED
           if (sp > cap) {
             this.vx *= cap / sp
             this.vz *= cap / sp
@@ -417,7 +450,10 @@ export class Character {
       dz = nz / len
     }
 
-    speed = speed * Math.exp(-SLIDE_DRAG * dt) - SLIDE_BRAKE * dt
+    // 两段阻力：前 0.22s 保住入场爆发，之后才开始刹车。
+    const boosting = this.slideTime < SLIDE_BOOST_TIME
+    speed = speed * Math.exp(-(boosting ? SLIDE_DRAG_LOW : SLIDE_DRAG) * dt)
+    if (!boosting) speed -= SLIDE_BRAKE * dt
     if (speed < 0) speed = 0
     this.vx = dx * speed
     this.vz = dz * speed
@@ -431,6 +467,113 @@ export class Character {
     this.sliding = false
     this.slideTime = 0
     this.slideCooldown = SLIDE_COOLDOWN
+  }
+
+  /**
+   * 跳向 0.5~1.3m 的台面时，把它变成一次翻越。
+   *
+   * 判定用两条射线：胸口朝前一条找障碍，障碍上方朝下一条找台面高度。
+   * 台面之上再打一条向上的射线确认胶囊放得下 —— 只高 0.2m 的檐口不是
+   * "能翻过去的台子"，钻进去只会卡在半空。
+   */
+  private tryVault(world: World, input: PlayerInput): boolean {
+    if (input.forward < 0.35) return false
+    const feet = this.feet
+    const fwd = yawToForward(input.yaw)
+    const origin = { x: feet.x, y: feet.y + 0.55, z: feet.z }
+    const dir = { x: fwd.x, y: 0, z: fwd.z }
+    const hit = world.castRay(
+      new Ray(origin, dir),
+      VAULT_REACH + this.radius,
+      true,
+      undefined,
+      undefined,
+      this.collider,
+    )
+    if (!hit) return false
+
+    const hx = feet.x + fwd.x * hit.timeOfImpact + fwd.x * 0.28
+    const hz = feet.z + fwd.z * hit.timeOfImpact + fwd.z * 0.28
+    const probeTop = feet.y + VAULT_MAX_HEIGHT + 1.3
+    const down = world.castRay(
+      new Ray({ x: hx, y: probeTop, z: hz }, { x: 0, y: -1, z: 0 }),
+      VAULT_MAX_HEIGHT + 1.5,
+      true,
+      undefined,
+      undefined,
+      this.collider,
+    )
+    if (!down) return false
+    const topY = probeTop - down.timeOfImpact
+    const height = topY - feet.y
+    if (height < VAULT_MIN_HEIGHT || height > VAULT_MAX_HEIGHT) return false
+
+    // 台面之上必须有容纳胶囊的空间（顶部横梁、屋檐会在这里被挡下）。
+    const up = world.castRay(
+      new Ray({ x: hx, y: topY + 0.06, z: hz }, { x: 0, y: 1, z: 0 }),
+      this.standHalfHeight * 2 + this.radius * 2 + 0.35,
+      true,
+      undefined,
+      undefined,
+      this.collider,
+    )
+    if (up) return false
+
+    this.vaulting = true
+    this.vaultTime = 0
+    this.vaultDirX = fwd.x
+    this.vaultDirZ = fwd.z
+    this.vaultFromY = feet.y
+    this.vaultToY = topY + 0.02
+    this.vaultProgressY = 0
+    this.sliding = false
+    this.slideTime = 0
+    this.vy = 0
+    this.vx = fwd.x * VAULT_SPEED
+    this.vz = fwd.z * VAULT_SPEED
+    if (this.crouching) {
+      this.setCapsuleHalfHeight(this.standHalfHeight)
+      this.crouching = false
+    }
+    return true
+  }
+
+  /**
+   * 翻越积分：先抬后推。
+   *
+   * 竖直方向用 1.35 倍的缓动提前到位，再让水平速度把身体带过去 —— 如果
+   * 两者同步，胶囊会在台面边缘被挡住，表现为"贴着台子原地耸动"。
+   */
+  private stepVault(dt: number): void {
+    this.vaultTime += dt
+    const t = Math.min(1, this.vaultTime / VAULT_TIME)
+    const ease = Math.min(1, t * t * (3 - 2 * t) * 1.35)
+    const targetY = this.vaultFromY + (this.vaultToY - this.vaultFromY) * ease
+    const feet = this.feet
+    const stepY = targetY - feet.y
+
+    this.controller.computeColliderMovement(this.collider, {
+      x: this.vaultDirX * VAULT_SPEED * dt,
+      y: stepY,
+      z: this.vaultDirZ * VAULT_SPEED * dt,
+    })
+    const moved = this.controller.computedMovement()
+    this.grounded = this.controller.computedGrounded()
+    const tr = this.body.translation()
+    this.body.setNextKinematicTranslation({
+      x: tr.x + moved.x,
+      y: tr.y + moved.y,
+      z: tr.z + moved.z,
+    })
+    this.vx = dt > 0 ? moved.x / dt : 0
+    this.vz = dt > 0 ? moved.z / dt : 0
+    this.vy = 0
+
+    if (t >= 1) {
+      this.vaulting = false
+      this.vaultTime = 0
+      this.vy = 0
+    }
   }
 
   private applyCrouch(world: World, wantsCrouch: boolean): void {
@@ -487,6 +630,8 @@ export function stateFlagsOf(c: {
   switching?: boolean
   /** 滑铲中。可选：旧调用方不传时保持原行为。 */
   sliding?: boolean
+  /** 翻越中。可选：旧调用方不传时保持原行为。 */
+  vaulting?: boolean
 }): number {
   let f = 0
   if (c.grounded) f |= StateFlags.Grounded
@@ -496,6 +641,7 @@ export function stateFlagsOf(c: {
   if (c.reloading) f |= StateFlags.Reloading
   if (c.switching) f |= StateFlags.Switching
   if (c.sliding) f |= StateFlags.Sliding
+  if (c.vaulting) f |= StateFlags.Vaulting
   return f
 }
 

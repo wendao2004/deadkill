@@ -296,28 +296,32 @@ export function scatterNature(
   level: LevelDef,
   assets: NatureAssets,
   density = 1,
+  /** 是否用 CC0 枯树。程序化松树接管后传 false，避免两套树叠在一起。 */
+  withTrees = true,
 ): void {
   const biome = level.biome ?? 'swamp'
   const rng = mulberry32(0xb17e5eed ^ hashString(level.id))
   const groundY = level.groundY
   const heightAt = (x: number, z: number): number => terrainHeightAt(level, x, z)
 
-  // ---- 树：直接用关卡里的树冠盒子定位，保证视觉树和碰撞树干对得上 ----
-  const trees: Placement[] = []
-  for (const b of level.boxes) {
-    if (b.material !== 'foliage' || b.hy < 1.2 || b.y < groundY + 2) continue
-    const crownTop = b.y + b.hy
-    trees.push({
-      x: b.x,
-      y: heightAt(b.x, b.z),
-      z: b.z,
-      height: Math.min(18, Math.max(3, crownTop - heightAt(b.x, b.z))),
-      rotY: rng() * TAU,
-      width: 0.9 + rng() * 0.3,
-    })
+  if (withTrees) {
+    // ---- 树：直接用关卡里的树冠盒子定位，保证视觉树和碰撞树干对得上 ----
+    const trees: Placement[] = []
+    for (const b of level.boxes) {
+      if (b.material !== 'foliage' || b.hy < 1.2 || b.y < groundY + 2) continue
+      const crownTop = b.y + b.hy
+      trees.push({
+        x: b.x,
+        y: heightAt(b.x, b.z),
+        z: b.z,
+        height: Math.min(18, Math.max(3, crownTop - heightAt(b.x, b.z))),
+        rotY: rng() * TAU,
+        width: 0.9 + rng() * 0.3,
+      })
+    }
+    // 枯树为主：这张图的方向是"沼泽里剩下的死树"，不是明亮森林。
+    addInstances(parent, assets.deadTree, trees, 'deadTree')
   }
-  // 枯树为主：这张图的方向是"沼泽里剩下的死树"，不是明亮森林。
-  addInstances(parent, assets.deadTree, trees, 'deadTree')
 
   const base =
     biome === 'swamp' ? { grass: 1100, rock: 70, branch: 140, stump: 50, bush: 260, plant: 180 }

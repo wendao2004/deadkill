@@ -1,24 +1,34 @@
 /**
- * 远端猎人的程序化模型。
+ * 远端猎人的程序化角色：**有关节的可动骨架**，不是一个身体加两条腿。
  *
- * 旧版是两个盒子（身体 + 头），在"一眼分辨人/怪"的夜战里信息量太低。
- * 新版用程序化硬表面几何拼一个 1890 年代猎人的剪影：宽檐帽、长大衣、
- * 靴子、背包、斜挎弹药带、横抱的杠杆步枪。材质仍然走 **MeshToonMaterial
- * + applyComicInk**（阶梯光照、排线、世界空间细节、假高光、轮廓光），
- * 并且把浏览器里烘焙好的布料/皮革灰度贴图作为 albedo 细节。
+ * ## 为什么现在要拆关节
  *
- * 几何按"身体 + 左右腿"分组：身体是一个刚体子组，两条腿绕髋关节转，
- * 由 render.ts 按远程玩家的插值速度做简单步行摆动。没有骨骼/蒙皮 ——
- * 远程观察距离通常在 5m 以外，摆动比解剖学精度更重要，也更省。
+ * 旧版只有"身体 + 左右腿"两个自由度，蹲下靠 `scale.y = 0.72` 整体压扁 ——
+ * 滑铲、翻越、跳跃这些动作在压扁的模型上根本表达不出来，远看就是一块
+ * 斜着移动的木头。Apex 那套身法的可读性来自**关节角度**（髋、膝、肩、肘、
+ * 脊柱），所以先把骨架做对，再谈动作。
+ *
+ * ## 层级与坐标
+ *
+ * 原点在脚底、正面朝 -Z（和 yaw 约定一致）。骨架按人体比例：
+ *
+ *   hips (y=0.94)
+ *     ├ spine (y=+0.02)  → 胸/大衣/背包/斜挎带
+ *     │   ├ head (y=+0.52)
+ *     │   ├ shoulderL/R (x=±0.23, y=+0.46) → elbow → hand
+ *     ├ hipL/R (x=±0.12) → knee → foot
+ *
+ * 每个关节是一个 Group，几何挂在关节原点下方；旋转关节就能摆姿势。
+ * 没有蒙皮：分段刚体在 5m 外读起来就是连续的，而且省掉骨骼动画的全部成本。
+ *
+ * ## 为什么只用两个材质
+ *
+ * 每个关节一次 draw call 已经够多了。配色全部烘进顶点色，整具身体只留
+ * "布料/皮革"和"金属"两个材质，帽带、靴子、枪管靠颜色区分，而不是靠材质。
  */
-import { Group, Mesh, type Material, type Texture } from 'three'
-import {
-  Assembly,
-  blob,
-  box,
-  ring,
-  rodZ,
-} from './weapon-kit.ts'
+
+import { Color, Float32BufferAttribute, Group, Mesh, type BufferGeometry, type Material, type Texture } from 'three'
+import { Assembly, blob, box, ring, rodZ } from './weapon-kit.ts'
 
 export interface HunterKit {
   toon(
@@ -36,13 +46,10 @@ export interface HunterKit {
 }
 
 export interface HunterMaterials {
-  cloth: Material
-  clothDark: Material
-  leather: Material
-  skin: Material
-  metal: Material
-  wood: Material
-  dark: Material
+  /** 布料 / 皮革 / 皮肤 / 头发：全部走顶点色。 */
+  readonly body: Material
+  /** 金属件：枪管、扣具、鞋钉。 */
+  readonly metal: Material
 }
 
 export interface HunterTextures {
@@ -52,48 +59,118 @@ export interface HunterTextures {
 
 export interface HunterModel {
   readonly root: Group
-  /** 身体（大衣/头/手/枪）的刚体子组，用于走路轻微起伏。 */
-  readonly body: Group
+  readonly hips: Group
+  readonly spine: Group
+  readonly head: Group
+  readonly shoulderL: Group
+  readonly shoulderR: Group
+  readonly elbowL: Group
+  readonly elbowR: Group
+  readonly hipL: Group
+  readonly hipR: Group
+  readonly kneeL: Group
+  readonly kneeR: Group
+  /** 兼容旧调用方：hipL / hipR 的别名。 */
   readonly legL: Group
   readonly legR: Group
+  /** 兼容旧调用方。 */
+  readonly body: Group
+  /** 当前姿势缓存，由 animateHunter 维护。 */
+  readonly pose: HunterPoseState
   dispose(): void
 }
 
-/** 一套材质在整局里共享；只有几何是每个远端玩家一份。 */
-export function createHunterMaterials(kit: HunterKit, textures: HunterTextures): HunterMaterials {
-  return {
-    cloth: kit.toon(0x6d6a5c, {
-      hatch: 0.34,
-      specular: 0.03,
-      rim: 0.1,
-      map: textures.cloth,
-    }),
-    clothDark: kit.toon(0x4b4a40, {
-      hatch: 0.32,
-      specular: 0.02,
-      rim: 0.08,
-      map: textures.cloth,
-    }),
-    leather: kit.toon(0x5a4230, {
-      hatch: 0.3,
-      specular: 0.1,
-      rim: 0.08,
-      map: textures.leather,
-    }),
-    skin: kit.toon(0xc49a78, { hatch: 0.1, specular: 0.02, rim: 0.06 }),
-    metal: kit.toon(0x4b5564, { hatch: 0.15, surface: 'metal', specular: 0.35, rim: 0.1 }),
-    wood: kit.toon(0x5a3a22, { hatch: 0.12, surface: 'wood', specular: 0.03 }),
-    dark: kit.toon(0x24231f, { hatch: 0.18, specular: 0 }),
+/** 姿势缓存的键。全部是弧度 / 米。 */
+export interface HunterPoseState {
+  hipY: number
+  spineRx: number
+  spineRz: number
+  headRx: number
+  thighL: number
+  thighR: number
+  kneeL: number
+  kneeR: number
+  shoulderLx: number
+  shoulderLz: number
+  shoulderRx: number
+  shoulderRz: number
+  elbowL: number
+  elbowR: number
+}
+
+export interface HunterPoseInput {
+  /** 水平速度（m/s）。 */
+  speed: number
+  grounded: boolean
+  sliding: boolean
+  crouching: boolean
+  sprinting: boolean
+  ads: boolean
+  /** 翻越进度 0..1；不在翻越时给 -1。 */
+  vault: number
+  /** 步态相位（由调用方按位移累加）。 */
+  phase: number
+  dt: number
+}
+
+const POSE_KEYS: (keyof HunterPoseState)[] = [
+  'hipY',
+  'spineRx',
+  'spineRz',
+  'headRx',
+  'thighL',
+  'thighR',
+  'kneeL',
+  'kneeR',
+  'shoulderLx',
+  'shoulderLz',
+  'shoulderRx',
+  'shoulderRz',
+  'elbowL',
+  'elbowR',
+]
+
+/** 布料/皮革的基础色。全部是 sRGB，paint() 会转进线性空间。 */
+const C = {
+  cloth: 0x6d6a5c,
+  clothDark: 0x4b4a40,
+  leather: 0x5a4230,
+  leatherDark: 0x3f2e20,
+  skin: 0xc49a78,
+  hair: 0x2b241d,
+  eye: 0x14110e,
+  scarf: 0x5f3a2e,
+  metal: 0x5a6472,
+  wood: 0x5a3a22,
+} as const
+
+function paint(geo: BufferGeometry, hex: number): BufferGeometry {
+  const color = new Color(hex)
+  const count = geo.attributes.position.count
+  const arr = new Float32Array(count * 3)
+  for (let i = 0; i < count; i++) {
+    arr[i * 3] = color.r
+    arr[i * 3 + 1] = color.g
+    arr[i * 3 + 2] = color.b
   }
+  geo.setAttribute('color', new Float32BufferAttribute(arr, 3))
+  return geo
+}
+
+/** 建一套共享材质。整局只建一次。 */
+export function createHunterMaterials(kit: HunterKit, _textures?: HunterTextures): HunterMaterials {
+  const body = kit.toon(0xffffff, { hatch: 0.24, specular: 0.03, rim: 0.08 })
+  const metal = kit.toon(0xffffff, { hatch: 0.14, surface: 'metal', specular: 0.34, rim: 0.1 })
+  // 顶点色承载全部配色：材质底色必须是白，否则颜色会被乘暗。
+  ;(body as Material & { vertexColors: boolean }).vertexColors = true
+  ;(metal as Material & { vertexColors: boolean }).vertexColors = true
+  body.needsUpdate = true
+  metal.needsUpdate = true
+  return { body, metal }
 }
 
 /** 把 Assembly 的合并结果挂成 Mesh，并加墨线壳 / 阴影。 */
-function emit(
-  asm: Assembly,
-  parent: Group,
-  mats: Record<string, Material>,
-  kit: Pick<HunterKit, 'addInk'>,
-): void {
+function emit(asm: Assembly, parent: Group, mats: Record<string, Material>, kit: Pick<HunterKit, 'addInk'>): void {
   for (const [key, geo] of asm.build()) {
     const material = mats[key]
     if (!material) {
@@ -104,187 +181,382 @@ function emit(
     mesh.castShadow = true
     mesh.receiveShadow = true
     parent.add(mesh)
-    kit.addInk(mesh, 2.6)
+    kit.addInk(mesh, 2.4)
   }
 }
 
-function mirrorX(v: number): number {
-  return -v
+function joint(parent: Group, x: number, y: number, z = 0): Group {
+  const g = new Group()
+  g.position.set(x, y, z)
+  parent.add(g)
+  return g
 }
 
-export function createHunterModel(
-  mats: HunterMaterials,
-  kit: Pick<HunterKit, 'addInk'>,
-): HunterModel {
-  const map: Record<string, Material> = {
-    cloth: mats.cloth,
-    clothDark: mats.clothDark,
-    leather: mats.leather,
-    skin: mats.skin,
-    metal: mats.metal,
-    wood: mats.wood,
-    dark: mats.dark,
-  }
+/** 头的几何：颅骨、下颌、鼻、眼、围巾、宽檐帽。 */
+function buildHead(asm: Assembly): void {
+  asm.add(paint(blob(0.21, 0.24, 0.22, 0.06, 2), C.skin), 'body', { y: 0.11 })
+  asm.add(paint(blob(0.13, 0.09, 0.15, 0.03, 1), C.skin), 'body', { y: 0.02, z: -0.03 })
+  asm.add(paint(blob(0.055, 0.055, 0.06, 0.02, 1), C.skin), 'body', { y: 0.10, z: -0.115 })
+  // 眼窝：两个深色小块。没有眼睛的脸在夜里就是一颗褐色的蛋。
+  asm.add(paint(blob(0.045, 0.022, 0.02, 0.005, 1), C.eye), 'body', { x: -0.05, y: 0.15, z: -0.103 })
+  asm.add(paint(blob(0.045, 0.022, 0.02, 0.005, 1), C.eye), 'body', { x: 0.05, y: 0.15, z: -0.103 })
+  // 下半张脸的围巾 + 后颈的头发。
+  asm.add(paint(blob(0.17, 0.09, 0.07, 0.02, 1), C.scarf), 'body', { y: 0.02, z: -0.07 })
+  asm.add(paint(blob(0.18, 0.10, 0.16, 0.03, 1), C.hair), 'body', { y: 0.10, z: 0.06 })
+  // 宽檐帽：帽檐、帽冠、帽带。
+  asm.add(paint(blob(0.62, 0.026, 0.60, 0.01, 1), C.leatherDark), 'body', { y: 0.235 })
+  asm.add(paint(blob(0.29, 0.17, 0.29, 0.05, 2), C.leather), 'body', { y: 0.30 })
+  asm.add(paint(blob(0.305, 0.032, 0.305, 0.008, 1), C.hair), 'body', { y: 0.265 })
+}
 
-  const root = new Group()
-  // 原点在脚底；身体/腿都绕髋部（y=0.9）转。
-  const body = new Group()
-  body.position.y = 0.9
-  root.add(body)
-
-  const cloth = new Assembly('hunter-cloth')
-  const clothDark = new Assembly('hunter-cloth-dark')
-  const leather = new Assembly('hunter-leather')
-  const skin = new Assembly('hunter-skin')
-  const metal = new Assembly('hunter-metal')
-  const wood = new Assembly('hunter-wood')
-  const dark = new Assembly('hunter-dark')
-
-  /* ---- 躯干 / 大衣 --------------------------------------------------- */
-  // 胸 + 大衣下摆：下摆比胸宽一圈，剪影才不是一根方柱。
-  cloth.add(blob(0.46, 0.50, 0.30, 0.06, 2), 'cloth', { y: 0.30 })
-  cloth.add(blob(0.54, 0.26, 0.34, 0.05, 2), 'cloth', { y: 0.06 })
-  // 肩线：把脖子和肩分开。
-  cloth.add(blob(0.52, 0.15, 0.30, 0.06, 1), 'cloth', { y: 0.50 })
-  // 腰带。
-  leather.add(blob(0.50, 0.075, 0.32, 0.02, 2), 'leather', { y: 0.10 })
-  // 斜挎弹药带：横过胸口，给正面一条明显的斜线。
-  dark.add(box(0.075, 0.62, 0.05, 0.01, 1), 'dark', {
-    y: 0.35,
-    z: -0.155,
-    rz: 0.62,
-    ry: 0.12,
-  })
+/** 躯干：胸、肩、大衣下摆、腰带、斜挎带、背包、横抱的步枪。 */
+function buildSpine(asmBody: Assembly, asmMetal: Assembly): void {
+  // 胸廓：上宽下窄，剪影才不是一根方柱。
+  asmBody.add(paint(blob(0.46, 0.40, 0.28, 0.06, 2), C.cloth), 'body', { y: 0.26 })
+  asmBody.add(paint(blob(0.52, 0.16, 0.30, 0.06, 2), C.cloth), 'body', { y: 0.46 })
+  // 领口围巾。
+  asmBody.add(paint(blob(0.25, 0.12, 0.22, 0.04, 1), C.scarf), 'body', { y: 0.53 })
+  // 斜挎弹药带：横过胸口的一条明显的斜线。
+  asmBody.add(paint(blob(0.08, 0.62, 0.05, 0.01, 1), C.leatherDark), 'body', { y: 0.30, z: -0.155, rz: 0.62, ry: 0.12 })
   for (let i = 0; i < 4; i++) {
-    metal.add(box(0.035, 0.045, 0.02, 0.006, 1), 'metal', {
-      x: -0.11 + i * 0.075,
-      y: 0.22 + i * 0.085,
+    asmMetal.add(paint(blob(0.035, 0.045, 0.02, 0.006, 1), C.metal), 'metal', {
+      x: -0.1 + i * 0.07,
+      y: 0.18 + i * 0.08,
       z: -0.185,
       rz: 0.62,
     })
   }
-  // 领口/围巾。
-  clothDark.add(blob(0.24, 0.13, 0.22, 0.05, 1), 'clothDark', { y: 0.55 })
   // 背包 + 铺盖卷。
-  leather.add(blob(0.30, 0.34, 0.16, 0.04, 1), 'leather', { y: 0.30, z: 0.20 })
-  clothDark.add(rodZ(0.065, 0.065, 0.34, 10, 0.01), 'clothDark', {
-    y: 0.52,
-    z: 0.24,
-    rz: Math.PI / 2,
-  })
+  asmBody.add(paint(blob(0.30, 0.34, 0.17, 0.04, 1), C.leather), 'body', { y: 0.28, z: 0.19 })
+  asmBody.add(paint(rodZ(0.065, 0.065, 0.34, 8, 0.01), C.clothDark), 'body', { y: 0.49, z: 0.23, rz: Math.PI / 2 })
+}
 
-  /* ---- 双臂（静态，一前一后抱着枪） --------------------------------- */
-  // 左臂：上臂略外张、前臂横过胸前，手在枪护木附近。
-  cloth.add(blob(0.13, 0.30, 0.14, 0.03, 1), 'cloth', {
-    x: -0.27,
-    y: 0.38,
-    z: -0.01,
-    rz: 0.22,
-  })
-  cloth.add(blob(0.115, 0.27, 0.12, 0.03, 1), 'cloth', {
-    x: -0.33,
-    y: 0.22,
-    z: -0.12,
-    rx: -0.85,
-    rz: 0.35,
-  })
-  // 右臂：握枪的手更低。
-  cloth.add(blob(0.13, 0.30, 0.14, 0.03, 1), 'cloth', {
-    x: 0.27,
-    y: 0.38,
-    z: -0.005,
-    rz: -0.2,
-  })
-  cloth.add(blob(0.115, 0.26, 0.12, 0.03, 1), 'cloth', {
-    x: 0.30,
-    y: 0.20,
-    z: -0.08,
-    rx: -0.55,
-    rz: -0.25,
-  })
+function buildHips(asm: Assembly): void {
+  // 大衣下摆 + 腰带 + 骨盆。
+  asm.add(paint(blob(0.50, 0.34, 0.33, 0.06, 2), C.cloth), 'body', { y: -0.10 })
+  asm.add(paint(blob(0.51, 0.075, 0.325, 0.02, 1), C.leather), 'body', { y: 0.03 })
+  asm.add(paint(blob(0.30, 0.16, 0.24, 0.04, 1), C.clothDark), 'body', { y: -0.02 })
+  // 腰带扣。
+  asm.add(paint(box(0.09, 0.06, 0.02, 0.006, 1), C.metal), 'body', { y: 0.03, z: -0.17 })
+}
+
+function buildUpperArm(asm: Assembly): void {
+  asm.add(paint(blob(0.125, 0.32, 0.135, 0.03, 1), C.cloth), 'body', { y: -0.15 })
+}
+
+function buildForearm(asm: Assembly): void {
+  asm.add(paint(blob(0.105, 0.28, 0.115, 0.03, 1), C.cloth), 'body', { y: -0.13 })
   // 手套。
-  leather.add(blob(0.10, 0.10, 0.13, 0.03, 1), 'leather', { x: -0.30, y: 0.20, z: -0.22 })
-  leather.add(blob(0.10, 0.10, 0.12, 0.03, 1), 'leather', { x: 0.28, y: 0.16, z: -0.16 })
+  asm.add(paint(blob(0.095, 0.12, 0.115, 0.03, 1), C.leather), 'body', { y: -0.28 })
+}
 
-  /* ---- 头 / 宽檐帽 --------------------------------------------------- */
-  skin.add(blob(0.145, 0.14, 0.145, 0.04, 1), 'skin', { y: 0.57 })
-  skin.add(blob(0.20, 0.23, 0.22, 0.06, 2), 'skin', { y: 0.70 })
-  // 鼻子 + 下巴，侧影能看出是朝前的。
-  skin.add(blob(0.055, 0.06, 0.06, 0.02, 1), 'skin', { y: 0.69, z: -0.115 })
-  skin.add(blob(0.14, 0.06, 0.05, 0.02, 1), 'skin', { y: 0.62, z: -0.075 })
-  // 眼睛 + 下半张脸的围巾：2~3m 近看时，没有这两笔脸就是一颗棕色的蛋。
-  dark.add(blob(0.045, 0.022, 0.018, 0.004, 1), 'dark', { x: -0.048, y: 0.725, z: -0.108 })
-  dark.add(blob(0.045, 0.022, 0.018, 0.004, 1), 'dark', { x: 0.048, y: 0.725, z: -0.108 })
-  clothDark.add(blob(0.16, 0.08, 0.06, 0.02, 1), 'clothDark', { y: 0.635, z: -0.078 })
-  // 帽檐 + 帽冠 + 帽带。帽冠用圆角块，宽檐帽的剪影靠帽檐而不是车削。
-  leather.add(blob(0.62, 0.028, 0.60, 0.012, 1), 'leather', { y: 0.82 })
-  leather.add(blob(0.30, 0.17, 0.30, 0.05, 2), 'leather', { y: 0.86 })
-  dark.add(blob(0.325, 0.035, 0.325, 0.01, 1), 'dark', { y: 0.845 })
+function buildThigh(asm: Assembly): void {
+  asm.add(paint(blob(0.17, 0.46, 0.19, 0.04, 1), C.cloth), 'body', { y: -0.23 })
+}
 
-  /* ---- 横抱的杠杆步枪 ------------------------------------------------ */
-  // 只做剪影：枪托、机匣、枪管、杠杆环。太细的零件在 10m 外只会闪。
-  wood.add(box(0.05, 0.10, 0.30, 0.012, 2), 'wood', {
-    x: 0.13,
-    y: 0.28,
-    z: 0.10,
-    rx: -0.12,
-  })
-  metal.add(box(0.045, 0.075, 0.20, 0.008, 1), 'metal', { x: 0.13, y: 0.30, z: -0.12 })
-  metal.add(rodZ(0.012, 0.012, 0.56, 10, 0.006), 'metal', {
-    x: 0.13,
-    y: 0.32,
-    z: -0.50,
-  })
-  metal.add(ring(0.035, 0.0045, 12, 5, Math.PI), 'metal', {
-    x: 0.13,
-    y: 0.25,
-    z: -0.08,
-    ry: Math.PI / 2,
-    rz: Math.PI,
-  })
+function buildShin(asm: Assembly): void {
+  asm.add(paint(blob(0.14, 0.38, 0.155, 0.035, 1), C.clothDark), 'body', { y: -0.19 })
+  // 靴筒 + 靴头（朝 -Z）。
+  asm.add(paint(blob(0.155, 0.16, 0.17, 0.03, 1), C.leather), 'body', { y: -0.35 })
+  asm.add(paint(blob(0.155, 0.10, 0.28, 0.035, 1), C.leatherDark), 'body', { y: -0.40, z: -0.05 })
+}
 
-  /* ---- 腿（每个是一组，绕髋关节摆动） -------------------------------- */
-  const makeLeg = (sx: number): Group => {
-    const leg = new Group()
-    leg.position.set(sx, 0.9, 0)
-    const legCloth = new Assembly('hunter-leg-cloth')
-    const legDark = new Assembly('hunter-leg-dark')
-    const legLeather = new Assembly('hunter-leg-leather')
-    legCloth.add(blob(0.165, 0.38, 0.18, 0.04, 1), 'cloth', { y: -0.20 })
-    legDark.add(blob(0.145, 0.36, 0.16, 0.035, 1), 'clothDark', { y: -0.57 })
-    legLeather.add(blob(0.155, 0.14, 0.26, 0.03, 1), 'leather', {
-      y: -0.83,
-      z: -0.04,
-    })
-    legLeather.add(blob(0.16, 0.10, 0.16, 0.03, 1), 'leather', { y: -0.38 })
-    emit(legCloth, leg, map, kit)
-    emit(legDark, leg, map, kit)
-    emit(legLeather, leg, map, kit)
-    root.add(leg)
-    return leg
+/** 横抱在胸前的杠杆步枪：只做剪影。 */
+function buildRifle(asmBody: Assembly, asmMetal: Assembly): void {
+  asmBody.add(paint(box(0.05, 0.10, 0.30, 0.012, 2), C.wood), 'body', { x: 0.13, y: 0.24, z: 0.10, rx: -0.12 })
+  asmMetal.add(paint(box(0.045, 0.075, 0.20, 0.008, 1), C.metal), 'metal', { x: 0.13, y: 0.26, z: -0.12 })
+  asmMetal.add(paint(rodZ(0.012, 0.012, 0.56, 8, 0.006), C.metal), 'metal', { x: 0.13, y: 0.28, z: -0.50 })
+  asmMetal.add(paint(ring(0.035, 0.0045, 10, 4, Math.PI), C.metal), 'metal', { x: 0.13, y: 0.21, z: -0.08, ry: Math.PI / 2, rz: Math.PI })
+}
+
+export function createHunterModel(mats: HunterMaterials, kit: Pick<HunterKit, 'addInk'>): HunterModel {
+  const map: Record<string, Material> = { body: mats.body, metal: mats.metal }
+  const root = new Group()
+
+  const hips = joint(root, 0, 0.94)
+  const spine = joint(hips, 0, 0.02)
+  const head = joint(spine, 0, 0.52)
+
+  const shoulderL = joint(spine, -0.23, 0.46)
+  const shoulderR = joint(spine, 0.23, 0.46)
+  const elbowL = joint(shoulderL, 0, -0.30)
+  const elbowR = joint(shoulderR, 0, -0.30)
+
+  const hipL = joint(hips, -0.12, 0)
+  const hipR = joint(hips, 0.12, 0)
+  const kneeL = joint(hipL, 0, -0.46)
+  const kneeR = joint(hipR, 0, -0.46)
+
+  const builders: [Assembly, Group, string][] = []
+  const asm = (name: string): Assembly => new Assembly(name)
+
+  // 髋 / 躯干 / 头
+  const hipsAsm = asm('hunter-hips')
+  buildHips(hipsAsm)
+  builders.push([hipsAsm, hips, 'hips'])
+
+  const spineAsm = asm('hunter-spine')
+  const spineMetal = asm('hunter-spine-metal')
+  buildSpine(spineAsm, spineMetal)
+  buildRifle(spineAsm, spineMetal)
+  builders.push([spineAsm, spine, 'spine'], [spineMetal, spine, 'spine-metal'])
+
+  const headAsm = asm('hunter-head')
+  buildHead(headAsm)
+  builders.push([headAsm, head, 'head'])
+
+  // 手臂
+  const upperL = asm('hunter-uparm-l')
+  buildUpperArm(upperL)
+  builders.push([upperL, shoulderL, 'uparm-l'])
+  const foreL = asm('hunter-forearm-l')
+  buildForearm(foreL)
+  builders.push([foreL, elbowL, 'forearm-l'])
+  const upperR = asm('hunter-uparm-r')
+  buildUpperArm(upperR)
+  builders.push([upperR, shoulderR, 'uparm-r'])
+  const foreR = asm('hunter-forearm-r')
+  buildForearm(foreR)
+  builders.push([foreR, elbowR, 'forearm-r'])
+
+  // 腿
+  const thighLAsm = asm('hunter-thigh-l')
+  buildThigh(thighLAsm)
+  builders.push([thighLAsm, hipL, 'thigh-l'])
+  const shinLAsm = asm('hunter-shin-l')
+  buildShin(shinLAsm)
+  builders.push([shinLAsm, kneeL, 'shin-l'])
+  const thighRAsm = asm('hunter-thigh-r')
+  buildThigh(thighRAsm)
+  builders.push([thighRAsm, hipR, 'thigh-r'])
+  const shinRAsm = asm('hunter-shin-r')
+  buildShin(shinRAsm)
+  builders.push([shinRAsm, kneeR, 'shin-r'])
+
+  for (const [assembly, parent] of builders) emit(assembly, parent, map, kit)
+
+  const pose: HunterPoseState = {
+    hipY: 0.94,
+    spineRx: 0,
+    spineRz: 0,
+    headRx: 0,
+    thighL: 0,
+    thighR: 0,
+    kneeL: 0,
+    kneeR: 0,
+    shoulderLx: 0,
+    shoulderLz: 0,
+    shoulderRx: 0,
+    shoulderRz: 0,
+    elbowL: 0,
+    elbowR: 0,
   }
-
-  const legL = makeLeg(mirrorX(0.12))
-  const legR = makeLeg(0.12)
-
-  emit(cloth, body, map, kit)
-  emit(clothDark, body, map, kit)
-  emit(leather, body, map, kit)
-  emit(skin, body, map, kit)
-  emit(metal, body, map, kit)
-  emit(wood, body, map, kit)
-  emit(dark, body, map, kit)
 
   return {
     root,
-    body,
-    legL,
-    legR,
+    hips,
+    spine,
+    head,
+    shoulderL,
+    shoulderR,
+    elbowL,
+    elbowR,
+    hipL,
+    hipR,
+    kneeL,
+    kneeR,
+    legL: hipL,
+    legR: hipR,
+    body: spine,
+    pose,
     dispose(): void {
       root.traverse((object) => {
         if (object instanceof Mesh) object.geometry.dispose()
       })
       root.clear()
     },
+  }
+}
+
+/** 指数逼近：dt 变化时收敛比例一致，60Hz 与 144Hz 看起来一样。 */
+function converge(current: number, target: number, tau: number, dt: number): number {
+  if (tau <= 0) return target
+  return current + (target - current) * (1 - Math.exp(-dt / tau))
+}
+
+/**
+ * 每帧摆姿势。
+ *
+ * 所有目标角度都是"这个动作在视频里应该长什么样"的直接翻译，没有物理：
+ * 滑铲是前腿伸出、后腿收起、上身反弓；翻越是一手撑、双腿收、身体越过障碍。
+ * 平滑用指数逼近，动作之间不会有生硬的切换。
+ */
+export function animateHunter(model: HunterModel, input: HunterPoseInput): void {
+  const p = model.pose
+  const speed = input.speed
+  const moving = speed > 0.25
+  const run = Math.min(1, speed / 7)
+  const swing = Math.sin(input.phase)
+  const lift = Math.max(0, Math.sin(input.phase))
+
+  // 基础目标
+  let hipY = 0.94
+  let spineRx = 0
+  let spineRz = 0
+  let headRx = 0
+  let thighL = 0
+  let thighR = 0
+  let kneeL = 0
+  let kneeR = 0
+  let shoulderLx = 0.12
+  let shoulderLz = 0.16
+  let shoulderRx = 0.16
+  let shoulderRz = -0.14
+  let elbowL = 0.38
+  let elbowR = 0.42
+
+  if (input.sliding) {
+    // 滑铲：髋压到 0.5m，前腿（右）贴地伸出，后腿收起，上身反弓，
+    // 双臂向两侧张开保持平衡。这是滑铲与"蹲着跑"最直观的区别。
+    hipY = 0.50
+    spineRx = -0.46
+    spineRz = 0.08
+    headRx = 0.34
+    thighR = 1.15
+    kneeR = -0.22
+    thighL = -0.30
+    kneeL = -1.75
+    shoulderLx = 0.55
+    shoulderLz = 0.95
+    shoulderRx = 0.35
+    shoulderRz = -0.85
+    elbowL = 0.75
+    elbowR = 0.6
+  } else if (input.vault >= 0) {
+    // 翻越：手臂前撑、双腿收起、身体先抬后落。进度 t 驱动，和位移同步。
+    const t = Math.min(1, Math.max(0, input.vault))
+    const arc = Math.sin(t * Math.PI)
+    hipY = 0.94 + arc * 0.34
+    spineRx = 0.55 * (1 - Math.abs(t - 0.5) * 2) + 0.12
+    headRx = -0.2
+    thighL = 1.05 - t * 0.4
+    thighR = 1.25 - t * 0.5
+    kneeL = -2.1 + t * 0.6
+    kneeR = -1.95 + t * 0.5
+    shoulderLx = 2.15
+    shoulderLz = 0.28
+    shoulderRx = 2.0
+    shoulderRz = -0.22
+    elbowL = 0.35
+    elbowR = 0.4
+  } else if (!input.grounded) {
+    // 空中：前腿收、后腿拖，手臂上抬。跳跃和坠落共用，靠速度区分不了。
+    spineRx = 0.08
+    thighL = 0.55
+    thighR = -0.18
+    kneeL = -0.85
+    kneeR = -0.35
+    shoulderLx = 0.55
+    shoulderLz = 0.32
+    shoulderRx = 0.45
+    shoulderRz = -0.3
+    elbowL = 0.75
+    elbowR = 0.8
+  } else if (input.crouching) {
+    // 蹲：髋降 0.3m，双膝前折，上身微前倾。
+    hipY = 0.64
+    spineRx = 0.22
+    headRx = -0.1
+    thighL = 1.05
+    thighR = 1.0
+    kneeL = -1.9
+    kneeR = -1.85
+    shoulderLx = 0.6
+    shoulderLz = 0.2
+    shoulderRx = 0.5
+    shoulderRz = -0.18
+    elbowL = 0.9
+    elbowR = 0.85
+  } else if (input.ads) {
+    // 开镜：双臂抬到胸前，头压低找瞄具。
+    spineRx = 0.06
+    headRx = 0.12
+    thighL = 0.02
+    thighR = -0.02
+    kneeL = -0.05
+    kneeR = -0.05
+    shoulderLx = 1.05
+    shoulderLz = 0.42
+    shoulderRx = 1.15
+    shoulderRz = -0.36
+    elbowL = 1.55
+    elbowR = 1.6
+  } else if (moving) {
+    // 走 / 跑：腿反相摆动，手臂反向摆，躯干前倾 + 上下起伏。
+    const amp = 0.42 * run + 0.2
+    const armAmp = 0.55 * run + 0.25
+    const crouchRun = input.sprinting ? 0.16 : 0.06
+    hipY = 0.94 + Math.abs(swing) * 0.035 * run
+    spineRx = crouchRun + 0.05 * run
+    spineRz = -swing * 0.045 * run
+    headRx = -crouchRun * 0.5
+    thighL = swing * amp
+    thighR = -swing * amp
+    kneeL = -Math.max(0, -swing) * 0.95 - lift * 0.25
+    kneeR = -Math.max(0, swing) * 0.95 - lift * 0.25
+    shoulderLx = -swing * armAmp + 0.12
+    shoulderRx = swing * armAmp + 0.12
+    elbowL = 0.45 + run * 0.45
+    elbowR = 0.5 + run * 0.45
+  } else {
+    // 站立：呼吸起伏 + 肩膀轻微不对称。
+    hipY = 0.94 + Math.sin(input.phase * 0.6) * 0.006
+    shoulderLx = 0.12 + Math.sin(input.phase * 0.6) * 0.02
+    shoulderRx = 0.16 + Math.sin(input.phase * 0.6 + 1.1) * 0.02
+  }
+
+  // 平滑：动作切换用 0.09s 的时间常数，够快但不闪。
+  const tau = 0.09
+  const k = 1 - Math.exp(-Math.max(0, input.dt) / tau)
+  const set = (key: keyof HunterPoseState, target: number): void => {
+    p[key] += (target - p[key]) * k
+  }
+  p.hipY += (hipY - p.hipY) * k
+  set('spineRx', spineRx)
+  set('spineRz', spineRz)
+  set('headRx', headRx)
+  set('thighL', thighL)
+  set('thighR', thighR)
+  set('kneeL', kneeL)
+  set('kneeR', kneeR)
+  set('shoulderLx', shoulderLx)
+  set('shoulderLz', shoulderLz)
+  set('shoulderRx', shoulderRx)
+  set('shoulderRz', shoulderRz)
+  set('elbowL', elbowL)
+  set('elbowR', elbowR)
+
+  // 写回骨架
+  model.hips.position.y = p.hipY
+  model.spine.rotation.x = p.spineRx
+  model.spine.rotation.z = p.spineRz
+  model.head.rotation.x = p.headRx
+  model.hipL.rotation.x = p.thighL
+  model.hipR.rotation.x = p.thighR
+  model.kneeL.rotation.x = p.kneeL
+  model.kneeR.rotation.x = p.kneeR
+  model.shoulderL.rotation.x = p.shoulderLx
+  model.shoulderL.rotation.z = p.shoulderLz
+  model.shoulderR.rotation.x = p.shoulderRx
+  model.shoulderR.rotation.z = p.shoulderRz
+  model.elbowL.rotation.x = p.elbowL
+  model.elbowR.rotation.x = p.elbowR
+}
+
+/** 供外部重置姿势（复活/传送时避免从滑铲姿势慢慢爬起来）。 */
+export function resetHunterPose(model: HunterModel): void {
+  for (const key of POSE_KEYS) {
+    if (key === 'hipY') model.pose[key] = 0.94
+    else model.pose[key] = 0
   }
 }

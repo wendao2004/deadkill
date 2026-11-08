@@ -73,7 +73,7 @@ function scatter(
 /** 三个"体型"不同的松树，按位置哈希挑，避免一眼看出复制粘贴。 */
 const PINES = ['pine_a', 'pine_b', 'pine_dead'] as const
 
-export function decoratePineCamp(parent: Object3D, level: LevelDef, assets: GeneratedAssets): boolean {
+export function decorateGenerated(parent: Object3D, level: LevelDef, assets: GeneratedAssets): boolean {
   if (assets.size === 0) return false
   const rng = mulberry32(0x9e3779b9 ^ ((level.boundsHalf * 131) | 0))
   const root = new Group()
@@ -105,12 +105,18 @@ export function decoratePineCamp(parent: Object3D, level: LevelDef, assets: Gene
     pine_b: [],
     pine_dead: [],
   }
+  // 树型按群系定：沼泽/采石场全是枯木，农舍/车站是活的松林，
+  // 松林营地只在烧焦林那一片换成枯木。
+  const biome = level.biome ?? 'swamp'
   for (const b of level.boxes) {
     if (b.material !== 'foliage' || b.hy < 1.2 || b.y < level.groundY + 2) continue
     const crownTop = b.y + b.hy
     const y = terrainHeightAt(level, b.x, b.z)
     const height = Math.min(18, Math.max(3.4, crownTop - y))
-    const dead = b.x < -30 && b.z > 12 // 烧焦林整片枯木
+    const dead =
+      biome === 'swamp' ||
+      biome === 'quarry' ||
+      (biome === 'forest' && b.x < -30 && b.z > 12)
     const asset = assets.get(dead ? 'pine_dead' : PINES[hash2(b.x, b.z) % 2]!)
     if (!asset) continue
     const scale = Math.min(1.8, Math.max(0.45, height / asset.size.y))
@@ -131,56 +137,60 @@ export function decoratePineCamp(parent: Object3D, level: LevelDef, assets: Gene
     placed += list.length
   }
 
-  // ---- 3. 草：贴地撒，避开墙、水、树桩 ----
-  const grassAsset = assets.get('grass_clump')
-  if (grassAsset) {
-    const spots = scatter(1700, level, rng, (x, z) => !insideSolid(level, x, z, 0.1) && !insideWater(level, x, z))
-    const placements: Placement[] = spots.map((p) => ({
-      x: p.x,
-      z: p.z,
-      y: terrainHeightAt(level, p.x, p.z) - 0.02,
-      rotY: rng() * Math.PI * 2,
-      scale: 0.75 + rng() * 0.75,
-      tint: rng() < 0.35 ? 0xe4efd2 : 0xffffff,
-    }))
-    instanceAsset(root, grassAsset, placements, { chunk: 64, castShadow: false, receiveShadow: true })
-    placed += placements.length
-  }
+  // 草/石/桩只在松林营地由这套资产负责：其它四张图的地面装饰仍然由
+  // nature-assets（CC0）撒，两套同时开会叠成双层草。
+  if (biome === 'forest') {
+    // ---- 3. 草：贴地撒，避开墙、水、树桩 ----
+    const grassAsset = assets.get('grass_clump')
+    if (grassAsset) {
+      const spots = scatter(1700, level, rng, (x, z) => !insideSolid(level, x, z, 0.1) && !insideWater(level, x, z))
+      const placements: Placement[] = spots.map((p) => ({
+        x: p.x,
+        z: p.z,
+        y: terrainHeightAt(level, p.x, p.z) - 0.02,
+        rotY: rng() * Math.PI * 2,
+        scale: 0.75 + rng() * 0.75,
+        tint: rng() < 0.35 ? 0xe4efd2 : 0xffffff,
+      }))
+      instanceAsset(root, grassAsset, placements, { chunk: 64, castShadow: false, receiveShadow: true })
+      placed += placements.length
+    }
 
-  // ---- 4. 石头与树桩：稀疏点缀，避免整张图只有树和草 ----
-  const rockAsset = assets.get('rock_a')
-  if (rockAsset) {
-    const spots = scatter(26, level, rng, (x, z) => !insideSolid(level, x, z, 0.6) && !insideWater(level, x, z))
-    instanceAsset(
-      root,
-      rockAsset,
-      spots.map((p) => ({
-        x: p.x,
-        z: p.z,
-        y: terrainHeightAt(level, p.x, p.z),
-        rotY: rng() * Math.PI * 2,
-        scale: 0.45 + rng() * 0.7,
-      })),
-      { chunk: 64 },
-    )
-    placed += spots.length
-  }
-  const stumpAsset = assets.get('stump')
-  if (stumpAsset) {
-    const spots = scatter(30, level, rng, (x, z) => !insideSolid(level, x, z, 0.5) && !insideWater(level, x, z))
-    instanceAsset(
-      root,
-      stumpAsset,
-      spots.map((p) => ({
-        x: p.x,
-        z: p.z,
-        y: terrainHeightAt(level, p.x, p.z),
-        rotY: rng() * Math.PI * 2,
-        scale: 0.7 + rng() * 0.6,
-      })),
-      { chunk: 64 },
-    )
-    placed += spots.length
+    // ---- 4. 石头与树桩：稀疏点缀，避免整张图只有树和草 ----
+    const rockAsset = assets.get('rock_a')
+    if (rockAsset) {
+      const spots = scatter(26, level, rng, (x, z) => !insideSolid(level, x, z, 0.6) && !insideWater(level, x, z))
+      instanceAsset(
+        root,
+        rockAsset,
+        spots.map((p) => ({
+          x: p.x,
+          z: p.z,
+          y: terrainHeightAt(level, p.x, p.z),
+          rotY: rng() * Math.PI * 2,
+          scale: 0.45 + rng() * 0.7,
+        })),
+        { chunk: 64 },
+      )
+      placed += spots.length
+    }
+    const stumpAsset = assets.get('stump')
+    if (stumpAsset) {
+      const spots = scatter(30, level, rng, (x, z) => !insideSolid(level, x, z, 0.5) && !insideWater(level, x, z))
+      instanceAsset(
+        root,
+        stumpAsset,
+        spots.map((p) => ({
+          x: p.x,
+          z: p.z,
+          y: terrainHeightAt(level, p.x, p.z),
+          rotY: rng() * Math.PI * 2,
+          scale: 0.7 + rng() * 0.6,
+        })),
+        { chunk: 64 },
+      )
+      placed += spots.length
+    }
   }
 
   parent.add(root)

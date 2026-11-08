@@ -75,13 +75,13 @@ import { applyComicInk, setInkDetail, setInkKeyDirection, type ComicSurface } fr
 import { createOutlineMaterial, setOutlineBoil, setOutlineResolution } from './outline.ts'
 import { PostFX } from './postfx.ts'
 import { probeGpu, type GpuInfo } from './gpu.ts'
-import { createHunterMaterials, createHunterModel, type HunterMaterials, type HunterModel } from './hunter.ts'
+import { animateHunter, createHunterMaterials, createHunterModel, type HunterMaterials, type HunterModel } from './hunter.ts'
 import { createHunterTextures, type HunterTextures } from './baked-textures.ts'
 import { createSurfaceMaps, loadSurfaceTextures, type SurfaceFamily, type SurfaceMaps } from './pbr-textures.ts'
 import { loadNatureAssets as loadNatureModels, scatterNature } from './nature-assets.ts'
 import { decorateVillage, loadVillageAssets } from './village-assets.ts'
 import { loadGeneratedAssets } from './generated-assets.ts'
-import { decoratePineCamp } from './forest-scene.ts'
+import { decorateGenerated } from './forest-scene.ts'
 import type { GraphicsQuality } from './settings.ts'
 import { buildProps, type Props } from './props.ts'
 import { createMonsterRenderer, type MonsterRenderer, type MonsterView } from './monsters.ts'
@@ -100,6 +100,7 @@ import {
   SCOPE_MIN_ZOOM,
   WEAPONS,
   StateFlags,
+  VAULT_TIME,
   type BoxBrush,
   type LevelDef,
   type PlayerSnapshot,
@@ -216,6 +217,8 @@ interface RemoteAvatar {
   /** 平滑后的水平速度（m/s），驱动腿摆。 */
   speed: number
   phase: number
+  /** 翻越动作的本地时钟（秒）：快照只给"正在翻越"，进度由客户端补。 */
+  vaultTime: number
 }
 
 /**
@@ -553,6 +556,8 @@ export class Renderer {
   private canopyMesh: Mesh | null = null
   /** GLTF 自然资产根节点（纯视觉）。 */
   private natureGroup: Group | null = null
+  /** 程序化松树是否已经接管树木；决定 nature-assets 是否还要种一套枯树。 */
+  private generatedTrees = false
   /** 模块化建筑视觉外壳（屋顶/门框/道具）。 */
   private villageGroup: Group | null = null
   private readonly atmo: Atmosphere
@@ -1030,7 +1035,8 @@ export class Renderer {
       const density = this.gpu.integrated || this.gpu.software ? 0.45 : 1.25
       const group = new Group()
       group.name = 'nature-assets'
-      scatterNature(group, this.level, assets, density)
+      // 松树已经由 generated-assets 接管时，这里只补草/石/灌木，不再种一套枯树。
+      scatterNature(group, this.level, assets, density, !this.generatedTrees)
       this.scene.add(group)
       this.natureGroup = group
       // 只有关键资产都成功时才隐藏回退，避免"树加载失败但树冠也隐藏了"。
@@ -1069,15 +1075,15 @@ export class Renderer {
    * 加载失败，都只是回到盒刷外观，不挡进局。
    */
   async loadGenerated(): Promise<void> {
-    if (!this.level.heroes || this.level.heroes.length === 0) return
     try {
       const assets = await loadGeneratedAssets()
-      const ok = decoratePineCamp(this.scene, this.level, assets)
+      const ok = decorateGenerated(this.scene, this.level, assets)
       if (ok) {
         // 树干盒子的外观已经被模型包住；树冠棱球必须关掉，否则会出现
         // "方块绿球 + 真松树"叠在一起。
         if (this.canopyMesh) this.canopyMesh.visible = false
         if (this.natureGroup) this.natureGroup.visible = false
+        this.generatedTrees = true
       }
     } catch (error) {
       console.warn('[generated] 程序化资产加载失败，保留盒刷外观', error)
@@ -1658,7 +1664,8 @@ export class Renderer {
     this.turnRoll = approach(this.turnRoll, turnTarget, CAMERA_FEEL.roll.tau * 1.4, dt)
     const airRoll = airborne ? clamp(-vy * 0.02, -1, 1) * CAMERA_FEEL.roll.air : 0
     // 滑铲滚转：向左前方压枪的视觉倾斜，不改变射线。
-    this.slideRoll = approach(this.slideRoll, sliding ? -5.2 * (Math.PI / 180) : 0, 0.1, dt)
+    // 滑铲滚转：8° 是"身体贴地"的读法，再大就会让玩家以为镜头歪了。
+    this.slideRoll = approach(this.slideRoll, sliding ? -8 * (Math.PI / 180) : 0, 0.08, dt)
 
     // ---- trauma：爆炸/重击/落地共用的噪声抖动 ----
     this.trauma = Math.max(0, this.trauma - CAMERA_FEEL.shake.decay * dt)
@@ -1743,6 +1750,7 @@ export class Renderer {
     vm.motionScale = this.motionScale
     vm.speed = speed
     vm.sprinting = sprinting
+    vm.sliding = sliding
     vm.airborne = airborne
     vm.reloading = reloading
     vm.reloadProgress = reloadProgress
@@ -1987,19 +1995,30 @@ export class Renderer {
         avatar.group.rotation.y = shortestArc(avatar.group.rotation.y, player.yaw, 0.35)
       }
 
-      // 蹲下时整体压低：脚底仍在 y=0，头的高度跟着降，和 hitbox 一致。
+      // 动作由骨骼角度表达：蹲下是髋降 + 膝折，不是整体压扁。压扁会把
+      // 滑铲/翻越/跳跃这些姿势一起压没，而且和 hitbox 对不上。
       const crouching = (player.flags & StateFlags.Crouching) !== 0
-      avatar.group.scale.y = crouching ? 0.72 : 1
-
-      // 简单步行：腿绕髋关节前后摆，身体随相位轻微起伏。速度趋近 0 时幅度
-      // 自然归零；不做骨骼，远端 5m 外看不出差别，但"在走"一眼就能读出来。
+      const sliding = (player.flags & StateFlags.Sliding) !== 0
+      const ads = (player.flags & StateFlags.Ads) !== 0
+      const grounded = (player.flags & StateFlags.Grounded) !== 0
+      const vaulting = (player.flags & StateFlags.Vaulting) !== 0
+      const sprinting = !sliding && avatar.speed > 6.4
       const walking = avatar.speed > 0.25
-      const amp = walking ? Math.min(0.55, avatar.speed * 0.11) : 0
-      if (walking) avatar.phase += avatar.speed * dt * 2.2
-      const swing = Math.sin(avatar.phase) * amp
-      avatar.model.legL.rotation.x = swing
-      avatar.model.legR.rotation.x = -swing
-      avatar.model.body.position.y = 0.9 + (walking ? Math.abs(Math.sin(avatar.phase)) * 0.014 : 0)
+      if (walking) avatar.phase += avatar.speed * dt * (sprinting ? 1.9 : 2.4)
+      // 快照里只有"正在翻越"这一位，进度由本地时钟补；20Hz 快照不足以
+      // 还原 0.34s 的动作曲线。
+      avatar.vaultTime = vaulting ? Math.min(VAULT_TIME, avatar.vaultTime + dt) : 0
+      animateHunter(avatar.model, {
+        speed: avatar.speed,
+        grounded,
+        sliding,
+        crouching,
+        sprinting,
+        ads,
+        vault: vaulting ? avatar.vaultTime / VAULT_TIME : -1,
+        phase: avatar.phase,
+        dt,
+      })
     }
     for (const [id, avatar] of this.avatars) {
       if (!seen.has(id)) {
@@ -2045,7 +2064,7 @@ export class Renderer {
       addInk: (mesh) => this.addInk(mesh, AVATAR_INK_PIXELS),
     })
     group.add(model.root)
-    return { group, model, lastX: NaN, lastZ: NaN, speed: 0, phase: 0 }
+    return { group, model, lastX: NaN, lastZ: NaN, speed: 0, phase: 0, vaultTime: 0 }
   }
 
   /** 把服务端快照里的怪物交给渲染器。插值与动画都在 monsters.ts 内部做。 */

@@ -99,6 +99,8 @@ export interface ViewmodelState {
   speed: number
   /** 是否在疾跑。 */
   sprinting: boolean
+  /** 是否在滑铲。缺省 false：旧调用方行为不变。 */
+  sliding?: boolean
   /** 是否离地（跳跃/下落）。 */
   airborne: boolean
   /** 换弹进度 0..1；reloading === false 时忽略。 */
@@ -322,6 +324,19 @@ const SPRINT_ROLL = -0.18
 const SPRINT_SWAY_X = 0.035
 const SPRINT_SWAY_Y = 0.026
 const SPRINT_SWAY_ROLL = 0.06
+
+/**
+ * 滑铲姿态：枪压低、枪身往里扣、枪口朝下。
+ *
+ * 滑铲时玩家整个人贴地，枪还端在原位会像"跪着端枪"；压下去之后，
+ * 屏幕中心的准星仍然对着前方，但枪不再挡住下滑的视线。
+ */
+const SLIDE_X = 0.018
+const SLIDE_Y = -0.055
+const SLIDE_Z = -0.02
+const SLIDE_PITCH = 0.14
+const SLIDE_ROLL = 0.16
+const SLIDE_YAW = 0.05
 
 // ---------------------------------------------------------------- 落地
 
@@ -998,6 +1013,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
 
   /** 疾跑混合 0..1。进入用指数逼近（有加速度感），退出用线性（"线性和回"）。 */
   let sprintBlend = 0
+  /** 滑铲混合 0..1。进入比疾跑更快：滑铲是"啪"地压下去，不是慢慢蹲。 */
+  let slideBlend = 0
   /** 换弹混合。换弹进行中直接跟随相位，结束后指数回落，避免最后一帧硬跳。 */
   let reloadBlend = 0
   /** 落地冲击的 y 偏移（米，负数 = 下沉）。 */
@@ -1079,6 +1096,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     if (state.sprinting) sprintBlend += (1 - sprintBlend) * Math.min(1, dt * 7)
     else sprintBlend = Math.max(0, sprintBlend - dt * 3.2)
     const sprint = sprintBlend * motion * motionScale
+    if (state.sliding) slideBlend += (1 - slideBlend) * Math.min(1, dt * 12)
+    else slideBlend = Math.max(0, slideBlend - dt * 7)
+    const slide = slideBlend * motion * motionScale
 
     // 换弹：三段式。phase 是 0..1 的换弹进度。
     const phase = clamp01(state.reloadProgress)
@@ -1291,6 +1311,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       bobX +
       swaySprintX +
       SPRINT_X * sprint +
+      SLIDE_X * slide +
       RELOAD_X * reload +
       shakeX +
       SWITCH_SIDE * slotK * side
@@ -1303,6 +1324,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       recUpOff +
       swaySprintY +
       SPRINT_Y * sprint +
+      SLIDE_Y * slide +
       RELOAD_Y * reload +
       land +
       shakeY -
@@ -1313,6 +1335,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       bobZ +
       recBackOff +
       SPRINT_Z * sprint +
+      SLIDE_Z * slide +
       RELOAD_Z * reload +
       SWITCH_PULL * slotK * pull
 
@@ -1361,7 +1384,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       bobPitch +
       swayRotX +
       recPitchOff +
-      SPRINT_PITCH * sprint -
+      SPRINT_PITCH * sprint +
+      SLIDE_PITCH * slide -
       (RELOAD_PITCH_DOWN + rig.pitch * motion) * reload +
       shakeRoll * 0.4 -
       SWITCH_PITCH * slotK * pitchK +
@@ -1371,12 +1395,14 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       swayRotY +
       recYawOff +
       SPRINT_YAW * sprint +
+      SLIDE_YAW * slide +
       RELOAD_YAW * reload -
       SWITCH_YAW * slotK * yawK +
       lagYaw * lagScale
     const rz =
       rig.roll * motion +
       SPRINT_ROLL * sprint +
+      SLIDE_ROLL * slide +
       swaySprintRoll +
       bobRoll +
       swayRotZ +
