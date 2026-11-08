@@ -29,6 +29,7 @@ import {
   BufferGeometry,
   CanvasTexture,
   Color,
+  ConeGeometry,
   CylinderGeometry,
   DataTexture,
   DodecahedronGeometry,
@@ -46,6 +47,7 @@ import {
   RedFormat,
   SRGBColorSpace,
   ShaderMaterial,
+  SphereGeometry,
   TorusGeometry,
   Vector3,
   type Side,
@@ -65,6 +67,11 @@ export interface Props {
   readonly root: Group
   /** 每帧调用，推进水面波纹与飘摇的草。dt 秒。 */
   update(dt: number): void
+  /**
+   * 显示/隐藏程序化芦苇、枯树与树挂。GLTF 自然资产加载成功后由 render.ts
+   * 调 false；加载失败时保持可见，作为回退。
+   */
+  setNatureVisible(visible: boolean): void
   dispose(): void
 }
 
@@ -159,20 +166,28 @@ export function buildProps(scene: Scene, level: LevelDef, options?: PropsOptions
   const swamp = biome === 'swamp'
 
   const water = swamp ? buildWater(root, level, bag, wetness) : null
-  const reeds = swamp ? buildReeds(root, level, bag, gradientMap, rng, dens, placeable, wetness) : null
-  const trees = buildDeadTrees(root, level, bag, gradientMap, rng, Math.round(6 * dens), placeable)
+  // 程序化芦苇/枯树/树挂单独一组：GLTF 资产加载成功后整组隐藏，
+  // 不删节点、不重建材质，失败时还能原样回退。
+  const natureRoot = new Group()
+  natureRoot.name = 'procedural-nature'
+  root.add(natureRoot)
+  const reeds = swamp ? buildReeds(natureRoot, level, bag, gradientMap, rng, dens, placeable, wetness) : null
+  const trees = buildDeadTrees(natureRoot, level, bag, gradientMap, rng, Math.round(6 * dens), placeable)
   buildFence(root, level, bag, gradientMap, rng, dens, placeable)
   buildBiomeProps(root, level, bag, gradientMap, rng, dens, placeable, biome)
   // 叙事静物排在群系装饰之后：它贴着墙根长，先让大件落位才不会被挤掉。
   buildNarrative(root, level, bag, gradientMap, rng, dens, placeable, biome)
   // 破布得挂在真的树上，所以树列表要从 buildDeadTrees 带出来。
-  buildTreeRags(root, level, bag, gradientMap, rng, trees)
+  buildTreeRags(natureRoot, level, bag, gradientMap, rng, trees)
   buildFogWalls(root, level, bag, rng, density)
   buildSearchSpots(root, level, bag, gradientMap)
 
   let time = 0
   return {
     root,
+    setNatureVisible(visible: boolean): void {
+      natureRoot.visible = visible
+    },
     update(dt: number): void {
       // 夹住 dt：切后台回来时 dt 可能是好几秒，草会瞬间抽一下。
       time += Math.min(Math.max(dt, 0), 0.1)
@@ -1167,7 +1182,7 @@ function makeFogTexture(fogColor: number): CanvasTexture {
 
 // ------------------------------------------------------------------ 分群系装饰
 
-type Biome = 'swamp' | 'farm' | 'church' | 'quarry' | 'station'
+type Biome = 'swamp' | 'farm' | 'church' | 'quarry' | 'station' | 'forest'
 
 /**
  * 从关卡读生物群系。字段可选（老关卡没有），缺省按沼泽处理 —— 沼泽是已经调
@@ -1175,7 +1190,7 @@ type Biome = 'swamp' | 'farm' | 'church' | 'quarry' | 'station'
  */
 function biomeOf(level: LevelDef): Biome {
   const raw = (level as { biome?: string }).biome
-  return raw === 'farm' || raw === 'church' || raw === 'quarry' || raw === 'station' ? raw : 'swamp'
+  return raw === 'farm' || raw === 'church' || raw === 'quarry' || raw === 'station' || raw === 'forest' ? raw : 'swamp'
 }
 
 interface PropSpec {
@@ -1288,6 +1303,43 @@ function specsFor(biome: Biome, level: LevelDef): PropSpec[] {
           count: Math.round(20 * big), scaleMin: 0.8, scaleMax: 1.6, sink: 0.1, ink: 1.1,
         },
       ]
+    case 'forest':
+      return [
+        {
+          // 倒枝：一根主干 + 两根分叉。松林里最便宜的"地面信息"。
+          geo: assemble([
+            paint(new CylinderGeometry(0.08, 0.12, 2.2, 5).rotateZ(Math.PI / 2 - 0.12).translate(0, 0.11, 0), 0x4a3826),
+            paint(new CylinderGeometry(0.05, 0.07, 0.9, 4).rotateZ(1.1).translate(0.55, 0.28, 0.1), 0x52402c),
+            paint(new CylinderGeometry(0.04, 0.06, 0.7, 4).rotateZ(-1.0).translate(-0.6, 0.24, -0.12), 0x453321),
+          ]),
+          count: Math.round(34 * big), scaleMin: 0.7, scaleMax: 1.4, sink: 0.06, ink: 1.1, tilt: 0.3,
+        },
+        {
+          // 蕨丛：六片斜向上的锥叶，中间一撮更暗的芯。
+          geo: assemble([
+            ...Array.from({ length: 6 }, (_, i) => {
+              const a = (i / 6) * Math.PI * 2
+              return paint(
+                new ConeGeometry(0.16, 0.85, 4)
+                  .rotateZ(Math.PI / 2 - 0.55)
+                  .rotateY(a)
+                  .translate(Math.cos(a) * 0.34, 0.34, Math.sin(a) * 0.34),
+                0x3c5228,
+              )
+            }),
+            paint(new SphereGeometry(0.2, 6, 4).scale(1, 0.7, 1).translate(0, 0.22, 0), 0x2c3c1d),
+          ]),
+          count: Math.round(70 * big), scaleMin: 0.8, scaleMax: 1.5, sink: 0.04, ink: 1.0, tilt: 0.2,
+        },
+        {
+          // 苔石：比采石场小、比教堂圆，埋在落叶层里只露半截。
+          geo: assemble([
+            paint(new DodecahedronGeometry(0.5, 0).scale(1.2, 0.55, 1).translate(0, 0.24, 0), 0x565a4c),
+            paint(new DodecahedronGeometry(0.3, 0).scale(1, 0.5, 1).translate(0.38, 0.16, 0.2), 0x4b4f43),
+          ]),
+          count: Math.round(26 * big), scaleMin: 0.7, scaleMax: 1.4, sink: 0.12, ink: 1.1,
+        },
+      ]
     default:
       return []
   }
@@ -1367,7 +1419,21 @@ function narrativeSpec(biome: Biome): PropSpec {
     case 'station':
       // 墓园墙边与站台上都该有一条能坐的长椅、一盏还挂着的灯。
       return { geo: benchLanternGeometry(), count: 4, scaleMin: 0.9, scaleMax: 1.1, sink: 0.03, ink: 1.0 }
+    case 'forest':
+      // 砍到一半的树桩 + 插在里面的斧头：伐木队"刚走"的唯一证据。
+      return { geo: axeStumpGeometry(), count: 4, scaleMin: 0.9, scaleMax: 1.2, sink: 0.06, ink: 1.1 }
   }
+}
+
+/** 斧头桩：树桩 + 斧柄 + 斧刃 + 脚边木屑。 */
+function axeStumpGeometry(): BufferGeometry {
+  return assemble([
+    paint(new CylinderGeometry(0.32, 0.42, 0.6, 7).translate(0, 0.3, 0), 0x4a3524),
+    paint(new CylinderGeometry(0.32, 0.32, 0.05, 7).translate(0, 0.62, 0), 0x8a7048),
+    paint(new BoxGeometry(0.06, 0.9, 0.06).rotateZ(0.42).translate(0.2, 0.96, 0), 0x6b4a2e),
+    paint(new BoxGeometry(0.28, 0.18, 0.05).rotateZ(0.42).translate(0.38, 1.32, 0), 0x8d9196),
+    paint(new BoxGeometry(0.22, 0.03, 0.12).translate(-0.3, 0.02, 0.2), 0x9a8256),
+  ])
 }
 
 /**

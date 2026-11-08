@@ -593,6 +593,14 @@
 }
 
 /* 水道：横向水道 + 半沉的钟 */
+.dk-map__art[data-art='forest'] {
+  background:
+    repeating-linear-gradient(96deg, rgba(12, 11, 10, 0.88) 0 5px, transparent 5px 22px),
+    radial-gradient(circle at 34% 68%, rgba(217, 154, 74, 0.38) 0 4px, transparent 12px),
+    radial-gradient(circle at 70% 40%, rgba(140, 168, 120, 0.16) 0 3px, transparent 10px),
+    linear-gradient(to bottom, #17211d, #101713 58%, #070a08);
+}
+
 .dk-map__art[data-art='canal'] {
   background:
     radial-gradient(circle at 68% 38%, rgba(217, 154, 74, 0.34) 0 5px, transparent 6px),

@@ -153,6 +153,17 @@ export const COYOTE_TIME = 0.09
 export const JUMP_BUFFER = 0.13
 export const JUMP_COOLDOWN = 0.28
 
+/** 滑铲：冲刺中按下蹲触发。数值来自源码 tuning.js 的 slide 表。 */
+export const SLIDE_ENTRY_SPEED = 8.84
+export const SLIDE_MIN_ENTRY = 6.2
+export const SLIDE_EXIT_SPEED = 2.95
+export const SLIDE_DURATION = 0.9
+export const SLIDE_DRAG = 0.75
+export const SLIDE_BRAKE = 0.85
+export const SLIDE_COOLDOWN = 0.55
+export const SLIDE_MIN_SPEED_TO_START = 5.2
+export const SLIDE_STEER = 2.6
+
 /** 最大生命值。两枪躯干或一枪头致死 —— 猎杀类的核心节奏。 */
 export const MAX_HEALTH = 150
 
@@ -250,6 +261,8 @@ export const StateFlags = {
   Reloading: 1 << 4,
   /** 切枪动作还没做完：枪还没举好，开火与换弹都会被服务端拒绝。 */
   Switching: 1 << 5,
+  /** 滑铲中：客户端用它做镜头滚转与枪模压低。 */
+  Sliding: 1 << 6,
 } as const
 
 // ---------------------------------------------------------------- 搜刮

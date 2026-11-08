@@ -166,10 +166,18 @@ const MAX_RINGS = 16
 const MAX_ANCHORS = 8
 /** 血巢周围的骨桩数量（3 根线索桩 + 5 根骨桩 = 实例上限 8）。 */
 const SPIKE_COUNT = 5
-/** 火星/烟气槽位：前 EMBER_SLOTS 个固定属于血巢，后面固定属于撤离点（两类可以同时可见）。 */
+/**
+ * 粒子槽位：
+ *   [0, EMBER_SLOTS)                          血巢火星
+ *   [EMBER_SLOTS, EMBER_SLOTS+SMOKE_SLOTS)    撤离点烟气
+ *   [.., +CLUE_SLOTS)                         线索余烬
+ * 三类可以同时可见，所以槽位固定、不共用。
+ */
 const EMBER_SLOTS = 64
 const SMOKE_SLOTS = 32
-const MAX_PARTICLES = EMBER_SLOTS + SMOKE_SLOTS
+const CLUE_SLOTS = 140
+const CLUE_SLOT_BASE = EMBER_SLOTS + SMOKE_SLOTS
+const MAX_PARTICLES = CLUE_SLOT_BASE + CLUE_SLOTS
 
 /** 墨线宽度（CSS 像素）。比主场景的 2.6 细：这些杆子只有几厘米粗。 */
 const ANCHOR_INK_PIXELS = 1.4
@@ -640,28 +648,45 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
   root.add(particles)
   keep(particles)
 
-  // 逐槽位的静态属性：槽位一旦定下角色（火星 / 烟气）就不再变，逐帧只改矩阵。
-  // 前 EMBER_SLOTS 个槽永远属于血巢火星，后面永远属于撤离点烟气 —— 两者可以同时
-  // 可见（血巢已揭示 + 自己站在撤离点里），不能共用槽位。
+  // 逐槽位的静态属性：槽位一旦定下角色（线索余烬 / 火星 / 烟气）就不再变，
+  // 逐帧只改矩阵与尺寸。
+  const clueAngle = new Float32Array(CLUE_SLOTS)
+  const clueRadius = new Float32Array(CLUE_SLOTS)
   for (let i = 0; i < MAX_PARTICLES; i++) {
-    const ember = i < EMBER_SLOTS
+    const clue = i >= CLUE_SLOT_BASE
+    const ember = !clue && i < EMBER_SLOTS
     const r = seedOf(i * 1.7 + 0.31, i * 0.9 + 2.7)
     const r2 = seedOf(i * 0.37 + 5.1, i * 2.3 + 0.7)
     partPhaseAttr.array[i] = r
-    partSpeedAttr.array[i] = ember ? 0.22 + r * 0.26 : 0.055 + r * 0.05
-    partRiseAttr.array[i] = ember ? 4.5 + r2 * 4.0 : 7.0 + r2 * 5.0
-    partSizeAttr.array[i] = ember ? 0.16 + r2 * 0.14 : 1.5 + r2 * 1.1
-    partAlphaAttr.array[i] = ember ? 0.85 : 0.22
-    if (ember) {
-      // 血巢火星：焦橙到血红之间随机，越亮越像被风抽起来的余烬。
-      const mix = r2
-      partTintAttr.array[i * 3] = hotCol.r * (0.55 + mix * 0.8)
-      partTintAttr.array[i * 3 + 1] = hotCol.g * (0.30 + mix * 0.7) + darkCol.g * (1 - mix) * 0.6
-      partTintAttr.array[i * 3 + 2] = hotCol.b * (0.20 + mix * 0.5) + darkCol.b * (1 - mix)
+    if (clue) {
+      const k = i - CLUE_SLOT_BASE
+      // 前 24 颗是贴地的大颗粒余烬，其余是上升的细火星。
+      const ground = k < 24
+      clueAngle[k] = r * Math.PI * 2
+      clueRadius[k] = (ground ? 0.25 + r2 * 0.9 : 0.2 + r2 * 0.7) * 1.1
+      partSpeedAttr.array[i] = ground ? 0.035 + r2 * 0.02 : 0.10 + r * 0.10
+      partRiseAttr.array[i] = ground ? 0.35 + r2 * 0.35 : 2.4 + r2 * 2.6
+      partSizeAttr.array[i] = ground ? 0.16 + r2 * 0.10 : 0.055 + r2 * 0.05
+      partAlphaAttr.array[i] = ground ? 0.45 : 0.8
+      partTintAttr.array[i * 3] = clueCol.r * (0.7 + r2 * 0.7)
+      partTintAttr.array[i * 3 + 1] = clueCol.g * (0.7 + r2 * 0.6)
+      partTintAttr.array[i * 3 + 2] = clueCol.b * (0.7 + r2 * 0.5)
     } else {
-      partTintAttr.array[i * 3] = extractCol.r
-      partTintAttr.array[i * 3 + 1] = extractCol.g
-      partTintAttr.array[i * 3 + 2] = extractCol.b
+      partSpeedAttr.array[i] = ember ? 0.22 + r * 0.26 : 0.055 + r * 0.05
+      partRiseAttr.array[i] = ember ? 4.5 + r2 * 4.0 : 7.0 + r2 * 5.0
+      partSizeAttr.array[i] = ember ? 0.16 + r2 * 0.14 : 1.5 + r2 * 1.1
+      partAlphaAttr.array[i] = ember ? 0.85 : 0.22
+      if (ember) {
+        // 血巢火星：焦橙到血红之间随机，越亮越像被风抽起来的余烬。
+        const mix = r2
+        partTintAttr.array[i * 3] = hotCol.r * (0.55 + mix * 0.8)
+        partTintAttr.array[i * 3 + 1] = hotCol.g * (0.30 + mix * 0.7) + darkCol.g * (1 - mix) * 0.6
+        partTintAttr.array[i * 3 + 2] = hotCol.b * (0.20 + mix * 0.5) + darkCol.b * (1 - mix)
+      } else {
+        partTintAttr.array[i * 3] = extractCol.r
+        partTintAttr.array[i * 3 + 1] = extractCol.g
+        partTintAttr.array[i * 3 + 2] = extractCol.b
+      }
     }
   }
   partPhaseAttr.needsUpdate = true
@@ -769,6 +794,11 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
   /** 本帧活动的火星/烟气槽位数（0..EMBER_SLOTS / 0..SMOKE_SLOTS）。 */
   let emberOn = 0
   let smokeOn = 0
+  let clueOn = 0
+  let clueX = 0
+  let clueZ = 0
+  let clueNear = 0
+  let clueProgress = 0
   /** 上一帧火星是否是亮的：用于"变暗那一帧"把 64 个槽位清零一次，之后不再空转。 */
   let emberLit = false
   /** 火星围绕血巢、烟气围绕撤离点的水平偏移（构造时算一次，永不重算）。 */
@@ -838,6 +868,7 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
     let nAnchor = 0
     emberOn = 0
     smokeOn = 0
+    clueOn = 0
 
     // ---- 线索：常驻可见（found 的除外） ----
     for (let i = 0; i < view.clues.length; i++) {
@@ -849,54 +880,12 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
       const active = i === view.activeClue
       const progress = active ? clamp01(view.clueProgress) : 1
 
-      if (nBeam < MAX_BEAMS) {
-        const index = nBeam++
-        const width = CLUE_BEAM_WIDTH * (1 - 0.42 * near)
-        _pos.set(clue.x, groundY, clue.z)
-        _scl.set(width, CLUE_BEAM_HEIGHT, width)
-        _m4.compose(_pos, _unit, _scl)
-        beams.setMatrixAt(index, _m4)
-        beamAlphaArr[index] = 0.5 + 0.85 * near
-        // 正在读的那条：亮度按进度从底往上灌；其余恒为满柱。
-        beamFillArr[index] = progress
-        beamSeedArr[index] = seedOf(clue.x, clue.z)
-        const gain = 1 + 0.35 * near
-        beamTintArr[index * 3] = clueCol.r * gain
-        beamTintArr[index * 3 + 1] = clueCol.g * gain
-        beamTintArr[index * 3 + 2] = clueCol.b * gain
-      }
-
-      // 立足环：把 3.2m 的交互半径画出来，凑近就亮。
-      if (nRing < MAX_RINGS) {
-        const index = nRing++
-        _pos.set(clue.x, groundY + 0.04, clue.z)
-        _scl.set(CLUE_RADIUS, 1, CLUE_RADIUS)
-        _m4.compose(_pos, _unit, _scl)
-        rings.setMatrixAt(index, _m4)
-        ringAlphaArr[index] = 0.09 + 0.32 * near + (active ? 0.12 : 0)
-        ringSpinArr[index] = 0
-        ringDashArr[index] = 0
-        ringPhaseArr[index] = 0.5
-        ringTintArr[index * 3] = clueCol.r
-        ringTintArr[index * 3 + 1] = clueCol.g
-        ringTintArr[index * 3 + 2] = clueCol.b
-      }
-
-      // 读取中的收束环：随进度从交互半径一路收缩到中心。
-      if (active && progress > 0.02 && nRing < MAX_RINGS) {
-        const index = nRing++
-        const radius = CLUE_RADIUS * (1 - 0.82 * progress)
-        _pos.set(clue.x, groundY + 0.06, clue.z)
-        _scl.set(radius, 1, radius)
-        _m4.compose(_pos, _unit, _scl)
-        rings.setMatrixAt(index, _m4)
-        ringAlphaArr[index] = 0.25 + 0.6 * progress
-        ringSpinArr[index] = 1.4
-        ringDashArr[index] = 16
-        ringPhaseArr[index] = seedOf(clue.x, clue.z)
-        ringTintArr[index * 3] = clueCol.r * 1.2
-        ringTintArr[index * 3 + 1] = clueCol.g * 1.2
-        ringTintArr[index * 3 + 2] = clueCol.b * 1.2
+      if (active) {
+        clueX = clue.x
+        clueZ = clue.z
+        clueNear = near
+        clueProgress = progress
+        clueOn = CLUE_SLOTS
       }
 
       // 线索桩：一根歪插在泥里的旧木板。细到剪影上明显不能当掩体。
@@ -910,6 +899,24 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
         _m4.compose(_pos, _quat, _scl)
         anchors.setMatrixAt(index, _m4)
       }
+    }
+
+    // ---- 线索余烬：当前线索周围的一柱上升火星 + 贴地余烬 ----
+    // 旧版是光柱 + 两圈环，远看像廉价的任务光圈；这里换成只由粒子组成的
+    // 呼吸感：贴地大颗粒负责"这里有东西"，上升细火星负责方向与高度。
+    if (clueOn > 0) {
+      for (let k = 0; k < CLUE_SLOTS; k++) {
+        const slot = CLUE_SLOT_BASE + k
+        const angle = clueAngle[k] + time * (0.22 + (k % 9) * 0.015)
+        const radius = clueRadius[k] * (1 - 0.22 * clueProgress)
+        _pos.set(clueX + Math.cos(angle) * radius, groundY, clueZ + Math.sin(angle) * radius)
+        _m4.makeTranslation(_pos.x, _pos.y, _pos.z)
+        particles.setMatrixAt(slot, _m4)
+        partSizeArr[slot] =
+          partBaseSize[slot] * (0.55 + 0.45 * clueNear) * (0.7 + 0.6 * clueProgress)
+      }
+    } else {
+      for (let k = 0; k < CLUE_SLOTS; k++) partSizeArr[CLUE_SLOT_BASE + k] = 0
     }
 
     // ---- 血巢：未揭示时一个实例都不写 ----
@@ -1090,7 +1097,14 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
 
     // 槽位是连续的：火星占 [0, EMBER_SLOTS)，烟气紧接着。count 只要覆盖到最后
     // 一个活动槽位即可，退化（尺寸 0）的中间槽位不产生任何像素。
-    particles.count = smokeOn > 0 ? EMBER_SLOTS + smokeOn : emberOn > 0 ? EMBER_SLOTS : 0
+    particles.count =
+      clueOn > 0
+        ? MAX_PARTICLES
+        : smokeOn > 0
+          ? EMBER_SLOTS + smokeOn
+          : emberOn > 0
+            ? EMBER_SLOTS
+            : 0
     particles.visible = particles.count > 0
     if (particles.count > 0) particles.instanceMatrix.needsUpdate = true
     partAlphaAttr.needsUpdate = true
@@ -1110,7 +1124,7 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
     // 整根 root 的开关：血巢未揭示、撤离线不在里面、也没有赏金光 —— 这时场景里
     // **一个可见物都不该有**。把 root.visible 一起关掉，渲染器连遍历这六个孩子
     // 的可见性判断都省了；它也是"隐藏靠 visible、不靠移除节点"这条规则的终点。
-    root.visible = nBeam > 0 || nRing > 0 || anchors.visible || glow.visible || particles.visible
+    root.visible = nBeam > 0 || nRing > 0 || clueOn > 0 || anchors.visible || glow.visible || particles.visible
   }
 
   return {

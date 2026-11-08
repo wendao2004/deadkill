@@ -1,0 +1,326 @@
+{
+  "generated": "2026-11-08T00:18:37.442Z",
+  "assets": {
+    "pine_a": {
+      "file": "pine_a.glb",
+      "tags": [
+        "tree"
+      ],
+      "triangles": 156,
+      "materials": [
+        "bark",
+        "needle"
+      ],
+      "bytes": 23268,
+      "bounds": {
+        "min": [
+          -2.228,
+          0,
+          -2.163
+        ],
+        "max": [
+          2.228,
+          8.446,
+          2.037
+        ]
+      },
+      "size": [
+        4.456,
+        8.446,
+        4.201
+      ]
+    },
+    "pine_b": {
+      "file": "pine_b.glb",
+      "tags": [
+        "tree"
+      ],
+      "triangles": 142,
+      "materials": [
+        "bark",
+        "needle"
+      ],
+      "bytes": 21424,
+      "bounds": {
+        "min": [
+          -1.703,
+          0,
+          -1.921
+        ],
+        "max": [
+          1.719,
+          6.798,
+          1.752
+        ]
+      },
+      "size": [
+        3.422,
+        6.798,
+        3.673
+      ]
+    },
+    "pine_dead": {
+      "file": "pine_dead.glb",
+      "tags": [
+        "tree",
+        "dead"
+      ],
+      "triangles": 176,
+      "materials": [
+        "bark"
+      ],
+      "bytes": 24684,
+      "bounds": {
+        "min": [
+          -1.795,
+          0,
+          -2.448
+        ],
+        "max": [
+          1.572,
+          7.019,
+          1.552
+        ]
+      },
+      "size": [
+        3.367,
+        7.019,
+        4
+      ]
+    },
+    "grass_clump": {
+      "file": "grass_clump.glb",
+      "tags": [
+        "grass"
+      ],
+      "triangles": 9,
+      "materials": [
+        "needle"
+      ],
+      "bytes": 2672,
+      "bounds": {
+        "min": [
+          -0.287,
+          0,
+          -0.349
+        ],
+        "max": [
+          0.277,
+          0.579,
+          0.32
+        ]
+      },
+      "size": [
+        0.564,
+        0.579,
+        0.669
+      ]
+    },
+    "log_cabin_a": {
+      "file": "log_cabin_a.glb",
+      "tags": [
+        "building"
+      ],
+      "triangles": 926,
+      "materials": [
+        "stone",
+        "timber",
+        "iron"
+      ],
+      "bytes": 125840,
+      "bounds": {
+        "min": [
+          -3.401,
+          0,
+          -2.75
+        ],
+        "max": [
+          3.401,
+          5.368,
+          2.75
+        ]
+      },
+      "size": [
+        6.802,
+        5.368,
+        5.5
+      ]
+    },
+    "sawmill_a": {
+      "file": "sawmill_a.glb",
+      "tags": [
+        "building"
+      ],
+      "triangles": 468,
+      "materials": [
+        "stone",
+        "timber",
+        "iron"
+      ],
+      "bytes": 65356,
+      "bounds": {
+        "min": [
+          -4.6,
+          0,
+          -3.689
+        ],
+        "max": [
+          4.6,
+          4.189,
+          3.689
+        ]
+      },
+      "size": [
+        9.2,
+        4.189,
+        7.377
+      ]
+    },
+    "log_pile": {
+      "file": "log_pile.glb",
+      "tags": [
+        "prop"
+      ],
+      "triangles": 288,
+      "materials": [
+        "timber"
+      ],
+      "bytes": 39544,
+      "bounds": {
+        "min": [
+          -1.25,
+          0,
+          -1.673
+        ],
+        "max": [
+          1.25,
+          1.32,
+          1.663
+        ]
+      },
+      "size": [
+        2.5,
+        1.32,
+        3.336
+      ]
+    },
+    "stump": {
+      "file": "stump.glb",
+      "tags": [
+        "prop"
+      ],
+      "triangles": 120,
+      "materials": [
+        "bark",
+        "timber"
+      ],
+      "bytes": 18588,
+      "bounds": {
+        "min": [
+          -0.83,
+          0,
+          -0.656
+        ],
+        "max": [
+          0.786,
+          0.894,
+          0.912
+        ]
+      },
+      "size": [
+        1.616,
+        0.894,
+        1.569
+      ]
+    },
+    "rock_a": {
+      "file": "rock_a.glb",
+      "tags": [
+        "prop"
+      ],
+      "triangles": 20,
+      "materials": [
+        "stone"
+      ],
+      "bytes": 4224,
+      "bounds": {
+        "min": [
+          -1.135,
+          0,
+          -1.086
+        ],
+        "max": [
+          1.155,
+          1.64,
+          1.09
+        ]
+      },
+      "size": [
+        2.29,
+        1.64,
+        2.176
+      ]
+    },
+    "lantern_post": {
+      "file": "lantern_post.glb",
+      "tags": [
+        "prop",
+        "light"
+      ],
+      "triangles": 80,
+      "materials": [
+        "iron",
+        "glow"
+      ],
+      "bytes": 13228,
+      "bounds": {
+        "min": [
+          -0.087,
+          0,
+          -0.156
+        ],
+        "max": [
+          0.716,
+          2.7,
+          0.156
+        ]
+      },
+      "size": [
+        0.802,
+        2.7,
+        0.311
+      ]
+    },
+    "bonfire": {
+      "file": "bonfire.glb",
+      "tags": [
+        "prop",
+        "light"
+      ],
+      "triangles": 312,
+      "materials": [
+        "stone",
+        "timber",
+        "ember"
+      ],
+      "bytes": 45524,
+      "bounds": {
+        "min": [
+          -1.057,
+          0,
+          -1.062
+        ],
+        "max": [
+          1.057,
+          1.485,
+          1.038
+        ]
+      },
+      "size": [
+        2.114,
+        1.485,
+        2.101
+      ]
+    }
+  }
+}

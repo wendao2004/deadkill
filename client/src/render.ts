@@ -32,6 +32,7 @@ import {
   AmbientLight,
   BackSide,
   BoxGeometry,
+  BufferAttribute,
   BufferGeometry,
   Color,
   DataTexture,
@@ -77,6 +78,10 @@ import { probeGpu, type GpuInfo } from './gpu.ts'
 import { createHunterMaterials, createHunterModel, type HunterMaterials, type HunterModel } from './hunter.ts'
 import { createHunterTextures, type HunterTextures } from './baked-textures.ts'
 import { createSurfaceMaps, loadSurfaceTextures, type SurfaceFamily, type SurfaceMaps } from './pbr-textures.ts'
+import { loadNatureAssets as loadNatureModels, scatterNature } from './nature-assets.ts'
+import { decorateVillage, loadVillageAssets } from './village-assets.ts'
+import { loadGeneratedAssets } from './generated-assets.ts'
+import { decoratePineCamp } from './forest-scene.ts'
 import type { GraphicsQuality } from './settings.ts'
 import { buildProps, type Props } from './props.ts'
 import { createMonsterRenderer, type MonsterRenderer, type MonsterView } from './monsters.ts'
@@ -91,6 +96,7 @@ import { CAMERA_FEEL, Spring, angleDelta, approach, clamp, clamp01, hashNoise } 
 import {
   BODY_CACHE_TTL_MS,
   DEFAULT_WEAPON_ID,
+  buildTerrainGrid,
   SCOPE_MIN_ZOOM,
   WEAPONS,
   StateFlags,
@@ -367,8 +373,12 @@ function applyPbrRim(material: MeshStandardMaterial, strength: number, detailFam
 function applyBoxProjection(geo: BufferGeometry, tileMeters: number): void {
   const pos = geo.getAttribute('position')
   const nor = geo.getAttribute('normal')
-  const uv = geo.getAttribute('uv')
-  if (!pos || !nor || !uv) return
+  if (!pos || !nor) return
+  let uv = geo.getAttribute('uv')
+  if (!uv) {
+    uv = new BufferAttribute(new Float32Array(pos.count * 2), 2)
+    geo.setAttribute('uv', uv)
+  }
   const inv = 1 / Math.max(0.05, tileMeters)
   for (let i = 0; i < pos.count; i++) {
     const nx = Math.abs(nor.getX(i))
@@ -537,6 +547,14 @@ export class Renderer {
   private readonly hunterMaterials: HunterMaterials
   /** 非碰撞装饰（水、芦苇、栅栏、雾墙）。纯视觉，不参与任何判定。 */
   private readonly props: Props
+  /** 关卡数据：自然资产散布要按树冠盒子定位。 */
+  private readonly level: LevelDef
+  /** 程序化树冠的独立网格：GLTF 树加载成功后隐藏它。 */
+  private canopyMesh: Mesh | null = null
+  /** GLTF 自然资产根节点（纯视觉）。 */
+  private natureGroup: Group | null = null
+  /** 模块化建筑视觉外壳（屋顶/门框/道具）。 */
+  private villageGroup: Group | null = null
   private readonly atmo: Atmosphere
   /** 从天空球烘出来的 IBL；PBR 材质靠它拿到方向性环境反射。 */
   private readonly environment: EnvironmentProbe
@@ -604,6 +622,7 @@ export class Renderer {
   private trauma = 0
   private strafeRoll = 0
   private turnRoll = 0
+  private slideRoll = 0
   private prevYaw = 0
   private yawSampleReady = false
   private fovMove = 1
@@ -625,6 +644,7 @@ export class Renderer {
   private boilScale = 1
 
   constructor(container: HTMLElement, level: LevelDef) {
+    this.level = level
     this.gradientMap = makeGradientMap()
     this.disposables.push(this.gradientMap)
     this.surfaceMaps = createSurfaceMaps()
@@ -997,6 +1017,74 @@ export class Renderer {
   }
 
   /**
+   * 加载并散布 CC0 自然资产（枯树/草/岩石/枯枝/树桩）。
+   *
+   * 纯视觉，不生成碰撞体：树干/树冠的判定仍然来自 level.boxes。加载成功后
+   * 隐藏程序化芦苇/枯树与树冠棱球；加载失败时保持程序化版本，场景不会空。
+   */
+  async loadNature(): Promise<void> {
+    // 松林营地用 generated-assets 那套程序化 GLB，两套植被同时开会叠成双层草。
+    if (this.level.biome === 'forest') return
+    try {
+      const assets = await loadNatureModels()
+      const density = this.gpu.integrated || this.gpu.software ? 0.45 : 1.25
+      const group = new Group()
+      group.name = 'nature-assets'
+      scatterNature(group, this.level, assets, density)
+      this.scene.add(group)
+      this.natureGroup = group
+      // 只有关键资产都成功时才隐藏回退，避免"树加载失败但树冠也隐藏了"。
+      if (assets.deadTree && assets.grass) {
+        this.props.setNatureVisible(false)
+        if (this.canopyMesh) this.canopyMesh.visible = false
+      }
+    } catch (error) {
+      console.warn('[nature] 自然资产加载失败，保留程序化植被', error)
+    }
+  }
+
+  /**
+   * 加载并摆放 CC0 中世纪村庄模块化建筑外壳（屋顶/门框/阳台/烟囱/马车）。
+   *
+   * 只是视觉：碰撞仍然是 level.boxes 的平屋顶盒子。加载失败就保留原盒刷，
+   * 不会因为一个 404 把整局挡在加载页。
+   */
+  async loadVillage(): Promise<void> {
+    try {
+      const { assets, materials } = await loadVillageAssets()
+      const group = new Group()
+      group.name = 'village-shells'
+      decorateVillage(group, this.level, assets, materials)
+      this.scene.add(group)
+      this.villageGroup = group
+    } catch (error) {
+      console.warn('[village] 建筑外壳加载失败，保留盒刷外观', error)
+    }
+  }
+
+  /**
+   * 加载程序化 GLB 资产，并铺到松林营地。
+   *
+   * 和其它视觉壳一样是"锦上添花"：没有 heroes 锚点的地图、或者资产全部
+   * 加载失败，都只是回到盒刷外观，不挡进局。
+   */
+  async loadGenerated(): Promise<void> {
+    if (!this.level.heroes || this.level.heroes.length === 0) return
+    try {
+      const assets = await loadGeneratedAssets()
+      const ok = decoratePineCamp(this.scene, this.level, assets)
+      if (ok) {
+        // 树干盒子的外观已经被模型包住；树冠棱球必须关掉，否则会出现
+        // "方块绿球 + 真松树"叠在一起。
+        if (this.canopyMesh) this.canopyMesh.visible = false
+        if (this.natureGroup) this.natureGroup.visible = false
+      }
+    } catch (error) {
+      console.warn('[generated] 程序化资产加载失败，保留盒刷外观', error)
+    }
+  }
+
+  /**
    * 进局前预编译着色器。
    *
    * 不预编译时，第一帧看到新材质/第一枪打出新效果会在主线程同步编译
@@ -1268,11 +1356,17 @@ export class Renderer {
 
   private buildLevel(level: LevelDef): void {
 
-    const groundGeo = new BoxGeometry(level.boundsHalf * 2, 1, level.boundsHalf * 2)
+    // 地面：与物理共用同一份高度网格（shared/terrain.ts）。建筑/出生点/
+    // 标记点/水边被压平，只有野地起伏。
+    const terrain = buildTerrainGrid(level)
+    const groundGeo = new BufferGeometry()
+    groundGeo.setAttribute('position', new BufferAttribute(terrain.vertices, 3))
+    groundGeo.setIndex(new BufferAttribute(terrain.indices, 1))
+    groundGeo.computeVertexNormals()
     // 地面**完全不给排线**（hatch: 0）。
     //
     // 排线在漫画里是用来交代"这块形体转进暗面了"的，它必须依附于一个面的大小。
-    // 地面是 80×80 米的无限平面，任何间距规律地铺上去都会读成地板革/菱格纹，
+    // 地面是 260×260 米的起伏网格，任何间距规律地铺上去都会读成地板革/菱格纹，
     // 而不是阴影 —— 远看尤其假。地面的暗靠色阶本身（4 级 toon 的最低一级）就够了。
     const palette = GROUND_PALETTE[level.groundMaterial ?? 'mud'] ?? GROUND_PALETTE.mud!
     const groundFamily = surfaceFamily(palette.surface)
@@ -1287,7 +1381,7 @@ export class Renderer {
         })
     if (this.realistic) applyBoxProjection(groundGeo, this.surfaceMaps[groundFamily].tileMeters)
     const ground = new Mesh(groundGeo, groundMat)
-    ground.position.set(0, level.groundY - 0.5 - 0.01, 0)
+    ground.position.set(0, 0, 0)
     // 地面只接收阴影，不投：它本身是最大的一块遮挡体，投进阴影图只会
     // 把整张 shadow map 的深度占满，还挡住所有真正该投射的物体。
     ground.receiveShadow = true
@@ -1303,7 +1397,11 @@ export class Renderer {
     // 合批后每种材质只剩 3 个对象，代价是丢掉逐盒的视锥剔除（整张图 11k 三角
     // 全画），换来两个数量级的 draw call 下降，这笔账在任何 GPU 上都划算。
     const buckets = new Map<string, BufferGeometry[]>()
+    // 树冠单独收集：GLTF 树加载成功后整块隐藏，避免"绿球 + 真树"重叠。
+    const canopyGeos: BufferGeometry[] = []
     for (const brush of level.boxes) {
+      // noRender：只给碰撞/判定用的隐形骨架（GLB 建筑的墙、立柱）。
+      if (brush.noRender) continue
       const matKey = brush.material ?? 'wood'
       let list = buckets.get(matKey)
       if (!list) {
@@ -1316,7 +1414,7 @@ export class Renderer {
       if (isCanopy(brush)) {
         const geo = canopyGeometry(brush)
         if (this.realistic) applyBoxProjection(geo, tile)
-        list.push(geo)
+        canopyGeos.push(geo)
         continue
       }
       const geo = new BoxGeometry(brush.hx * 2, brush.hy * 2, brush.hz * 2)
@@ -1326,7 +1424,34 @@ export class Renderer {
       list.push(geo)
     }
 
+    if (canopyGeos.length > 0) {
+      const merged = mergeGeometries(canopyGeos, false)
+      for (const geo of canopyGeos) geo.dispose()
+      if (merged) {
+        const spec = MATERIALS.foliage ?? MATERIALS.wood!
+        const tint = MATERIAL_TINT.foliage ?? MATERIAL_TINT.wood!
+        const material: Material = this.realistic
+          ? this.pbrSurfaceMaterial(spec.color, spec.surface, tint.tint, tint.amount)
+          : this.toonMaterial(spec.color, {
+              tint: tint.tint,
+              tintAmount: tint.amount,
+              surface: spec.surface,
+              specular: spec.specular,
+              rim: spec.rim,
+            })
+        const mesh = new Mesh(merged, material)
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+        this.levelGroup.add(mesh)
+        this.canopyMesh = mesh
+        this.disposables.push(merged)
+      }
+    }
+
     for (const [matKey, list] of buckets) {
+      // 空桶必须跳过：树冠被单独收走之后，foliage 桶可能一个盒子都没有，
+      // mergeGeometries([]) 会在 geometries[0].index 上直接抛。
+      if (list.length === 0) continue
       // 合并前每个盒子都带全套 position/normal/uv，属性一致才能合并；
       // 一旦以后给某个盒子加了自定义属性，这里会返回 null，宁可跳过也别抛。
       const merged = mergeGeometries(list, false)
@@ -1387,6 +1512,7 @@ export class Renderer {
     vy: number,
     sprinting: boolean,
     airborne: boolean,
+    sliding: boolean,
     reloading: boolean,
     reloadProgress: number,
     weaponId: number,
@@ -1409,11 +1535,13 @@ export class Renderer {
 
     // 速度 FOV：冲刺/坠落时视野轻微拉开，静止时回 1。ADS 必须比它更硬，
     // 否则开镜途中冲刺会让准星在屏幕上"呼吸"。
-    const moveTarget = sprinting
-      ? CAMERA_FEEL.fov.sprint
-      : airborne && vy < -6
-        ? CAMERA_FEEL.fov.air
-        : 1
+    const moveTarget = sliding
+      ? 1.085
+      : sprinting
+        ? CAMERA_FEEL.fov.sprint
+        : airborne && vy < -6
+          ? CAMERA_FEEL.fov.air
+          : 1
     this.fovMove = approach(this.fovMove, moveTarget, CAMERA_FEEL.fov.moveTau, dt)
 
     // 带镜的枪在常规 ADS 收束之上再除一次倍数；不带镜时 adsZoom = 1，
@@ -1529,6 +1657,8 @@ export class Renderer {
     ) * (1 - 0.5 * this.adsBlend)
     this.turnRoll = approach(this.turnRoll, turnTarget, CAMERA_FEEL.roll.tau * 1.4, dt)
     const airRoll = airborne ? clamp(-vy * 0.02, -1, 1) * CAMERA_FEEL.roll.air : 0
+    // 滑铲滚转：向左前方压枪的视觉倾斜，不改变射线。
+    this.slideRoll = approach(this.slideRoll, sliding ? -5.2 * (Math.PI / 180) : 0, 0.1, dt)
 
     // ---- trauma：爆炸/重击/落地共用的噪声抖动 ----
     this.trauma = Math.max(0, this.trauma - CAMERA_FEEL.shake.decay * dt)
@@ -1593,6 +1723,7 @@ export class Renderer {
         bobRoll +
         this.strafeRoll +
         this.turnRoll +
+        this.slideRoll +
         airRoll +
         shakeRoll,
     )
@@ -2078,6 +2209,41 @@ export class Renderer {
     }
     this.corpses.length = 0
     this.wasAlive.clear()
+    // GLTF 自然资产：几何、材质、贴图都是每个关卡自己加载的，必须一起释放。
+    if (this.natureGroup) {
+      this.natureGroup.traverse((object) => {
+        const mesh = object as Mesh
+        if (!mesh.isMesh) return
+        mesh.geometry.dispose()
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+        for (const material of materials) {
+          for (const value of Object.values(material)) {
+            const texture = value as Texture
+            if (texture && (texture as { isTexture?: boolean }).isTexture) texture.dispose()
+          }
+          material.dispose()
+        }
+      })
+      this.scene.remove(this.natureGroup)
+      this.natureGroup = null
+    }
+    if (this.villageGroup) {
+      this.villageGroup.traverse((object) => {
+        const mesh = object as Mesh
+        if (!mesh.isMesh) return
+        mesh.geometry.dispose()
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+        for (const mat of mats) {
+          for (const value of Object.values(mat)) {
+            const texture = value as Texture
+            if (texture && (texture as { isTexture?: boolean }).isTexture) texture.dispose()
+          }
+          mat.dispose()
+        }
+      })
+      this.scene.remove(this.villageGroup)
+      this.villageGroup = null
+    }
     this.hunterTextures.dispose()
     for (const maps of Object.values(this.surfaceMaps)) maps.dispose()
     this.post.dispose()

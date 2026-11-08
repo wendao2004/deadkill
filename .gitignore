@@ -6,3 +6,6 @@ dist/
 Thumbs.db
 # 调研期的原始抓取文本（几 MB 的网页/源码快照），不进版本库
 .research/
+
+# 本地导出的模型草稿（Blender 试验件，不进版本库）
+/model/

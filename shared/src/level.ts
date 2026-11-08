@@ -24,6 +24,7 @@ import { LEVEL_MARSH } from './maps/marsh.ts'
 import { LEVEL_CHAPEL } from './maps/chapel.ts'
 import { LEVEL_QUARRY } from './maps/quarry.ts'
 import { LEVEL_STATION } from './maps/station.ts'
+import { LEVEL_PINE_CAMP } from './maps/pine_camp.ts'
 
 /**
  * 表面材质。决定脚步声、弹孔和客户端的地面颜色。
@@ -49,6 +50,14 @@ export interface BoxBrush {
   rotY?: number
   /** 纯装饰的盒子不参与碰撞（例如天花板横梁）。 */
   noCollide?: boolean
+  /**
+   * 只参与碰撞与判定，客户端不画它。
+   *
+   * 给 GLB 建筑当"隐形骨架"用：木屋的墙、锯木厂的立柱由程序化模型负责外观，
+   * 碰撞仍然由盒刷负责（Rapier、穿透、小地图、脚步材质全部同源）。和 noCollide
+   * 正好互为反面 —— 一个"看得见摸不着"，一个"摸得着看不见"。
+   */
+  noRender?: boolean
   /** 材质提示，客户端据此选颜色/贴图。 */
   material?: BoxMaterial
 }
@@ -103,7 +112,24 @@ export interface SearchSpot {
  * 岩块与矿车（quarry）、铁轨与枕木（station）。
  * 没有这个字段，客户端只能把每张图都按沼泽长芦苇。
  */
-export type LevelBiome = 'swamp' | 'farm' | 'church' | 'quarry' | 'station'
+export type LevelBiome = 'swamp' | 'farm' | 'church' | 'quarry' | 'station' | 'forest'
+
+/**
+ * 一个 GLB "主角资产"的摆放锚点（只影响客户端外观，不参与碰撞）。
+ *
+ * 碰撞永远由 level.boxes 负责；这里只回答"程序化模型摆在哪、朝哪"。
+ * 放在 LevelDef 里而不是客户端常量表：坐标是地图设计数据，改图的人应该
+ * 在同一处看到盒子和模型，否则两边一漂移就是"看得见的墙撞不到"。
+ */
+export interface HeroAnchor {
+  /** 资产名，对应 client/public/models/generated/manifest.json 的键。 */
+  asset: string
+  x: number
+  z: number
+  rotY?: number
+  /** 只缩放外观；碰撞盒不受影响。 */
+  scale?: number
+}
 
 export interface LevelDef {
   id: string
@@ -115,6 +141,10 @@ export interface LevelDef {
   /** 世界边界半边长，防止玩家走出关卡。 */
   boundsHalf: number
   boxes: BoxBrush[]
+  /**
+   * 程序化 GLB 资产的摆放锚点（可选）。只影响外观，碰撞仍在 boxes 里。
+   */
+  heroes?: HeroAnchor[]
   /** 出生点，来自服务端的分配。 */
   spawns: Vec3[]
   /**
@@ -193,6 +223,7 @@ export { LEVEL_MARSH } from './maps/marsh.ts'
 export { LEVEL_CHAPEL } from './maps/chapel.ts'
 export { LEVEL_QUARRY } from './maps/quarry.ts'
 export { LEVEL_STATION } from './maps/station.ts'
+export { LEVEL_PINE_CAMP } from './maps/pine_camp.ts'
 
 /**
  * 沼泽图的 16 个搜刮点。
@@ -405,6 +436,7 @@ export const LEVELS: Record<string, LevelDef> = {
   [LEVEL_CHAPEL.id]: LEVEL_CHAPEL,
   [LEVEL_QUARRY.id]: LEVEL_QUARRY,
   [LEVEL_STATION.id]: LEVEL_STATION,
+  [LEVEL_PINE_CAMP.id]: LEVEL_PINE_CAMP,
 }
 
 // 没有手工点位的图在加载时补一套自动点位。放在 LEVELS 之后、其它模块导入之前：

@@ -33,12 +33,22 @@ import {
   PLAYER_EYE_HEIGHT,
   PLAYER_HALF_HEIGHT,
   PLAYER_RADIUS,
+  SLIDE_BRAKE,
+  SLIDE_COOLDOWN,
+  SLIDE_DRAG,
+  SLIDE_DURATION,
+  SLIDE_ENTRY_SPEED,
+  SLIDE_EXIT_SPEED,
+  SLIDE_MIN_ENTRY,
+  SLIDE_MIN_SPEED_TO_START,
+  SLIDE_STEER,
+  SPEED_SPRINT,
   SPRINT_FORWARD_DOT,
   SPRINT_START_DELAY,
   StateFlags,
   TERMINAL_SPEED,
 } from './constants.ts'
-import type { Vec3 } from './math.ts'
+import { yawToForward, yawToRight, type Vec3 } from './math.ts'
 import type { PlayerInput } from './protocol.ts'
 import { computeMoveVelocity, type MoveState } from './sim.ts'
 
@@ -77,11 +87,23 @@ export class Character {
   /** 冲刺状态（含 0.05s 起步延迟）。速度选择在 sim.ts 里读它。 */
   sprinting = false
   private sprintHold = 0
+  /** 滑铲状态：冲刺中按下蹲触发，胶囊立刻变蹲姿。 */
+  sliding = false
+  private slideTime = 0
+  private slideCooldown = 0
+  private slideDirX = 0
+  private slideDirZ = 0
+  private prevCrouchHeld = false
   /** 跳跃容错窗口：预输入、coyote、冷却。三者都是"隐藏输入误差"的。 */
   private jumpBuffer = 0
   private jumpCooldown = 0
   private coyote = 0
   private prevJumpHeld = false
+  /**
+   * 一次按键只跳一次。即使输入层/重放因为丢包把 Jump 位重复送来，
+   * 也必须先松开再按才能再跳 —— 这是"按住空格一直卡跳"的保险丝。
+   */
+  private jumpLatch = false
 
   /** 当前胶囊半高（蹲下与站立不同）。 */
   private halfHeight: number
@@ -147,10 +169,15 @@ export class Character {
     this.vz = 0
     this.sprinting = false
     this.sprintHold = 0
+    this.sliding = false
+    this.slideTime = 0
+    this.slideCooldown = 0
+    this.prevCrouchHeld = false
     this.jumpBuffer = 0
     this.jumpCooldown = 0
     this.coyote = 0
     this.prevJumpHeld = false
+    this.jumpLatch = false
     this.body.setTranslation(
       {
         x: feet.x,
@@ -180,15 +207,48 @@ export class Character {
   step(world: World, input: PlayerInput, dt: number): void {
     const wantsCrouch = (input.buttons & Buttons.Crouch) !== 0
     const ads = (input.buttons & Buttons.Ads) !== 0
-    this.applyCrouch(world, wantsCrouch)
+    const crouchPressed = wantsCrouch && !this.prevCrouchHeld
+    this.prevCrouchHeld = wantsCrouch
+    this.slideCooldown = Math.max(0, this.slideCooldown - dt)
 
     if (this.grounded && this.vy < 0) this.vy = GROUND_STICK_VY
+
+    // ---- 跳跃窗口：只要一次按下，按住不会连跳 ----
+    this.jumpCooldown = Math.max(0, this.jumpCooldown - dt)
+    this.jumpBuffer = Math.max(0, this.jumpBuffer - dt)
+    if (this.grounded) this.coyote = COYOTE_TIME
+    else this.coyote = Math.max(0, this.coyote - dt)
+
+    const jumpHeld = (input.buttons & Buttons.Jump) !== 0
+    if (!jumpHeld) this.jumpLatch = false
+    if (jumpHeld && !this.prevJumpHeld && !this.jumpLatch) this.jumpBuffer = JUMP_BUFFER
+    this.prevJumpHeld = jumpHeld
+
+    // ---- 滑铲：冲刺中按下蹲触发；胶囊立刻降到蹲姿 ----
+    const speedNow = Math.hypot(this.vx, this.vz)
+    if (
+      !this.sliding &&
+      crouchPressed &&
+      this.sprinting &&
+      this.grounded &&
+      speedNow >= SLIDE_MIN_SPEED_TO_START &&
+      this.slideCooldown <= 0
+    ) {
+      this.beginSlide(input, speedNow)
+    }
+    if (this.sliding) {
+      // 松开蹲、超时、或速度掉到退出阈值以下，都结束滑铲。
+      if (!wantsCrouch || this.slideTime > SLIDE_DURATION || speedNow < SLIDE_EXIT_SPEED) {
+        this.endSlide()
+      }
+    }
 
     // 冲刺是状态而不是一次性判定：必须有 0.05s 按住延迟与"前向意图"。
     // 这样倒退/横移不会意外冲刺，抬枪或蹲下会立刻退出。
     const rawInput = Math.hypot(input.forward, input.right)
     const forwardIntent = rawInput > 1e-4 ? input.forward / rawInput : 0
     const wantSprint =
+      !this.sliding &&
       (input.buttons & Buttons.Sprint) !== 0 &&
       rawInput > 0.45 &&
       forwardIntent > SPRINT_FORWARD_DOT &&
@@ -203,50 +263,75 @@ export class Character {
       this.sprinting = false
     }
 
-    const state: MoveState = {
-      vx: this.vx,
-      vy: this.vy,
-      vz: this.vz,
-      grounded: this.grounded,
-      sprinting: this.sprinting,
-    }
-    const move = computeMoveVelocity(input, state, dt, ads)
-    this.vx = move.vx
-    this.vz = move.vz
-
-    // ---- 跳跃窗口：按住不算，边沿 + 预输入 + coyote + 冷却才起跳 ----
-    this.jumpCooldown = Math.max(0, this.jumpCooldown - dt)
-    this.jumpBuffer = Math.max(0, this.jumpBuffer - dt)
-    if (this.grounded) this.coyote = COYOTE_TIME
-    else this.coyote = Math.max(0, this.coyote - dt)
-
-    const jumpHeld = (input.buttons & Buttons.Jump) !== 0
-    if (jumpHeld && !this.prevJumpHeld) this.jumpBuffer = JUMP_BUFFER
-    this.prevJumpHeld = jumpHeld
-
-    if (this.jumpBuffer > 0 && this.jumpCooldown <= 0 && (this.grounded || this.coyote > 0)) {
-      // 蹲着起跳先站起；头顶被挡就不跳（和源码同一条规则）。
-      if (this.crouching && this.canStandUp(world)) {
-        this.setCapsuleHalfHeight(this.standHalfHeight)
-        this.crouching = false
+    if (this.sliding) {
+      this.stepSlide(input, dt)
+    } else {
+      const state: MoveState = {
+        vx: this.vx,
+        vy: this.vy,
+        vz: this.vz,
+        grounded: this.grounded,
+        sprinting: this.sprinting,
       }
+      const move = computeMoveVelocity(input, state, dt, ads)
+      this.vx = move.vx
+      this.vz = move.vz
+    }
+
+    // 滑铲期间强制蹲姿胶囊；其余时间按蹲键正常升降。
+    if (this.sliding) {
       if (!this.crouching) {
+        this.setCapsuleHalfHeight(this.crouchHalfHeight)
+        this.crouching = true
+      }
+    } else {
+      this.applyCrouch(world, wantsCrouch)
+    }
+
+    // ---- 起跳：蹲着/滑铲先站起，头顶被挡就不跳 ----
+    let jumpedThisTick = false
+    if (!this.jumpLatch && this.jumpBuffer > 0 && this.jumpCooldown <= 0 && (this.grounded || this.coyote > 0)) {
+      let canJump = true
+      if (this.crouching) {
+        if (this.canStandUp(world)) {
+          this.setCapsuleHalfHeight(this.standHalfHeight)
+          this.crouching = false
+        } else {
+          canJump = false
+        }
+      }
+      if (canJump) {
+        if (this.sliding) {
+          // 滑铲跳：保留爆发但不能变成速度叠加漏洞。
+          const sp = Math.hypot(this.vx, this.vz)
+          const cap = SPEED_SPRINT * 1.06
+          if (sp > cap) {
+            this.vx *= cap / sp
+            this.vz *= cap / sp
+          }
+          this.sliding = false
+          this.slideCooldown = SLIDE_COOLDOWN
+          this.slideTime = 0
+        }
         this.vy = JUMP_SPEED
         this.jumpBuffer = 0
         this.jumpCooldown = JUMP_COOLDOWN
         this.coyote = 0
         this.grounded = false
+        this.jumpLatch = true
+        jumpedThisTick = true
+      }
+    }
+
+    if (!jumpedThisTick) {
+      if (this.grounded && this.vy <= 0) {
+        // 站定/滑铲：不再累积重力，避免毫米级穿透逐帧累积（见 GROUND_STICK_VY）。
+        this.vy = 0
       } else {
+        // 垂直速度单独推：跳跃是瞬时赋值，之后交给重力。
         this.vy += GRAVITY * dt
         if (this.vy < -TERMINAL_SPEED) this.vy = -TERMINAL_SPEED
       }
-    } else if (this.grounded && this.vy <= 0) {
-      // 站定：不再累积重力，避免毫米级穿透逐帧累积（见文件头 GROUND_STICK_VY）。
-      this.vy = 0
-    } else {
-      // 垂直速度单独推：跳跃是瞬时赋值，之后交给重力。
-      this.vy += GRAVITY * dt
-      if (this.vy < -TERMINAL_SPEED) this.vy = -TERMINAL_SPEED
     }
 
     const desired = {
@@ -271,6 +356,81 @@ export class Character {
     this.vx = dt > 0 ? moved.x / dt : 0
     this.vz = dt > 0 ? moved.z / dt : 0
     if (this.grounded && this.vy < 0) this.vy = GROUND_STICK_VY
+  }
+
+  /** 进入滑铲：方向取当前速度（速度太低时取输入方向），速度给一次爆发。 */
+  private beginSlide(input: PlayerInput, currentSpeed: number): void {
+    let dx = this.vx
+    let dz = this.vz
+    let length = Math.hypot(dx, dz)
+    if (length < 0.4) {
+      const fwd = yawToForward(input.yaw)
+      const right = yawToRight(input.yaw)
+      dx = fwd.x * input.forward + right.x * input.right
+      dz = fwd.z * input.forward + right.z * input.right
+      length = Math.hypot(dx, dz)
+    }
+    if (length < 1e-4) return
+
+    dx /= length
+    dz /= length
+    const target = Math.max(SLIDE_MIN_ENTRY, Math.min(SLIDE_ENTRY_SPEED, currentSpeed * 1.3))
+    this.vx = dx * target
+    this.vz = dz * target
+    this.sliding = true
+    this.slideTime = 0
+    this.slideDirX = dx
+    this.slideDirZ = dz
+    this.sprinting = false
+    this.sprintHold = 0
+    if (!this.crouching) {
+      this.setCapsuleHalfHeight(this.crouchHalfHeight)
+      this.crouching = true
+    }
+  }
+
+  /**
+   * 滑铲积分：只保留横向转向权限，速度指数衰减 + 线性制动。
+   * 转向按"输入在滑行方向右侧的分量"施加，所以能拐弯但不能原地掉头。
+   */
+  private stepSlide(input: PlayerInput, dt: number): void {
+    this.slideTime += dt
+    let speed = Math.hypot(this.vx, this.vz)
+    if (speed < 1e-5) return
+
+    let dx = this.vx / speed
+    let dz = this.vz / speed
+    const fwd = yawToForward(input.yaw)
+    const right = yawToRight(input.yaw)
+    let wx = fwd.x * input.forward + right.x * input.right
+    let wz = fwd.z * input.forward + right.z * input.right
+    const wishLen = Math.hypot(wx, wz)
+    if (wishLen > 0.05) {
+      wx /= wishLen
+      wz /= wishLen
+      const lateral = wx * -dz + wz * dx
+      const steer = lateral * SLIDE_STEER * dt
+      const nx = dx - dz * steer
+      const nz = dz + dx * steer
+      const len = Math.hypot(nx, nz) || 1
+      dx = nx / len
+      dz = nz / len
+    }
+
+    speed = speed * Math.exp(-SLIDE_DRAG * dt) - SLIDE_BRAKE * dt
+    if (speed < 0) speed = 0
+    this.vx = dx * speed
+    this.vz = dz * speed
+    this.slideDirX = dx
+    this.slideDirZ = dz
+
+    if (speed < SLIDE_EXIT_SPEED || this.slideTime > SLIDE_DURATION) this.endSlide()
+  }
+
+  private endSlide(): void {
+    this.sliding = false
+    this.slideTime = 0
+    this.slideCooldown = SLIDE_COOLDOWN
   }
 
   private applyCrouch(world: World, wantsCrouch: boolean): void {
@@ -325,6 +485,8 @@ export function stateFlagsOf(c: {
   reloading: boolean
   /** 切枪动作未完成。可选：不关心切枪的调用方（HUD、回放）不必传。 */
   switching?: boolean
+  /** 滑铲中。可选：旧调用方不传时保持原行为。 */
+  sliding?: boolean
 }): number {
   let f = 0
   if (c.grounded) f |= StateFlags.Grounded
@@ -333,6 +495,7 @@ export function stateFlagsOf(c: {
   if (c.alive) f |= StateFlags.Alive
   if (c.reloading) f |= StateFlags.Reloading
   if (c.switching) f |= StateFlags.Switching
+  if (c.sliding) f |= StateFlags.Sliding
   return f
 }
 

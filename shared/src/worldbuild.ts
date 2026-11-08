@@ -20,6 +20,7 @@ import {
 
 import { GRAVITY } from './constants.ts'
 import type { LevelDef } from './level.ts'
+import { buildTerrainGrid } from './terrain.ts'
 
 let ready = false
 
@@ -43,14 +44,11 @@ export async function initPhysics(): Promise<void> {
 export function buildLevelWorld(level: LevelDef): World {
   const world = new World({ x: 0, y: GRAVITY, z: 0 })
 
-  // 地面。做成厚板而不是 heightfield：P0 的地图是平的，
-  // heightfield 只会在角色控制器上引入额外的边缘吸附问题。
-  const ground = world.createRigidBody(
-    RigidBodyDesc.fixed().setTranslation(0, level.groundY - 1, 0),
-  )
+  // 地面：客户端渲染与服务端物理共用同一份高度网格（shared/terrain.ts）。
+  // 建筑/出生点/标记点/水边由地形函数压平，只有野地会起伏。
+  const terrain = buildTerrainGrid(level)
   world.createCollider(
-    ColliderDescValue.cuboid(level.boundsHalf * 2, 1, level.boundsHalf * 2).setFriction(1),
-    ground,
+    ColliderDescValue.trimesh(terrain.vertices, terrain.indices).setFriction(1),
   )
 
   for (const b of level.boxes) {

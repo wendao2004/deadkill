@@ -529,6 +529,9 @@ export class Game {
     await initPhysics()
     // 先换掉程序化占位贴图，再建世界/进局：避免进图后贴图才"啪"地跳出来。
     await this.renderer.loadTextures()
+    await this.renderer.loadNature()
+    await this.renderer.loadVillage()
+    await this.renderer.loadGenerated()
     await this.kernel.init(this.ctx)
     this.world = buildLevelWorld(this.options.level)
 
@@ -2106,6 +2109,7 @@ export class Game {
       character.vy,
       sample.sprinting,
       !character.grounded,
+      character.sliding,
       this.wasReloading,
       this.reloadProgress(),
       this.heldWeapon,

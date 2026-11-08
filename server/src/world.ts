@@ -2452,6 +2452,7 @@ export class World {
             alive: player.alive,
             reloading: player.reloading,
             switching: isSwitching(player.loadout, this.tick),
+            sliding: player.character.sliding,
           }),
           weaponId: heldWeapon(player.loadout).id,
           ammo: heldAmmo(player.loadout),

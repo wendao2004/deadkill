@@ -831,7 +831,7 @@ const NAV_ENTRIES: NavEntry[] = [
   { id: 'settings', cn: '设置', en: 'SETTINGS' },
 ]
 
-type MapArt = 'farm' | 'mine' | 'canal' | 'church' | 'station'
+type MapArt = 'farm' | 'mine' | 'canal' | 'church' | 'station' | 'forest'
 
 interface MapEntry {
   id: string
@@ -874,6 +874,12 @@ const MAP_FLAVOR: Record<string, { en: string; desc: string; threat: string; art
     desc: '铁轨长进泥里，月台雨棚还在。枪声会传过整条线。',
     threat: '低',
     art: 'station',
+  },
+  'pine-camp-night': {
+    en: 'PINEWOOD CAMP',
+    desc: '伐木队的营地，火熄了又烧起来。原木堆之间，谁先动谁先死。',
+    threat: '中',
+    art: 'forest',
   },
 }
 

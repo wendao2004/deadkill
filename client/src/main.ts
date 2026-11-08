@@ -644,6 +644,9 @@ menu = createMenu(menuRoot, {
     // 击锤落下，大厅的底噪让位给游戏自己那层：0.5s 淡出刚好被 iris 收拢盖住。
     menuAudio.stopAmbience(0.5)
     void enter(config).catch((error) => {
+      // 启动失败只把 message 写进状态条，堆栈必须留在控制台 —— 否则
+      // "reading 'index'" 这种错误根本看不出是哪一层。
+      console.error('[enter] 启动失败', error)
       exitToMenu(`启动失败：${error instanceof Error ? error.message : String(error)}`)
     })
   },
