@@ -83,6 +83,8 @@ const heroes: HeroAnchor[] = [
 
   // 锯木厂
   { asset: 'sawmill_a', x: 58, z: -36 },
+  // 水车：斜对着沉木池，从主营地就能看见这个 5m 高的轮子。
+  { asset: 'water_wheel', x: 66, z: -45, rotY: 0.35 },
   { asset: 'log_pile', x: 64, z: -45, rotY: Math.PI / 2 },
   { asset: 'log_pile', x: 68.5, z: -47, rotY: Math.PI / 2 + 0.25 },
   { asset: 'log_pile', x: 61, z: -47.5, rotY: 0.1 },

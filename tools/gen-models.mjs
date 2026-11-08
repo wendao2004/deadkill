@@ -380,6 +380,36 @@ function sawmill(seed) {
   return { parts }
 }
 
+
+function waterWheel(seed) {
+  const rand = rng(seed)
+  const parts = []
+  // 水车：轮圈 + 辐条 + 桨叶。轮面在 XY 平面（轴向 Z），直径 4.4m，
+  // 是整个营地唯一"会转的轮廓" —— 模型不转，但形状一眼读得出是水车。
+  const R = 2.15
+  part(parts, new THREE.TorusGeometry(R, 0.14, 6, 20), { color: 0x4a3524, variance: 0.12, rand, mat: 'timber' })
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2
+    part(parts, new BoxGeometry(R * 2, 0.12, 0.12), {
+      rot: [0, 0, a],
+      color: 0x5a4128, variance: 0.1, rand, mat: 'timber',
+    })
+    // 桨叶：沿轮缘切向的小板
+    part(parts, new BoxGeometry(0.55, 0.12, 0.22), {
+      pos: [Math.cos(a) * R, Math.sin(a) * R, 0],
+      rot: [0, 0, a],
+      color: 0x3f2e20, variance: 0.12, rand, mat: 'timber',
+    })
+  }
+  // 轴与支架：把轮子撑在水面上
+  part(parts, new CylinderGeometry(0.12, 0.12, 1.1, 8), { pos: [0, 0, 0.45], rot: [Math.PI / 2, 0, 0], color: 0x3a3d40, mat: 'iron' })
+  part(parts, new CylinderGeometry(0.16, 0.2, 2.4, 6), { pos: [0, -1.2, 0.75], color: 0x4a3524, mat: 'timber' })
+  part(parts, new CylinderGeometry(0.16, 0.2, 2.4, 6), { pos: [1.9, -1.2, 0.75], color: 0x4a3524, mat: 'timber' })
+  // 水槽：从上方引水到轮顶
+  part(parts, new BoxGeometry(0.5, 0.24, 2.2), { pos: [0, R + 0.35, 0.2], rot: [0.16, 0, 0], color: 0x5a4128, mat: 'timber' })
+  return { parts }
+}
+
 function logPile(seed) {
   const rand = rng(seed)
   const parts = []
@@ -474,6 +504,7 @@ const ASSETS = [
   { name: 'log_pile', build: () => logPile(0x51a7), tags: ['prop'] },
   { name: 'stump', build: () => stump(0x51a8), tags: ['prop'] },
   { name: 'rock_a', build: () => rock(0x51a9, 1.0), tags: ['prop'] },
+  { name: 'water_wheel', build: () => waterWheel(0x51ac), tags: ['building'] },
   { name: 'lantern_post', build: () => lanternPost(0x51aa), tags: ['prop', 'light'] },
   { name: 'bonfire', build: () => bonfire(0x51ab), tags: ['prop', 'light'] },
 ]

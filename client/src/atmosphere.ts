@@ -225,6 +225,8 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   // 元素本来就用不着各自的变换。
   const skyUniforms = {
     uZenith: { value: new Color() },
+    uMid: { value: new Color() },
+    uTrees: { value: new Color() },
     uHorizon: { value: new Color() },
     uBelow: { value: new Color() },
     uEmber: { value: new Color(0x2a1d13) },
@@ -251,6 +253,8 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     ].join('\n'),
     fragmentShader: [
       'uniform vec3 uZenith;',
+      'uniform vec3 uMid;',
+      'uniform vec3 uTrees;',
       'uniform vec3 uHorizon;',
       'uniform vec3 uBelow;',
       'uniform vec3 uEmber;',
@@ -275,49 +279,47 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       'void main() {',
       '  vec3 d = normalize(vDir);',
       '  float h = d.y;',
-      '  // 天顶到地平线：0.42 次幂让亮带收在地平线附近一小圈，抬头就是深蓝黑。',
-      '  // 指数越小越"贴地"，0.42 时 25 度仰角已经吃掉六成亮带，不会糊成灰穹顶。',
-      '  vec3 col = mix(uHorizon, uZenith, pow(clamp(h, 0.0, 1.0), 0.42));',
-      '  // 相机往下看时（枪口朝地）也得有东西，不能是纯黑。',
-      '  col = mix(col, uBelow, smoothstep(0.0, -0.45, h));',
-      '  // 地平线余晖：太阳早就没了，只剩远处城镇/沼泽甲烷火的一点暖。',
-      '  // 只加不减，且颜色本身很暗（0x4a2a14），所以不会把夜空染成黄昏。',
-      '  col += uEmber * exp(-max(h, -0.1) * 20.0);',
+      '  float az = atan(d.z, d.x);',
+      '  // 手绘抖动：色带边界不是尺子画出来的直线，用低频噪声让它起伏。',
+      '  float wob = (skyNoise(vec2(az * 1.7, h * 5.0 + 3.1)) - 0.5) * 0.06',
+      '            + (skyNoise(vec2(az * 5.3, 11.7)) - 0.5) * 0.03;',
+      '  float hh = h + wob;',
+      '  // 三条色带：地平线余晖 → 中景靛蓝 → 天顶深蓝。',
+      '  vec3 col = mix(uHorizon, uMid, smoothstep(0.015, 0.20, hh));',
+      '  col = mix(col, uZenith, smoothstep(0.20, 0.62, hh));',
+      '  col = mix(col, uBelow, smoothstep(0.0, -0.42, h));',
+      '  // 地平线余晖：像水彩在纸边洇开的一层暖色，不是物理散射。',
+      '  col += uEmber * exp(-max(h, -0.1) * 16.0);',
+      '  // 云：两层横向笔触，边缘被噪声撕开，像大笔刷扫过。',
+      '  float drift = uTime * 0.004;',
+      '  float cn = skyNoise(vec2(az * 2.1 + drift, h * 26.0)) * 0.6',
+      '           + skyNoise(vec2(az * 4.7 - drift * 1.4, h * 52.0 + 9.0)) * 0.4;',
+      '  float band = smoothstep(0.03, 0.09, h) * (1.0 - smoothstep(0.22, 0.34, h));',
+      '  float cloud = smoothstep(0.52, 0.72, cn) * band;',
+      '  vec3 cloudCol = mix(uCloudDark, uCloudLit, smoothstep(0.04, 0.30, h));',
+      '  col = mix(col, cloudCol, cloud * 0.52);',
+      '  // 远景林线：一圈锯齿剪影，把地面画死，也盖住地图边缘的几何缝。',
+      '  float ridge = 0.010',
+      '              + 0.018 * skyNoise(vec2(az * 6.0, 0.7))',
+      '              + 0.010 * skyNoise(vec2(az * 17.0, 4.3));',
+      '  float treeLine = smoothstep(ridge + 0.004, ridge - 0.004, h) * step(-0.30, h);',
+      '  col = mix(col, uTrees, treeLine);',
+      '  // 月亮：比真实大一圈的圆盘 + 两层光晕。',
       '  float md = max(dot(d, uMoonDir), 0.0);',
-      '  // 月盘半径：acos(0.99975) ~= 1.3 度，比真实的 0.5 度大一圈 —— 游戏里的',
-      '  // 月亮就是要一眼认出是月亮，写实的尺寸在 1080p 上只有 8 个像素。',
-      '  float disc = smoothstep(0.99975, 0.99988, md);',
-      '  float halo = pow(md, 480.0) * 0.60 + pow(md, 26.0) * 0.055;',
-      '  if (h > -0.02) {',
-      '    // 星点：把方向投到经纬网格上，每格一个 hash 决定有没有星、星在格子里的位置。',
-      '    // 不用贴图、不用顶点，密度是均匀的，而且成本只有两次三角函数。',
-      '    vec2 sc = vec2(atan(d.z, d.x) * 9.0, asin(clamp(h, -1.0, 1.0)) * 9.0);',
-      '    vec2 cell = floor(sc);',
-      '    vec2 f = fract(sc);',
-      '    float r = skyHash(cell);',
-      '    vec2 jit = vec2(skyHash(cell + 3.7), skyHash(cell + 19.1));',
-      '    // 10% 的格子有星：约 150 颗撒满全天，抬头看是"稀疏"而不是"星尘"。',
-      '    float star = smoothstep(0.100, 0.020, length(f - jit)) * step(0.900, r);',
-      '    star *= (0.50 + 0.50 * skyHash(cell + 41.3)) * (0.7 + 0.3 * sin(uTime * 1.9 + r * 63.0));',
-      '    // 贴地平线的星被大气吃掉：没有这一项，星会一路撒到雾里，假得很明显。',
-      '    star *= smoothstep(0.03, 0.28, h);',
-      '    col += uMoonColor * star * 1.70;',
-      '    // 云带：把视线投到一张虚拟平面上取两层 value noise，云因此自动朝地平线',
-      '    // 收敛（越远越密），这正是真实层云的透视。0.006 的漂移速度 = 几乎不动，',
-      '    // 但盯着看能发现它在走。',
-      '    vec2 cp = d.xz / max(h + 0.16, 0.06);',
-      '    float drift = uTime * 0.006;',
-      '    float n = skyNoise(cp * 0.42 + vec2(drift, drift * 0.35)) * 0.62',
-      '            + skyNoise(cp * 1.15 + vec2(-drift * 1.7, drift)) * 0.38;',
-      '    float cloud = smoothstep(0.50, 0.70, n) * smoothstep(-0.02, 0.14, h);',
-      '    // 云的暗部比天顶还暗：夜里的云是"更黑的一块"，只有被月亮照到的边缘发亮。',
-      '    vec3 cloudCol = mix(uCloudDark, uCloudLit, smoothstep(0.05, 0.6, h));',
-      '    cloudCol += uMoonColor * pow(md, 6.0) * 0.16;',
-      '    col = mix(col, cloudCol, cloud * 0.72);',
-      '  }',
-      '  col += uMoonColor * (disc * 3.2 + halo);',
+      '  float disc = smoothstep(0.99955, 0.99972, md);',
+      '  float halo = pow(md, 300.0) * 0.55 + pow(md, 22.0) * 0.07;',
+      '  col += uMoonColor * (disc * 2.6 + halo);',
+      '  // 星：稀疏，贴地平线淡出，林线以下不画。',
+      '  vec2 sc = vec2(az * 9.0, asin(clamp(h, -1.0, 1.0)) * 9.0);',
+      '  vec2 cell = floor(sc);',
+      '  vec2 f = fract(sc);',
+      '  float r = skyHash(cell);',
+      '  vec2 jit = vec2(skyHash(cell + 3.7), skyHash(cell + 19.1));',
+      '  float star = smoothstep(0.090, 0.015, length(f - jit)) * step(0.905, r);',
+      '  star *= (0.5 + 0.5 * skyHash(cell + 41.3)) * (0.7 + 0.3 * sin(uTime * 1.9 + r * 63.0));',
+      '  star *= smoothstep(0.06, 0.30, h) * (1.0 - treeLine);',
+      '  col += uMoonColor * star * 1.4;',
       '  gl_FragColor = vec4(col, 1.0);',
-      '  // 必须手动做线性 -> sRGB：ShaderMaterial 不会自动补这一步（见 render.ts 同名注释）。',
       '  #include <colorspace_fragment>',
       '}',
     ].join('\n'),
@@ -753,14 +755,20 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     // 天空地平线对齐到雾色：远景物体淡出成雾色，如果天空那一圈比雾色亮很多，
     // 就会看到一条"地平线台阶"。对齐之后远景是一块连续的冷蓝黑，
     // 暖色余晖只在最底下一小条叠加，不会盖过雾色。
-    skyUniforms.uHorizon.value.setHex(fogColor).multiplyScalar(1.25)
-    skyUniforms.uBelow.value.setHex(fogColor).multiplyScalar(0.55)
+    skyUniforms.uHorizon.value.setHex(fogColor).multiplyScalar(1.18)
+    skyUniforms.uBelow.value.setHex(fogColor).multiplyScalar(0.5)
+    // 中景：比地平线暗、比天顶亮，三段色带才有"层"。
+    skyUniforms.uMid.value
+      .copy(tmpColor.setHex(fogColor).multiplyScalar(0.66))
+      .lerp(tint, 0.28)
     // 天顶：关卡的雾色往下压到 0.22，再往 tint（深蓝黑）混 62%。这两步是
     // "别让天空变成灰穹顶"的关键 —— 雾色本身是给远景用的中间调，直接当天顶
     // 会得到一整片灰蓝，抬头看不见黑。
     skyUniforms.uZenith.value
       .copy(tmpColor.setHex(fogColor).multiplyScalar(0.22))
       .lerp(tint, 0.62)
+    // 远景林线：比天顶再暗一档，读成"黑色的树"，不读成"另一条天空"。
+    skyUniforms.uTrees.value.copy(skyUniforms.uZenith.value).multiplyScalar(0.46)
     // 云的暗部 = 天顶再暗一点（夜里的云是"更黑的一块"）。
     skyUniforms.uCloudDark.value.copy(skyUniforms.uZenith.value).multiplyScalar(0.75)
     // 云的亮部只比暗部亮一点点：真正的亮边由 shader 里 pow(md,6) 那一项
@@ -768,7 +776,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     // 星星全被盖住（第一版就是这么错的）。
     skyUniforms.uCloudLit.value
       .copy(tmpColor.setHex(fogColor).multiplyScalar(0.62))
-      .lerp(tmpColor.setHex(MOON_COLOR).multiplyScalar(0.30), 0.25)
+      .lerp(tmpColor.setHex(MOON_COLOR).multiplyScalar(0.22), 0.12)
 
     // 地面雾：比雾色亮，否则它跟远景糊成一片，看不出"贴地的水汽"。
     mistUniforms.uColor.value

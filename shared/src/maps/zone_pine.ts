@@ -124,6 +124,8 @@ function buildSawmill(s: BrushSet): void {
   // 吊臂：横跨池面的高杆
   s.slab(X + 6, Z - 15, 0.25, 0.25, 0, 5.2, 'metal')
   s.span(X + 10, 5.0, Z - 15, 4.2, 0.15, 0.15, 'metal')
+  // 水车：营地最远能看见的轮廓。碰撞只做一根细框，外观由 water_wheel 模型负责。
+  ghost(s, X + 8, Z - 9, 0.5, 1.2, 0, 4.4)
 }
 
 /** 伐木坡：三层台地 + 滑木槽 + 树桩阵。 */
