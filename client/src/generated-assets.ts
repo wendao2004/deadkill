@@ -76,38 +76,51 @@ export interface InstanceOptions {
 
 const MANIFEST_URL = './models/generated/manifest.json'
 
-/** 加载清单与全部 GLB。任何一个资产失败只跳过它，不拖垮整张图。 */
-export async function loadGeneratedAssets(): Promise<GeneratedAssets> {
-  const manifestUrl = new URL(MANIFEST_URL, document.baseURI).href
-  const res = await fetch(manifestUrl)
-  if (!res.ok) throw new Error(`manifest ${res.status}`)
-  const manifest = (await res.json()) as GeneratedManifest
-
+/**
+ * 加载清单与全部 GLB。
+ *
+ * `extra` 是 LevelDef.heroes 里出现、但清单里没有的资产名 —— 那些是地图作者
+ * 自己导入的模型，约定放在 `client/public/models/imported/<name>.glb`。
+ * 任何一个资产失败只跳过它，不拖垮整张图。
+ */
+export async function loadGeneratedAssets(extra: string[] = []): Promise<GeneratedAssets> {
   const manager = new LoadingManager()
   const loader = new GLTFLoader(manager)
   const assets: GeneratedAssets = new Map()
 
-  await Promise.all(
-    Object.entries(manifest.assets).map(async ([name, entry]) => {
-      try {
-        const url = new URL(`./models/generated/${entry.file}`, document.baseURI).href
-        const gltf = await loader.loadAsync(url)
-        gltf.scene.updateMatrixWorld(true)
-        const box = new Box3().setFromObject(gltf.scene)
-        const size = new Vector3()
-        box.getSize(size)
-        assets.set(name, {
-          name,
-          scene: gltf.scene,
-          size,
-          tags: entry.tags ?? [],
-          triangles: entry.triangles ?? 0,
-        })
-      } catch (error) {
-        console.warn(`[generated] ${name} 加载失败`, error)
-      }
-    }),
-  )
+  const manifestUrl = new URL(MANIFEST_URL, document.baseURI).href
+  let manifest: GeneratedManifest = { generated: '', assets: {} }
+  try {
+    const res = await fetch(manifestUrl)
+    if (res.ok) manifest = (await res.json()) as GeneratedManifest
+  } catch {
+    // 清单挂了也继续：自定义模型仍然可以加载。
+  }
+
+  const loadOne = async (name: string, url: string, tags: string[]): Promise<void> => {
+    try {
+      const gltf = await loader.loadAsync(url)
+      gltf.scene.updateMatrixWorld(true)
+      const box = new Box3().setFromObject(gltf.scene)
+      const size = new Vector3()
+      box.getSize(size)
+      assets.set(name, { name, scene: gltf.scene, size, tags, triangles: 0 })
+    } catch (error) {
+      console.warn(`[generated] ${name} 加载失败`, error)
+    }
+  }
+
+  const jobs: Promise<void>[] = []
+  for (const [name, entry] of Object.entries(manifest.assets)) {
+    const url = new URL(`./models/generated/${entry.file}`, document.baseURI).href
+    jobs.push(loadOne(name, url, entry.tags ?? []))
+  }
+  for (const name of new Set(extra)) {
+    if (Object.hasOwn(manifest.assets, name)) continue
+    const url = new URL(`./models/imported/${name}.glb`, document.baseURI).href
+    jobs.push(loadOne(name, url, ['imported']))
+  }
+  await Promise.all(jobs)
   return assets
 }
 

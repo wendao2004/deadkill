@@ -106,8 +106,10 @@
       <button id="exportJson">导出 JSON</button>
       <button id="exportTs">导出 .ts</button>
       <button id="validate">检查</button>
+      <button id="importModels">导入模型</button>
+      <input id="modelInput" type="file" multiple accept=".glb,.gltf" style="display: none" />
       <span class="spacer"></span>
-      <span id="hint" class="hint">滚轮缩放 · 中键拖动平移 · Delete 删除</span>
+      <span id="hint" class="hint">右键旋转 · 中键平移 · 滚轮缩放 · 左键选择/画盒 · Delete 删除</span>
     </header>
     <main>
       <aside id="tools">
@@ -121,6 +123,10 @@
         <button data-tool="extract">撤离点</button>
         <button data-tool="zone">区域</button>
         <button data-tool="water">水面</button>
+        <div class="group">变换（选中后）</div>
+        <button data-mode="translate" class="active">移动 W</button>
+        <button data-mode="rotate">旋转 E</button>
+        <button data-mode="scale">缩放 R</button>
         <div class="group">编辑</div>
         <button id="undo">撤销 Ctrl+Z</button>
         <button id="redo">重做 Ctrl+Y</button>
@@ -136,7 +142,7 @@
     </main>
     <footer id="status">
       <span>坐标 <b id="cur">0.0, 0.0</b></span>
-      <span>缩放 <b id="zoom">20</b> px/m</span>
+      <span>相机 <b id="zoom">--</b> m</span>
       <span>盒刷 <b id="count">0</b></span>
       <span>选中 <b id="sel">无</b></span>
     </footer>

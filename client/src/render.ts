@@ -1087,6 +1087,9 @@ export class Renderer {
     const outline = createOutlineMaterial({ pixels: 2.0 })
     this.disposables.push(outline)
     for (const asset of assets.values()) {
+      // 作者导入的模型保留自己的材质：它们可能是带贴图的 authored 资产，
+      // 强行换成顶点色卡通材质会直接变白/变黑。
+      if (asset.tags.includes('imported')) continue
       const surface: ComicSurface =
         asset.tags.includes('tree') || asset.tags.includes('grass')
           ? 'foliage'
@@ -1124,7 +1127,9 @@ export class Renderer {
 
   async loadGenerated(): Promise<void> {
     try {
-      const assets = await loadGeneratedAssets()
+      // 地图作者导入的模型（heroes 里出现过、但生成清单没有的名字）
+      const extra = [...new Set((this.level.heroes ?? []).map((h) => h.asset))]
+      const assets = await loadGeneratedAssets(extra)
       // 手绘档：GLB 自带的是 PBR 材质，直接摆进卡通场景会像"贴错图"。
       // 这里统一换成卡通材质 + 顶点色，并给实例挂一份墨线外壳。
       const outline = this.realistic ? undefined : this.stylizeGenerated(assets)
