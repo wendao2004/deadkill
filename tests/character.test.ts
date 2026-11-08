@@ -87,6 +87,32 @@ test('预测回滚重放不会把按住空格当成新的按下', () => {
   assert.ok(Math.abs(after - before) < 0.01, `重放不应该再次起跳（${before} → ${after}）`)
 })
 
+test('硬着陆后 0.16s 内不能起跑，之后恢复', () => {
+  const world = buildLevelWorld(FLAT)
+  const c = makeCharacter(world)
+  c.teleport({ x: 0, y: 5, z: 0 })
+  const sprint = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: Buttons.Sprint }
+  // 自由下落直到落地
+  for (let i = 0; i < 120 && !c.grounded; i++) {
+    c.step(world, { ...sprint, buttons: 0 }, DT)
+    world.step()
+  }
+  assert.ok(c.grounded, '应该已经落地')
+  // 落地第一帧按住冲刺：不允许起跑
+  c.step(world, sprint, DT)
+  world.step()
+  const early = c.sprinting
+  // 缓冲结束后可以起跑（0.05s 起步延迟之外）
+  for (let i = 0; i < 24; i++) {
+    c.step(world, sprint, DT)
+    world.step()
+  }
+  const late = c.sprinting
+  world.free()
+  assert.equal(early, false, '硬着陆后立刻起跑应被缓冲挡住')
+  assert.equal(late, true, '缓冲结束后应恢复起跑')
+})
+
 test('空中贴着 0.9m 台面会自动攀沿', () => {
   const world = buildLevelWorld(LEDGE)
   const c = makeCharacter(world)

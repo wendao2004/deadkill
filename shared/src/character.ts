@@ -112,6 +112,15 @@ export class Character {
   private vaultProgressY = 0
   /** 空中攀沿的冷却：避免贴着一面墙每帧重试。 */
   private mantleCooldown = 0
+  /**
+   * 硬着陆缓冲：从高处砸下来后的 0.16s 内不能起跑。
+   *
+   * 不是"惩罚玩家"，而是让落地有重量：没有这一步，从屋顶跳下来和从台阶
+   * 走下来在体感上完全一样，Apex 那种"落地要有个缓冲再起跑"的节奏就没了。
+   */
+  private landingLag = 0
+  /** 本次离地期间的最大下落速度（米/秒，正数）。 */
+  private fallSpeed = 0
   /** 跳跃容错窗口：预输入、coyote、冷却。三者都是"隐藏输入误差"的。 */
   private jumpBuffer = 0
   private jumpCooldown = 0
@@ -203,6 +212,8 @@ export class Character {
     this.vaulting = false
     this.vaultTime = 0
     this.mantleCooldown = 0
+    this.landingLag = 0
+    this.fallSpeed = 0
     if (!keepInputState) {
       this.prevCrouchHeld = false
       this.jumpBuffer = 0
@@ -238,6 +249,8 @@ export class Character {
    * 读取所有人的新位置。
    */
   step(world: World, input: PlayerInput, dt: number): void {
+    const wasGrounded = this.grounded
+    this.landingLag = Math.max(0, this.landingLag - dt)
     const wantsCrouch = (input.buttons & Buttons.Crouch) !== 0
     const ads = (input.buttons & Buttons.Ads) !== 0
     const crouchPressed = wantsCrouch && !this.prevCrouchHeld
@@ -296,6 +309,7 @@ export class Character {
       forwardIntent > SPRINT_FORWARD_DOT &&
       !wantsCrouch &&
       !ads &&
+      this.landingLag <= 0 &&
       (this.grounded || this.sprinting)
     if (wantSprint) {
       this.sprintHold += dt
@@ -409,6 +423,14 @@ export class Character {
     this.controller.computeColliderMovement(this.collider, desired)
     const moved = this.controller.computedMovement()
     this.grounded = this.controller.computedGrounded()
+
+    // 硬着陆：记下离地期间的最大下落速度，落地那一下决定要不要缓冲。
+    if (!wasGrounded && this.grounded) {
+      if (this.fallSpeed > 8) this.landingLag = 0.16
+      this.fallSpeed = 0
+    } else if (!this.grounded) {
+      this.fallSpeed = Math.max(this.fallSpeed, -this.vy)
+    }
 
     const t = this.body.translation()
     this.body.setNextKinematicTranslation({
