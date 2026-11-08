@@ -389,6 +389,9 @@ uniform float uExposure;
 uniform float uBloom;
 uniform float uGrain;
 uniform float uVignette;
+uniform float uPaper;
+/** 1 = 手绘档（提饱和 + 更硬的 S 曲线），0 = 写实档。 */
+uniform float uStyle;
 varying vec2 vUv;
 
 ${LUM}
@@ -417,8 +420,15 @@ void main() {
   float cos4 = pow( 1.0 / ( 1.0 + r2 * 2.4 ), 2.0 );
   hdr *= mix( 1.0, cos4, clamp( uVignette, 0.0, 1.0 ) );
 
-  // --- AgX（slope 1.0 / power 1.05 / sat 1.06）---
-  vec3 col = owAgX( hdr, 1.0, 1.05, 1.06 );
+  // --- 色调映射：写实走 AgX；手绘改走简单的指数肩部。
+  //     AgX 会压缩色相并把高光去饱和，色块之间读起来发闷；手绘要的是
+  //     "天空是蓝的、草是绿的"，所以手绘档保住本色，只把高光滚下去。---
+  vec3 col;
+  if ( uStyle > 0.5 ) {
+    col = 1.0 - exp( -hdr * 1.15 );
+  } else {
+    col = owAgX( hdr, 1.0, 1.05, 1.06 );
+  }
   col = clamp( col, 0.0, 1.0 );
   vec3 disp = linearToSrgb( col );
 
@@ -433,6 +443,15 @@ void main() {
   disp += vec3( 0.010, 0.004, -0.005 ) * highW * 0.7;   // 火光一侧的暖高光
   disp = clamp( disp, 0.0, 1.0 );
 
+  // --- 手绘档：色块之间要能一眼分开。AgX 会把高光去饱和，画面读起来发闷，
+  //     所以在显示空间补一次饱和 + 更硬的 S 曲线；写实档保持原样。---
+  if ( uStyle > 0.5 ) {
+    float l = owLum( disp );
+    disp = mix( vec3( l ), disp, 1.18 );
+    vec3 s = disp * disp * ( 3.0 - 2.0 * disp );
+    disp = mix( disp, s, 0.14 );
+  }
+
   // --- 颗粒：用 gl_FragCoord 而不是时间，逐像素稳定，不会像电视雪花一样闪。
   //     暗部少给：显示变换之后，暗部噪声是"画面脏"的主要来源。---
   if ( uGrain > 0.0005 ) {
@@ -440,6 +459,17 @@ void main() {
     float g2 = owHash12( gl_FragCoord.xy * 1.7 + 19.19 ) - 0.5;
     float response = uGrain * ( 0.35 + 0.65 * smoothstep( 0.0, 0.30, owLum( disp ) ) );
     disp += ( g1 * 0.65 + g2 * 0.35 ) * response;
+  }
+
+  // --- 纸纹：手绘场景的"纸感"来自两层低频斑 + 一层细纤维。
+  //     用 gl_FragCoord 而不是时间：纸是不会动的，动了就变成电视雪花。
+  //     只做乘性压暗 + 极轻的暖色偏移，不动色相，避免把整体调脏。---
+  if ( uPaper > 0.0005 ) {
+    vec2 px = gl_FragCoord.xy;
+    float blotch = owHash12( floor( px * 0.17 ) + 3.1 );
+    float fiber = smoothstep( 0.58, 0.96, owHash12( floor( px * 0.9 ) + 17.7 ) );
+    disp *= 1.0 - uPaper * ( blotch * 0.035 + fiber * 0.04 );
+    disp = mix( disp, disp * vec3( 1.02, 0.997, 0.972 ) + vec3( 0.012, 0.009, 0.006 ), uPaper * 0.35 );
   }
 
   // --- 8bit 写入前的抖动：天空大面积渐变最容易出条带 ---
@@ -749,6 +779,9 @@ export class PostFX {
         uBloom: { value: DEFAULTS.bloom },
         uGrain: { value: DEFAULTS.grain },
         uVignette: { value: DEFAULTS.vignette },
+        // 手绘档的纸张颗粒。写实档也会轻微生效，0 才是完全关闭。
+        uPaper: { value: 0.5 },
+        uStyle: { value: 1 },
       },
       vertexShader: FS_VERT,
       fragmentShader: COMPOSITE,
@@ -929,6 +962,14 @@ export class PostFX {
     this.contactReady = true
     // 同 setContactShadow：强度只在 contact shader 里应用一次。
     this.combineMaterial.uniforms.uContact.value = this.contactEnabled ? 1 : 0
+  }
+
+  /**
+   * 切换画风：手绘档补饱和 + 硬 S 曲线，写实档保持 AgX 原样。
+   */
+  setStyle(handDrawn: boolean): void {
+    this.compositeMaterial.uniforms.uStyle!.value = handDrawn ? 1 : 0
+    this.compositeMaterial.uniforms.uPaper!.value = handDrawn ? 0.5 : 0.15
   }
 
   setSettings(settings: PostSettings): void {

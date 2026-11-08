@@ -26,6 +26,17 @@ import { buildPineCamp, pineWater } from './zone_pine.ts'
 const boxes = new BrushSet()
 buildPineCamp(boxes, 0, 0)
 
+// 地面上的土路：纯装饰片（noCollide），把六个区域用'人走出来的路'串起来。
+// 手绘场景里，路是最便宜的构图工具：它告诉玩家往哪看，也把空地切成有意义的块。
+const paths = new BrushSet()
+paths.decal(6, 48, 2.8, 36, 'mud', 0.06) // 南入口 → 营地
+paths.decal(2, 16, 2.6, 8, 'mud', 0.06)
+paths.decal(26, -12, 12, 2.2, 'mud', 0.06) // 营地 → 锯木厂
+paths.decal(44, -22, 10, 2.0, 'mud', 0.06)
+paths.decal(18, 30, 8, 2.2, 'mud', 0.06) // 营地 → 伐木坡
+paths.decal(30, 44, 9, 2.0, 'mud', 0.06)
+boxes.list.push(...paths.list)
+
 // ---- 区域之间的林带：每个方向只留一个口子 ----
 const b = new BrushSet()
 treelineZ(b, 32, -52, -14, { spacing: 6.5, gaps: [[-36, -28]], seed: 0x1f01 }) // 营地 ↔ 锯木厂

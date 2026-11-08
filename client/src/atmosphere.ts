@@ -227,7 +227,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     uZenith: { value: new Color() },
     uHorizon: { value: new Color() },
     uBelow: { value: new Color() },
-    uEmber: { value: new Color(0x4a2a14) },
+    uEmber: { value: new Color(0x2a1d13) },
     uMoonDir: { value: moonDir.clone() },
     uMoonColor: { value: lin(MOON_COLOR).multiplyScalar(1.35) },
     uCloudDark: { value: new Color() },

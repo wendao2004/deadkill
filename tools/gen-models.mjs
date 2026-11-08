@@ -184,21 +184,24 @@ function pine(seed, { height = 7.5, spread = 2.0, tiers = 7, needles = true }) {
   // 断视线，模型细了就会从树皮里透出一根方柱。所以下半段用接近等径的
   // 0.47m 半径圆柱，上半段收细藏进树冠里。
   const trunkR = 0.47
-  part(parts, new CylinderGeometry(trunkR * 0.62, trunkR, height * 0.58, 8), {
-    pos: [0, height * 0.29, 0], color: 0x3b2a1d, variance: 0.18, rand, mat: 'bark',
+  // 活树的下半段藏进树冠即可；枯树没有树冠，树干必须一直长到枝顶，
+  // 否则 4m 以上的枝条会悬在半空，看起来像一群飘着的木棍。
+  const trunkH = needles ? height * 0.58 : height * 0.94
+  part(parts, new CylinderGeometry(needles ? trunkR * 0.62 : 0.09, trunkR, trunkH, 8), {
+    pos: [0, trunkH / 2, 0], color: 0x4e3924, variance: 0.18, rand, mat: 'bark',
   })
   if (needles) {
     for (let i = 0; i < tiers; i++) {
       const t = i / (tiers - 1)
       const y = height * (0.28 + t * 0.62)
-      const r = spread * (1 - t * 0.78)
-      const h = height * 0.22
+      const r = spread * (1 - t * 0.72)
+      const h = height * 0.16
       const cone = new ConeGeometry(r, h, 7)
       jitter(cone, r * 0.16, rand, [1, 0.25, 1])
       part(parts, cone, {
         pos: [(rand() - 0.5) * 0.12, y, (rand() - 0.5) * 0.12],
         rot: [0, rand() * Math.PI, 0],
-        color: i % 2 === 0 ? 0x22351f : 0x1a2a1a,
+        color: i % 2 === 0 ? 0x31502c : 0x274124,
         variance: 0.22,
         rand,
         mat: 'needle',
@@ -206,18 +209,25 @@ function pine(seed, { height = 7.5, spread = 2.0, tiers = 7, needles = true }) {
     }
     // 顶梢
     part(parts, new ConeGeometry(spread * 0.22, height * 0.16, 6), {
-      pos: [0, height * 0.95, 0], color: 0x2a3d24, variance: 0.2, rand, mat: 'needle',
+      pos: [0, height * 0.95, 0], color: 0x3a5a30, variance: 0.2, rand, mat: 'needle',
     })
   } else {
-    const n = 9
+    // 枯树：每根枝条必须**从树干长出去**。旧写法只绕 Z 转了 90°，所有枝条
+    // 都朝同一个方向平飞，看起来像围着树干的碎木棍。现在先沿 +X 摆好
+    // （根部在原点），再绕 Y 转到各自的方位角。
+    const n = 8
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1)
-      const y = height * (0.32 + t * 0.6)
-      const len = spread * 1.4 * (1 - t * 0.55)
-      const ang = rand() * Math.PI * 2
-      part(parts, new CylinderGeometry(0.03, 0.09, len, 4), {
-        pos: [Math.cos(ang) * len * 0.42, y, Math.sin(ang) * len * 0.42],
-        rot: [0, -ang, Math.PI / 2 - (rand() - 0.5) * 0.7],
+      const y = height * (0.3 + t * 0.62)
+      const len = spread * 1.5 * (1 - t * 0.45)
+      const ang = i * 2.39996 + (rand() - 0.5) * 0.5 // 黄金角：枝条不扎堆
+      const tilt = 0.42 + rand() * 0.4
+      const branch = new CylinderGeometry(0.035, 0.11, len, 5)
+      branch.rotateZ(Math.PI / 2 - tilt)
+      branch.translate(len / 2, 0, 0)
+      part(parts, branch, {
+        pos: [0, y, 0],
+        rot: [0, -ang, 0],
         color: 0x4a4238, variance: 0.2, rand, mat: 'bark',
       })
     }
@@ -455,9 +465,9 @@ function bonfire(seed) {
 // ------------------------------------------------------------------ 资产表
 
 const ASSETS = [
-  { name: 'pine_a', build: () => pine(0x51a1, { height: 8.2, spread: 2.2, tiers: 8 }), tags: ['tree'] },
-  { name: 'pine_b', build: () => pine(0x51a2, { height: 6.6, spread: 1.8, tiers: 7 }), tags: ['tree'] },
-  { name: 'pine_dead', build: () => pine(0x51a3, { height: 7.4, spread: 1.9, needles: false }), tags: ['tree', 'dead'] },
+  { name: 'pine_a', build: () => pine(0x51a1, { height: 8.6, spread: 1.35, tiers: 10 }), tags: ['tree'] },
+  { name: 'pine_b', build: () => pine(0x51a2, { height: 7.2, spread: 1.05, tiers: 9 }), tags: ['tree'] },
+  { name: 'pine_dead', build: () => pine(0x51a3, { height: 7.4, spread: 1.2, needles: false }), tags: ['tree', 'dead'] },
   { name: 'grass_clump', build: () => grassClump(0x51a4), tags: ['grass'] },
   { name: 'log_cabin_a', build: () => logCabin(0x51a5), tags: ['building'] },
   { name: 'sawmill_a', build: () => sawmill(0x51a6), tags: ['building'] },

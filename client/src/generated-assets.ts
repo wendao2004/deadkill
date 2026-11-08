@@ -67,6 +67,11 @@ export interface InstanceOptions {
   chunk?: number
   castShadow?: boolean
   receiveShadow?: boolean
+  /**
+   * 墨线材质。手绘档下每个实例会再挂一份同矩阵的 InstancedMesh 画背面外壳；
+   * 写实档或草这类细碎物件不传。
+   */
+  outline?: Material
 }
 
 const MANIFEST_URL = './models/generated/manifest.json'
@@ -175,6 +180,17 @@ export function instanceAsset(
       inst.computeBoundingSphere()
       parent.add(inst)
       result.push(inst)
+
+      if (options.outline) {
+        // 描边实例与本体共享矩阵：只多一次 draw call，不复制顶点数据。
+        const hull = new InstancedMesh(mesh.geometry as BufferGeometry, options.outline, list.length)
+        hull.instanceMatrix = inst.instanceMatrix
+        hull.castShadow = false
+        hull.receiveShadow = false
+        hull.raycast = () => {}
+        hull.computeBoundingSphere()
+        parent.add(hull)
+      }
     }
   }
   return result

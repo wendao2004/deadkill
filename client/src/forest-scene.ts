@@ -11,7 +11,7 @@
  * 这个模块刻意不认识渲染器：输入是 LevelDef 与资产表，输出是一棵 Group。
  */
 
-import { Group, type Object3D } from 'three'
+import { Group, type Material, type Object3D } from 'three'
 import { terrainHeightAt, type LevelDef } from '@dk/shared'
 import type { GeneratedAssets, Placement } from './generated-assets.ts'
 import { instanceAsset } from './generated-assets.ts'
@@ -73,7 +73,12 @@ function scatter(
 /** 三个"体型"不同的松树，按位置哈希挑，避免一眼看出复制粘贴。 */
 const PINES = ['pine_a', 'pine_b', 'pine_dead'] as const
 
-export function decorateGenerated(parent: Object3D, level: LevelDef, assets: GeneratedAssets): boolean {
+export function decorateGenerated(
+  parent: Object3D,
+  level: LevelDef,
+  assets: GeneratedAssets,
+  outline?: Material,
+): boolean {
   if (assets.size === 0) return false
   const rng = mulberry32(0x9e3779b9 ^ ((level.boundsHalf * 131) | 0))
   const root = new Group()
@@ -95,7 +100,7 @@ export function decorateGenerated(parent: Object3D, level: LevelDef, assets: Gen
     }
     // 篝火/路灯是发光体，不投阴影；建筑和原木堆要投。
     const light = asset.tags.includes('light')
-    instanceAsset(root, asset, list, { chunk: 0, castShadow: !light, receiveShadow: true })
+    instanceAsset(root, asset, list, { chunk: 0, castShadow: !light, receiveShadow: true, outline })
     placed += list.length
   }
 
@@ -113,9 +118,10 @@ export function decorateGenerated(parent: Object3D, level: LevelDef, assets: Gen
     const crownTop = b.y + b.hy
     const y = terrainHeightAt(level, b.x, b.z)
     const height = Math.min(18, Math.max(3.4, crownTop - y))
+    const roll = hash2(b.x, b.z) % 100
     const dead =
-      biome === 'swamp' ||
-      biome === 'quarry' ||
+      (biome === 'swamp' && roll < 55) ||
+      (biome === 'quarry' && roll < 45) ||
       (biome === 'forest' && b.x < -30 && b.z > 12)
     const asset = assets.get(dead ? 'pine_dead' : PINES[hash2(b.x, b.z) % 2]!)
     if (!asset) continue
@@ -133,25 +139,39 @@ export function decorateGenerated(parent: Object3D, level: LevelDef, assets: Gen
   for (const [name, list] of Object.entries(trees)) {
     const asset = assets.get(name)
     if (!asset || list.length === 0) continue
+    // 树不挂墨线：松针是细碎的锥体，2px 外壳在远处会糊成一团黑线，
+    // 反而把"树"读成"柱子"。树的轮廓交给提亮后的色块与边缘光。
     instanceAsset(root, asset, list, { chunk: 64, castShadow: true, receiveShadow: true })
     placed += list.length
   }
 
-  // 草/石/桩只在松林营地由这套资产负责：其它四张图的地面装饰仍然由
-  // nature-assets（CC0）撒，两套同时开会叠成双层草。
-  if (biome === 'forest') {
+  // 草/石/桩现在由这套资产在**所有地图**负责：CC0 那套是高光发亮的 PBR
+  // 材质，和手绘色阶放在一起就是一块油绿的塑料。
+  {
+    const grassPatches = biome === 'quarry' ? 45 : biome === 'church' ? 70 : biome === 'forest' ? 110 : 85
     // ---- 3. 草：贴地撒，避开墙、水、树桩 ----
     const grassAsset = assets.get('grass_clump')
     if (grassAsset) {
-      const spots = scatter(1700, level, rng, (x, z) => !insideSolid(level, x, z, 0.1) && !insideWater(level, x, z))
-      const placements: Placement[] = spots.map((p) => ({
-        x: p.x,
-        z: p.z,
-        y: terrainHeightAt(level, p.x, p.z) - 0.02,
-        rotY: rng() * Math.PI * 2,
-        scale: 0.75 + rng() * 0.75,
-        tint: rng() < 0.35 ? 0xe4efd2 : 0xffffff,
-      }))
+      // 成片长，不撒胡椒面：先找草窝，每个草窝周围 4m 内长 8~18 簇。
+      // 均匀撒点的结果是"地上均匀分布着一层草"，而手绘场景里的草是成簇的。
+      const patches = scatter(grassPatches, level, rng, (x, z) => !insideSolid(level, x, z, 0.4) && !insideWater(level, x, z))
+      const placements: Placement[] = []
+      for (const patch of patches) {
+        const n = 8 + Math.floor(rng() * 10)
+        for (let i = 0; i < n; i++) {
+          const x = patch.x + (rng() - 0.5) * 4.2
+          const z = patch.z + (rng() - 0.5) * 4.2
+          if (insideSolid(level, x, z, 0.1) || insideWater(level, x, z)) continue
+          placements.push({
+            x,
+            z,
+            y: terrainHeightAt(level, x, z) - 0.02,
+            rotY: rng() * Math.PI * 2,
+            scale: 0.55 + rng() * 0.6,
+            tint: rng() < 0.4 ? 0xe4efd2 : 0xffffff,
+          })
+        }
+      }
       instanceAsset(root, grassAsset, placements, { chunk: 64, castShadow: false, receiveShadow: true })
       placed += placements.length
     }

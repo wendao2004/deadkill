@@ -80,7 +80,7 @@ import { createHunterTextures, type HunterTextures } from './baked-textures.ts'
 import { createSurfaceMaps, loadSurfaceTextures, type SurfaceFamily, type SurfaceMaps } from './pbr-textures.ts'
 import { loadNatureAssets as loadNatureModels, scatterNature } from './nature-assets.ts'
 import { decorateVillage, loadVillageAssets } from './village-assets.ts'
-import { loadGeneratedAssets } from './generated-assets.ts'
+import { loadGeneratedAssets, type GeneratedAssets } from './generated-assets.ts'
 import { decorateGenerated } from './forest-scene.ts'
 import type { GraphicsQuality } from './settings.ts'
 import { buildProps, type Props } from './props.ts'
@@ -174,7 +174,7 @@ const TRACER_LIFE = 0.09
  * 2.6px 是折中：低于 2px 在集显 + 无 MSAA 的实际渲染里会被吃掉一两个像素，
  * 高到 4px 木箱那种半米见方的小物件就糊成黑块了。
  */
-const INK_PIXELS = 2.6
+const INK_PIXELS = 3.0
 
 /**
  * 远处角色的描边要比场景更粗。
@@ -576,13 +576,13 @@ export class Renderer {
   private readonly ink: ShaderMaterial
   private edgeMat: LineBasicMaterial | null = null
   /**
-   * 写实档开关。
+   * 画风开关：false = 手绘伪 3D（卡通色阶 + 墨线 + 排线），true = PBR 写实。
    *
-   * 第三档（全面写实）默认开启：武器与猎人走 PBR + IBL，不再叠卡通排线
-   * 和墨线。世界层（关卡/道具/怪物）在 M2 换材质之前仍走 toon，
-   * 所以这个开关目前只作用于通过 `surfaceMaterial` 拿材质的对象。
+   * 2026-11-08 决策：**默认手绘**。写实档把程序化几何的短板全暴露出来
+   * （低模 + PBR 光照 = 一眼假），而手绘档的信息量来自轮廓、色阶与排线，
+   * 恰好是程序化几何擅长的。写实分支保留，方便以后拿 authored 资产时 A/B。
    */
-  private readonly realistic = true
+  private readonly realistic = false
   /** 基础视野角（度），设置面板可改。开镜收窄在它之上叠加。 */
   private baseFov = BASE_FOV
   /** 渲染分辨率缩放，见 setRenderScale。 */
@@ -717,6 +717,7 @@ export class Renderer {
     // 后处理在知道尺寸后立刻建，避免第一帧用 0×0 的 RT。
     // 初始 4x 只是占位；Game 会在第一帧前按 GPU/设置调用 setQuality。
     this.post = new PostFX(this.gl, { samples: 4 })
+    this.post.setStyle(!this.realistic)
     this.post.setSize(this.cssWidth, this.cssHeight, Math.min(window.devicePixelRatio, 2), this.renderScale)
 
     this.scene = new Scene()
@@ -1028,8 +1029,9 @@ export class Renderer {
    * 隐藏程序化芦苇/枯树与树冠棱球；加载失败时保持程序化版本，场景不会空。
    */
   async loadNature(): Promise<void> {
-    // 松林营地用 generated-assets 那套程序化 GLB，两套植被同时开会叠成双层草。
-    if (this.level.biome === 'forest') return
+    // 生成资产已经接管树木与地面植被；CC0 那套只在生成资产完全失败时兜底。
+    // 两套同时开会叠成双层草，而且 CC0 的 PBR 材质和手绘色阶不是一个世界。
+    if (this.generatedTrees) return
     try {
       const assets = await loadNatureModels()
       const density = this.gpu.integrated || this.gpu.software ? 0.45 : 1.25
@@ -1074,10 +1076,49 @@ export class Renderer {
    * 和其它视觉壳一样是"锦上添花"：没有 heroes 锚点的地图、或者资产全部
    * 加载失败，都只是回到盒刷外观，不挡进局。
    */
+  /**
+   * 手绘档的 GLB 材质转换。
+   *
+   * 资产的配色本来就烘在顶点色里（生成器不写贴图），所以只需要把材质换成
+   * 卡通材质并打开 vertexColors；材质家族按用途给，树的排线走 foliage、
+   * 建筑走 wood、石头走 stone。返回一份共享墨线材质给实例外壳用。
+   */
+  private stylizeGenerated(assets: GeneratedAssets): Material {
+    const outline = createOutlineMaterial({ pixels: 2.0 })
+    this.disposables.push(outline)
+    for (const asset of assets.values()) {
+      const surface: ComicSurface =
+        asset.tags.includes('tree') || asset.tags.includes('grass')
+          ? 'foliage'
+          : asset.tags.includes('building')
+            ? 'wood'
+            : 'stone'
+      // 树没有墨线，靠一圈很轻的边缘光从夜色里分出来。
+      const rim = asset.tags.includes('tree') ? 0.16 : 0
+      const cache = new Map<Material, Material>()
+      asset.scene.traverse((object) => {
+        if (!(object instanceof Mesh)) return
+        const source = object.material as Material
+        let toon = cache.get(source)
+        if (!toon) {
+          toon = this.surfaceMaterial(0xffffff, { hatch: 0.3, hatchSpacing: 10, surface, specular: 0.03, rim })
+          ;(toon as Material & { vertexColors: boolean }).vertexColors = true
+          toon.needsUpdate = true
+          cache.set(source, toon)
+        }
+        object.material = toon
+      })
+    }
+    return outline
+  }
+
   async loadGenerated(): Promise<void> {
     try {
       const assets = await loadGeneratedAssets()
-      const ok = decorateGenerated(this.scene, this.level, assets)
+      // 手绘档：GLB 自带的是 PBR 材质，直接摆进卡通场景会像"贴错图"。
+      // 这里统一换成卡通材质 + 顶点色，并给实例挂一份墨线外壳。
+      const outline = this.realistic ? undefined : this.stylizeGenerated(assets)
+      const ok = decorateGenerated(this.scene, this.level, assets, outline)
       if (ok) {
         // 树干盒子的外观已经被模型包住；树冠棱球必须关掉，否则会出现
         // "方块绿球 + 真松树"叠在一起。
