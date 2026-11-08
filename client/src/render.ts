@@ -2053,6 +2053,7 @@ export class Renderer {
       const ads = (player.flags & StateFlags.Ads) !== 0
       const grounded = (player.flags & StateFlags.Grounded) !== 0
       const vaulting = (player.flags & StateFlags.Vaulting) !== 0
+      const climbing = (player.flags & StateFlags.Climbing) !== 0
       const sprinting = !sliding && avatar.speed > 6.4
       const walking = avatar.speed > 0.25
       if (walking) avatar.phase += avatar.speed * dt * (sprinting ? 1.9 : 2.4)
@@ -2067,6 +2068,7 @@ export class Renderer {
         sprinting,
         ads,
         vault: vaulting ? avatar.vaultTime / VAULT_TIME : -1,
+        climbing,
         phase: avatar.phase,
         dt,
       })
@@ -2213,6 +2215,14 @@ export class Renderer {
     this.rain = rain
     this.rainPositions = positions
     this.disposables.push(geo, mat)
+  }
+
+  /**
+   * 战局压力：0 = 开局，1 = 最后一秒。光会随对局推进暗下去，最后一段
+   * 地平线偏红 —— 时间压力从 HUD 数字变成画面本身。
+   */
+  setPressure(progress: number): void {
+    this.atmo.setPressure(progress)
   }
 
   setRain(active: boolean): void {

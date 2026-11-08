@@ -2097,6 +2097,11 @@ export class Game {
 
     // 重刀姿势开关：视图模型只在这一刀是重刀时放大蓄力/劈砍。
     this.renderer.setMeleeHeavy(this.meleeHeavy)
+    // 战局压力：光随剩余时间变暗，最后 28% 地平线往暗红偏。
+    // 只信服务端 1Hz 的目标包；重连前默认按满时长，不会一进来就天黑。
+    const secondsLeft = this.objective?.secondsLeft ?? MATCH_SECONDS
+    this.renderer.setPressure(1 - Math.max(0, secondsLeft) / MATCH_SECONDS)
+
     // 眼高直接取角色控制器的当前值（蹲下时更矮）：镜头和射线起点必须同源，
     // 否则近距离会出现"准星在他头上，服务端却判没打中"。
     this.renderer.updateCamera(

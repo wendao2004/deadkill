@@ -217,9 +217,10 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   // v7：目标包尾部多 1 字节 modifier，快照布局仍然没变。
   // v10：玩家快照多 1 字节 reserve（34 → 35）。
   // v11：四种地图 Boss 与 BossPulse 事件，快照布局不变。
-  assert.equal(PROTOCOL_VERSION, 11)
+  // v12：flags 从 u8 扩到 u16（35 → 36），攀爬位进快照。
+  assert.equal(PROTOCOL_VERSION, 12)
   assert.equal(SNAPSHOT_HEADER, 17)
-  assert.equal(PLAYER_SNAPSHOT_SIZE, 35)
+  assert.equal(PLAYER_SNAPSHOT_SIZE, 36)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)
 
   for (const n of [0, 1, 3]) {
@@ -265,19 +266,19 @@ test('snapshot: slot 单独占 1 字节，夹在 ammo 与 ackSeq 之间（v3 布
   })
   const view = new DataView(buffer)
   const off = SNAPSHOT_HEADER
-  assert.equal(view.getUint8(off + 26), 0) // flags
-  assert.equal(view.getUint8(off + 27), 10) // weaponId
-  assert.equal(view.getUint8(off + 28), 0) // ammo
-  assert.equal(view.getUint8(off + 29), 32) // reserve
-  assert.equal(view.getUint8(off + 30), 2) // slot
-  assert.equal(view.getUint32(off + 31, true), 0x01020304) // ackSeq
+  assert.equal(view.getUint16(off + 26, true), 0) // flags（u16）
+  assert.equal(view.getUint8(off + 28), 10) // weaponId
+  assert.equal(view.getUint8(off + 29), 0) // ammo
+  assert.equal(view.getUint8(off + 30), 32) // reserve
+  assert.equal(view.getUint8(off + 31), 2) // slot
+  assert.equal(view.getUint32(off + 32, true), 0x01020304) // ackSeq
 
   const decoded = decodeSnapshot(buffer)
   assert.equal(decoded.players[0]!.slot, 2)
   assert.equal(decoded.players[0]!.ackSeq, 0x01020304)
 })
 
-test('snapshot: 怪物段紧跟在玩家段之后，偏移 17 + n * 35 才是第一个怪物记录', () => {
+test('snapshot: 怪物段紧跟在玩家段之后，偏移 17 + n * 36 才是第一个怪物记录', () => {
   const buffer = encodeSnapshot({
     tick: 5,
     serverTime: 1.5,
@@ -293,7 +294,7 @@ test('snapshot: 怪物段紧跟在玩家段之后，偏移 17 + n * 35 才是第
   assert.equal(view.getUint16(13, true), 1)
   assert.equal(view.getUint16(15, true), 2)
 
-  // 第一个怪物记录的 id 就在 17 + 35 = 52 处，第二个再 +20。若有人把
+  // 第一个怪物记录的 id 就在 17 + 36 = 53 处，第二个再 +20。若有人把
   // 怪物段插到玩家段前面，这两个读数会变成玩家字段的碎片。
   const firstMonster = SNAPSHOT_HEADER + PLAYER_SNAPSHOT_SIZE
   assert.equal(view.getUint16(firstMonster, true), 900)
@@ -378,7 +379,7 @@ test('snapshot: yaw/pitch 走同一个 u16 映射，误差不超过一个量化�
   assertClose(atPi.yaw, Math.PI, ANGLE_TOLERANCE, 'yaw=PI')
 })
 
-test('snapshot: health 向上取整且不为负，flags/weaponId/ammo 只留低 8 位', () => {
+test('snapshot: health 向上取整且不为负，health 取整、flags 留 16 位、weaponId/ammo 留 8 位', () => {
   const decoded = decodeSnapshot(
     encodeSnapshot({
       tick: 0,
@@ -391,7 +392,7 @@ test('snapshot: health 向上取整且不为负，flags/weaponId/ammo 只留低 
     }),
   ).players
   assert.equal(decoded[0]!.health, 100)
-  assert.equal(decoded[0]!.flags, 0xff)
+  assert.equal(decoded[0]!.flags, 0x1ff)
   assert.equal(decoded[0]!.weaponId, 0x02)
   assert.equal(decoded[0]!.ammo, 0x1f)
   assert.equal(decoded[0]!.ackSeq, 0xdeadbeef)

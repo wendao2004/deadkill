@@ -167,6 +167,13 @@ export interface Atmosphere {
   /** 关卡切换时把雾颜色/密度灌进来（同时把天空地平线对齐到同一颜色）。 */
   setLevel(fogColor: number, fogDensity: number): void
   /**
+   * 战局压力：0 = 开局，1 = 最后一秒。
+   *
+   * 光线随对局推进整体压暗、雾变浓；最后 28% 里地平线往暗红偏，
+   * 让"时间不多了"不再是 HUD 上的数字，而是画面本身在收紧。
+   */
+  setPressure(progress: number): void
+  /**
    * 实时阴影档位。0 = 关闭，1024/2048 = 贴图边长。
    * 弱 GPU/核显上关掉阴影是提升帧率最直接的一档。
    */
@@ -694,7 +701,47 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   // 极低的环境光：只负责把"背光面"从纯黑抬到能看出轮廓，不参与形体的
   // 方向性（0.22 在四档 toon 里通常只抬最低一档）。没有它时，玩家正对
   // 的墙/箱子经常是一块纯黑，连掩体在哪都读不出来。
-  const ambient = new AmbientLight(0x2f4257, 0.28)
+  const AMBIENT_INTENSITY = 0.28
+  const ambient = new AmbientLight(0x2f4257, AMBIENT_INTENSITY)
+
+  // 战局压力：记住关卡原始的天光/雾参数，pressure 只在其上做乘性压暗，
+  // 天气修正（setModifier）改雾色时也不会把压力叠丢。
+  const baseSky = {
+    horizon: new Color(),
+    mid: new Color(),
+    zenith: new Color(),
+    trees: new Color(),
+    cloudDark: new Color(),
+    cloudLit: new Color(),
+    ember: new Color(0x1a1712),
+  }
+  let fogBaseDensity = 0.019
+  let pressure = 0
+
+  function applyPressure(): void {
+    const p = Math.min(1, Math.max(0, pressure))
+    const dim = 1 - 0.42 * p
+    moon.intensity = MOON_INTENSITY * dim
+    skyFill.intensity = SKY_FILL_INTENSITY * (1 - 0.3 * p)
+    rim.intensity = RIM_INTENSITY * (1 - 0.22 * p)
+    ambient.intensity = AMBIENT_INTENSITY * (1 - 0.22 * p)
+    fog.density = fogBaseDensity * (1 + 0.55 * p)
+    skyUniforms.uZenith.value.copy(baseSky.zenith).multiplyScalar(dim)
+    skyUniforms.uMid.value.copy(baseSky.mid).multiplyScalar(dim)
+    skyUniforms.uHorizon.value.copy(baseSky.horizon).multiplyScalar(dim)
+    skyUniforms.uTrees.value.copy(baseSky.trees).multiplyScalar(dim)
+    skyUniforms.uCloudDark.value.copy(baseSky.cloudDark).multiplyScalar(dim)
+    skyUniforms.uCloudLit.value.copy(baseSky.cloudLit).multiplyScalar(dim)
+
+    // 最后 28%：地平线洇成暗红，像远处已经烧起来了。
+    const late = Math.max(0, Math.min(1, (p - 0.72) / 0.28))
+    if (late > 0) {
+      skyUniforms.uHorizon.value.lerp(tmpColor.setHex(0x4a1710).multiplyScalar(dim), late * 0.55)
+      skyUniforms.uEmber.value.copy(tmpColor.setHex(0x2a1710).multiplyScalar(1 + late * 1.6))
+    } else {
+      skyUniforms.uEmber.value.copy(baseSky.ember)
+    }
+  }
   root.add(ambient)
 
   // ------------------------------------------------------------------ 火光
@@ -786,6 +833,21 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       .setHex(fogColor)
       .lerp(tmpColor.setHex(MOON_COLOR).multiplyScalar(0.8), 0.45)
       .multiplyScalar(1.55)
+
+    // 记下这一关的原始天光，压力只做乘性调整。
+    baseSky.horizon.copy(skyUniforms.uHorizon.value)
+    baseSky.mid.copy(skyUniforms.uMid.value)
+    baseSky.zenith.copy(skyUniforms.uZenith.value)
+    baseSky.trees.copy(skyUniforms.uTrees.value)
+    baseSky.cloudDark.copy(skyUniforms.uCloudDark.value)
+    baseSky.cloudLit.copy(skyUniforms.uCloudLit.value)
+    fogBaseDensity = fogDensity
+    applyPressure()
+  }
+
+  function setPressure(progress: number): void {
+    pressure = progress
+    applyPressure()
   }
 
   function setShadowQuality(size: number): void {
@@ -913,6 +975,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     moonDirection: moonDir,
     update,
     setLevel,
+    setPressure,
     setShadowQuality,
     addFireLight,
     dispose,

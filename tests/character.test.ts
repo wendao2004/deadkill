@@ -113,6 +113,45 @@ test('硬着陆后 0.16s 内不能起跑，之后恢复', () => {
   assert.equal(late, true, '缓冲结束后应恢复起跑')
 })
 
+test('空中贴墙可以攀爬，按跳跃触发蹬墙跳', () => {
+  const wallLevel: LevelDef = {
+    ...FLAT,
+    id: 'wall-test',
+    name: '墙面测试场',
+    boxes: [{ x: 0, y: 3, z: -1.6, hx: 2, hy: 3, hz: 0.3, material: 'stone' }],
+  }
+  const world = buildLevelWorld(wallLevel)
+  const c = makeCharacter(world)
+  // 起跳后一直按前进，等上升速度降下来再抓墙
+  c.step(world, HELD_JUMP, DT)
+  world.step()
+  let climbed = false
+  for (let i = 0; i < 40; i++) {
+    c.step(world, RUN_FORWARD, DT)
+    world.step()
+    if (c.climbing) climbed = true
+  }
+  assert.ok(climbed, '贴上高墙后应该进入攀爬')
+  const yBefore = c.feet.y
+
+  // 攀爬中按跳跃 = 蹬墙跳：朝墙外推 + 向上
+  c.step(world, HELD_JUMP, DT)
+  world.step()
+  const vz = c.vz
+  const vy = c.vy
+  // 蹬墙跳的那一帧只改速度，位移要等后续 tick
+  for (let i = 0; i < 6; i++) {
+    c.step(world, RUN_FORWARD, DT)
+    world.step()
+  }
+  const yAfter = c.feet.y
+  world.free()
+  assert.ok(!c.climbing, '蹬墙跳后应离开墙面')
+  assert.ok(vz > 3, `应该被推离墙面（vz=${vz.toFixed(2)}）`)
+  assert.ok(vy > 2, `应该向上弹起（vy=${vy.toFixed(2)}）`)
+  assert.ok(yAfter > yBefore, '蹬墙跳不应该往下掉')
+})
+
 test('空中贴着 0.9m 台面会自动攀沿', () => {
   const world = buildLevelWorld(LEDGE)
   const c = makeCharacter(world)

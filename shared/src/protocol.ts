@@ -245,7 +245,7 @@ export interface PlayerSnapshot {
 }
 
 /**
- * 一个玩家的定长编码大小 = 35。
+ * 一个玩家的定长编码大小 = 36。
  *
  * 逐字段写出来而不是写成 `2 + 3*4 + ...` 这样的算术式：之前那一版漏了一个
  * 字段，算式少算 1 字节，`encodeSnapshot` 于是在最后一个字段上抛
@@ -259,7 +259,7 @@ export const PLAYER_SNAPSHOT_SIZE =
   2 + // yaw
   2 + // pitch
   2 + // health
-  1 + // flags
+  2 + // flags（u16：滑铲/翻越/攀爬三个状态位）
   1 + // weaponId
   1 + // ammo
   1 + // reserve
@@ -352,12 +352,12 @@ export function encodeSnapshot(snapshot: Snapshot): ArrayBuffer {
     view.setUint16(off + 20, quantizeAngle(p.yaw), true)
     view.setUint16(off + 22, quantizeAngle(p.pitch), true)
     view.setUint16(off + 24, Math.max(0, Math.round(p.health)), true)
-    view.setUint8(off + 26, p.flags & 0xff)
-    view.setUint8(off + 27, p.weaponId & 0xff)
-    view.setUint8(off + 28, p.ammo & 0xff)
-    view.setUint8(off + 29, p.reserve & 0xff)
-    view.setUint8(off + 30, p.slot & 0xff)
-    view.setUint32(off + 31, p.ackSeq >>> 0, true)
+    view.setUint16(off + 26, p.flags & 0xffff, true)
+    view.setUint8(off + 28, p.weaponId & 0xff)
+    view.setUint8(off + 29, p.ammo & 0xff)
+    view.setUint8(off + 30, p.reserve & 0xff)
+    view.setUint8(off + 31, p.slot & 0xff)
+    view.setUint32(off + 32, p.ackSeq >>> 0, true)
     off += PLAYER_SNAPSHOT_SIZE
   }
 
@@ -396,12 +396,12 @@ export function decodeSnapshot(buffer: ArrayBuffer): Snapshot {
       yaw: dequantizeAngle(view.getUint16(off + 20, true)),
       pitch: dequantizeAngle(view.getUint16(off + 22, true)),
       health: view.getUint16(off + 24, true),
-      flags: view.getUint8(off + 26),
-      weaponId: view.getUint8(off + 27),
-      ammo: view.getUint8(off + 28),
-      reserve: view.getUint8(off + 29),
-      slot: view.getUint8(off + 30),
-      ackSeq: view.getUint32(off + 31, true),
+      flags: view.getUint16(off + 26, true),
+      weaponId: view.getUint8(off + 28),
+      ammo: view.getUint8(off + 29),
+      reserve: view.getUint8(off + 30),
+      slot: view.getUint8(off + 31),
+      ackSeq: view.getUint32(off + 32, true),
     })
     off += PLAYER_SNAPSHOT_SIZE
   }

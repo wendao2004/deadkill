@@ -108,6 +108,8 @@ export interface HunterPoseInput {
   ads: boolean
   /** 翻越进度 0..1；不在翻越时给 -1。 */
   vault: number
+  /** 是否在贴墙攀爬。 */
+  climbing?: boolean
   /** 步态相位（由调用方按位移累加）。 */
   phase: number
   dt: number
@@ -415,7 +417,22 @@ export function animateHunter(model: HunterModel, input: HunterPoseInput): void 
   let elbowL = 0.38
   let elbowR = 0.42
 
-  if (input.sliding) {
+  if (input.climbing) {
+    // 攀爬：双手举过头顶抓墙，膝盖收起，身体贴近墙面。
+    hipY = 0.88
+    spineRx = -0.12
+    headRx = 0.22
+    thighL = 0.55
+    thighR = 0.35
+    kneeL = -1.5
+    kneeR = -1.2
+    shoulderLx = 2.85
+    shoulderLz = 0.18
+    shoulderRx = 2.7
+    shoulderRz = -0.18
+    elbowL = 0.35
+    elbowR = 0.4
+  } else if (input.sliding) {
     // 滑铲：髋压到 0.5m，前腿（右）贴地伸出，后腿收起，上身反弓，
     // 双臂向两侧张开保持平衡。这是滑铲与"蹲着跑"最直观的区别。
     hipY = 0.50

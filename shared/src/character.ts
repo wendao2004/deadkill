@@ -45,6 +45,13 @@ import {
   SLIDE_MIN_ENTRY,
   SLIDE_MIN_SPEED_TO_START,
   SLIDE_STEER,
+  CLIMB_COOLDOWN,
+  CLIMB_REACH,
+  CLIMB_SPEED,
+  CLIMB_STICK,
+  CLIMB_TIME,
+  WALL_JUMP_PUSH,
+  WALL_JUMP_UP,
   SPEED_SPRINT,
   SPRINT_FORWARD_DOT,
   SPRINT_START_DELAY,
@@ -121,6 +128,17 @@ export class Character {
   private landingLag = 0
   /** 本次离地期间的最大下落速度（米/秒，正数）。 */
   private fallSpeed = 0
+  /**
+   * 攀爬状态：贴着墙向上爬一段，蹬墙跳的前置。
+   *
+   * 只在空中触发（走到墙边不会自动开始爬），按住前进持续爬升，松开/超时
+   * 脱离；期间按跳跃 = 蹬墙跳。
+   */
+  climbing = false
+  private climbTime = 0
+  private climbNormalX = 0
+  private climbNormalZ = 0
+  private climbCooldown = 0
   /** 跳跃容错窗口：预输入、coyote、冷却。三者都是"隐藏输入误差"的。 */
   private jumpBuffer = 0
   private jumpCooldown = 0
@@ -214,6 +232,9 @@ export class Character {
     this.mantleCooldown = 0
     this.landingLag = 0
     this.fallSpeed = 0
+    this.climbing = false
+    this.climbTime = 0
+    this.climbCooldown = 0
     if (!keepInputState) {
       this.prevCrouchHeld = false
       this.jumpBuffer = 0
@@ -260,6 +281,26 @@ export class Character {
     // 翻越是一段脚本位移：期间不接受普通移动/跳跃输入，结束后自动落地。
     if (this.vaulting) {
       this.stepVault(dt)
+      return
+    }
+
+    // 攀爬：贴墙期间由 stepClimb 接管，普通移动/重力都不生效。
+    if (this.climbing) {
+      this.stepClimb(world, input, dt)
+      return
+    }
+    this.climbCooldown = Math.max(0, this.climbCooldown - dt)
+    // 空中贴墙 + 按住前进 → 抓住墙面。地面走到墙边不会触发：攀爬是
+    // "跳上去扒住墙"的动作，不是自动爬楼梯。
+    if (
+      !this.grounded &&
+      !this.sliding &&
+      this.climbCooldown <= 0 &&
+      input.forward > 0.5 &&
+      this.vy < 3.5 &&
+      this.tryClimb(world, input)
+    ) {
+      this.stepClimb(world, input, dt)
       return
     }
 
@@ -647,6 +688,127 @@ export class Character {
     }
   }
 
+  /**
+   * 尝试抓住前方墙面。
+   *
+   * 判定用一条带法线的射线：法线必须大致水平（竖墙），否则那是地面或斜坡；
+   * 墙面还必须比脚底高出一人多（1.6m 以上），否则交给翻越/攀沿处理。
+   */
+  private tryClimb(world: World, input: PlayerInput): boolean {
+    console.log("DBG tryClimb", input.yaw, this.feet.y.toFixed(2), this.feet.z.toFixed(2), CLIMB_REACH)
+    const feet = this.feet
+    const fwd = yawToForward(input.yaw)
+    const origin = {
+      x: feet.x + fwd.x * this.radius * 0.6,
+      y: feet.y + 1.0,
+      z: feet.z + fwd.z * this.radius * 0.6,
+    }
+    const hit = world.castRayAndGetNormal(
+      new Ray(origin, fwd),
+      CLIMB_REACH,
+      true,
+      undefined,
+      undefined,
+      this.collider,
+    )
+    if (!hit) return false
+    const n = hit.normal
+    const horiz = Math.hypot(n.x, n.z)
+    if (horiz < 0.55 || Math.abs(n.y) > 0.55) return false
+
+    // 墙面要够高：从脚上方 1.8m 处再打一条向前的射线，还撞到同一面墙才算"墙"。
+    const tallProbe = world.castRay(
+      new Ray({ x: feet.x, y: feet.y + 1.8, z: feet.z }, fwd),
+      CLIMB_REACH + this.radius,
+      true,
+      undefined,
+      undefined,
+      this.collider,
+    )
+    if (!tallProbe) return false
+
+    this.climbing = true
+    this.climbTime = 0
+    this.climbNormalX = n.x / horiz
+    this.climbNormalZ = n.z / horiz
+    this.sliding = false
+    this.vx = 0
+    this.vy = 0
+    this.vz = 0
+    this.crouching = false
+    return true
+  }
+
+  /**
+   * 攀爬积分：贴墙向上，最多 CLIMB_TIME；按跳跃 = 蹬墙跳。
+   *
+   * 爬升时朝墙里按一点速度（CLIMB_STICK），否则角色控制器会因为胶囊与墙的
+   * 间隙每帧失去接触，表现为沿着墙"抖着往上飘"。
+   */
+  private stepClimb(world: World, input: PlayerInput, dt: number): void {
+    this.climbTime += dt
+
+    // 跳跃：蹬墙跳。方向是墙面法线（朝外墙），加向上速度。
+    const jumpHeld = (input.buttons & Buttons.Jump) !== 0
+    if (!jumpHeld) this.jumpLatch = false
+    if (jumpHeld && !this.prevJumpHeld && !this.jumpLatch) {
+      this.vy = WALL_JUMP_UP
+      this.vx = this.climbNormalX * WALL_JUMP_PUSH
+      this.vz = this.climbNormalZ * WALL_JUMP_PUSH
+      this.climbing = false
+      this.climbCooldown = CLIMB_COOLDOWN
+      this.jumpLatch = true
+      this.grounded = false
+      this.prevJumpHeld = jumpHeld
+      return
+    }
+    this.prevJumpHeld = jumpHeld
+
+    // 仍贴着墙？从胸口朝墙里打一条短射线。
+    const feet = this.feet
+    const still = world.castRay(
+      new Ray(
+        { x: feet.x, y: feet.y + 1.0, z: feet.z },
+        { x: -this.climbNormalX, y: 0, z: -this.climbNormalZ },
+      ),
+      // 从胶囊中心往墙里打：长度必须覆盖半径 + 间隙，否则隔着 0.6m 就
+      // 误判成"已经脱墙"，表现为抓上去立刻掉下来。
+      this.radius * 2 + 0.55,
+      true,
+      undefined,
+      undefined,
+      this.collider,
+    )
+    if (!still || input.forward < 0.3 || this.climbTime > CLIMB_TIME) {
+      this.climbing = false
+      this.climbCooldown = CLIMB_COOLDOWN
+      return
+    }
+
+    this.controller.computeColliderMovement(this.collider, {
+      x: -this.climbNormalX * CLIMB_STICK * dt,
+      y: CLIMB_SPEED * dt,
+      z: -this.climbNormalZ * CLIMB_STICK * dt,
+    })
+    const moved = this.controller.computedMovement()
+    this.grounded = this.controller.computedGrounded()
+    const tr = this.body.translation()
+    this.body.setNextKinematicTranslation({
+      x: tr.x + moved.x,
+      y: tr.y + moved.y,
+      z: tr.z + moved.z,
+    })
+    this.vx = 0
+    this.vz = 0
+    this.vy = CLIMB_SPEED
+
+    // 爬到墙顶：交给翻越（它会找台面高度并撑上去）。0.12s 的延迟是
+    // 让玩家先看到"抓住墙"的姿势，而不是一贴墙就自动翻过去。
+    if (this.climbTime > 0.12 && this.tryVault(world, input)) {
+      this.climbing = false
+    }
+  }
+
   private applyCrouch(world: World, wantsCrouch: boolean): void {
     if (wantsCrouch === this.crouching) return
 
@@ -703,6 +865,8 @@ export function stateFlagsOf(c: {
   sliding?: boolean
   /** 翻越中。可选：旧调用方不传时保持原行为。 */
   vaulting?: boolean
+  /** 攀爬中。可选：旧调用方不传时保持原行为。 */
+  climbing?: boolean
 }): number {
   let f = 0
   if (c.grounded) f |= StateFlags.Grounded
@@ -713,6 +877,7 @@ export function stateFlagsOf(c: {
   if (c.switching) f |= StateFlags.Switching
   if (c.sliding) f |= StateFlags.Sliding
   if (c.vaulting) f |= StateFlags.Vaulting
+  if (c.climbing) f |= StateFlags.Climbing
   return f
 }
 

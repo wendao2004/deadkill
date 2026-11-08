@@ -2454,6 +2454,7 @@ export class World {
             switching: isSwitching(player.loadout, this.tick),
             sliding: player.character.sliding,
             vaulting: player.character.vaulting,
+            climbing: player.character.climbing,
           }),
           weaponId: heldWeapon(player.loadout).id,
           ammo: heldAmmo(player.loadout),

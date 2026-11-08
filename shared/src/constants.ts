@@ -36,7 +36,7 @@
 // 11 = 四种地图 Boss（种类码 3..6）、怪物状态 Special(4) 与事件 BossPulse(8)。
 // 旧客户端不认识种类 4..6 会直接丢掉 Boss（看不见的 Boss 比连不上更糟），
 // 事件 8 还会被当成 Respawn 读 16 字节 —— 所以硬拒。
-export const PROTOCOL_VERSION = 11
+export const PROTOCOL_VERSION = 12
 
 /**
  * 服务端模拟频率（Hz）。
@@ -193,6 +193,22 @@ export const VAULT_TIME = 0.34
 /** 翻越时的水平推进速度（米/秒）。0.34s × 4.2 ≈ 1.4m，正好越过一个台面。 */
 export const VAULT_SPEED = 4.2
 
+// ---------------------------------------------------------------- 攀爬 / 蹬墙跳
+
+/** 贴墙后的爬升速度（米/秒）。 */
+export const CLIMB_SPEED = 2.4
+/** 一次攀爬的持续时间：2.4 × 1.1 ≈ 2.6m 的爬行距离。 */
+export const CLIMB_TIME = 1.1
+/** 从胸口到墙面的探测距离。 */
+export const CLIMB_REACH = 0.62
+/** 松手/蹬墙跳后的再抓取冷却。 */
+export const CLIMB_COOLDOWN = 0.4
+/** 贴墙时朝墙里按的速度（米/秒），避免爬升途中脱离墙面。 */
+export const CLIMB_STICK = 0.25
+/** 蹬墙跳：水平推力与向上速度。 */
+export const WALL_JUMP_PUSH = 5.4
+export const WALL_JUMP_UP = 4.7
+
 /** 最大生命值。两枪躯干或一枪头致死 —— 猎杀类的核心节奏。 */
 export const MAX_HEALTH = 150
 
@@ -294,6 +310,8 @@ export const StateFlags = {
   Sliding: 1 << 6,
   /** 翻越中：客户端用它播翻越姿势（撑手、收腿、越过台面）。 */
   Vaulting: 1 << 7,
+  /** 攀爬中：贴着墙向上爬。flags 从 u8 扩到 u16 就是为了它。 */
+  Climbing: 1 << 8,
 } as const
 
 // ---------------------------------------------------------------- 搜刮
@@ -595,11 +613,11 @@ export const MELEE_WEAPON_ID = 10
 /**
  * 重刀（刀上右键）。
  *
- * 轻刀 70 伤害、380ms 一刀；重刀 2.2 倍伤害、900ms 一次，刀程与扇形都放大。
+ * 轻刀 70 伤害、300ms 一刀；重刀 2.2 倍伤害、800ms 一次，刀程与扇形都放大。
  * 躯干一刀 154 > 满血 150，所以重刀是"贴脸一击必杀"，代价是挥空后近 1 秒
  * 没有第二次机会。数值放 shared 里，客户端预测动画与服务端判定必须同源。
  */
-export const KNIFE_HEAVY_INTERVAL_MS = 900
+export const KNIFE_HEAVY_INTERVAL_MS = 800
 export const KNIFE_HEAVY_DAMAGE_SCALE = 2.2
 export const KNIFE_HEAVY_RANGE = 2.9
 export const KNIFE_HEAVY_ARC = 1.15

@@ -405,8 +405,8 @@ const SWITCH_EXIT_ROLL = 0.6
  * 抬手和劈下一样长会读成一个匀速的钟摆。劈下段最短（0.28）—— 它必须是
  * 全程最快的一段，玩家在按下的瞬间就该看到刀已经到低了。
  */
-const MELEE_WIND_END = 0.34
-const MELEE_SLASH_END = 0.62
+const MELEE_WIND_END = 0.28
+const MELEE_SLASH_END = 0.55
 
 /** 蓄力位：刀举到左上，刃口向上翻（rx 正 = 刀尖抬起来）。 */
 const MELEE_WIND_RX = 0.62
@@ -417,12 +417,12 @@ const MELEE_WIND_PY = 0.052
 const MELEE_WIND_PZ = 0.028
 
 /** 劈到位：刀甩到右下，同时往前送出去一点（pz 为负 = 递向敌人）。 */
-const MELEE_SLASH_RX = -1.02
+const MELEE_SLASH_RX = -1.12
 const MELEE_SLASH_RY = 0.64
 const MELEE_SLASH_RZ = -0.54
 const MELEE_SLASH_PX = -0.072
 const MELEE_SLASH_PY = -0.098
-const MELEE_SLASH_PZ = -0.086
+const MELEE_SLASH_PZ = -0.098
 
 /** 收招过冲：回程在俯仰上多抬 0.1rad，像"甩回来再落定"。 */
 const MELEE_RECOVER_RX = 0.1
@@ -515,6 +515,20 @@ interface WeaponRig {
   /** 刀专用：刀光面片与自己的材质（不是刀为 null）。 */
   readonly glow: Mesh | null
   readonly glowMat: Material | null
+  /**
+   * 换弹姿态的每把枪微调，乘在全局 RELOAD_* 上。
+   *
+   * 同一个"压枪换弹"动作套在五把枪上就是五把枪长得一样；这组系数让
+   * 杠杆步枪往右压、双管折管、转轮把弹巢甩向左侧、卡宾把枪拉近换弹匣。
+   */
+  readonly reloadK?: {
+    x?: number
+    y?: number
+    z?: number
+    pitch?: number
+    yaw?: number
+    roll?: number
+  }
   /** 换弹/后坐驱动的局部零件；没有就不动。 */
   readonly parts?: {
     hammer?: Mesh
@@ -859,7 +873,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   )
   builtModels.push(rifle)
   inkModel(rifle.group)
-  register(1, rifleRig(rifle, { muzzleZ: -0.31 - 0.62 - 0.01 }))
+  register(1, rifleRig(rifle, { muzzleZ: -0.31 - 0.62 - 0.01, reloadK: { roll: 1.15, pitch: 1.0 } }))
 
   // 消音卡宾：枪管与护木都短一截，消音器从枪口再伸出 19cm。
   const carbine = buildRifle(
@@ -868,7 +882,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   )
   builtModels.push(carbine)
   inkModel(carbine.group)
-  register(6, rifleRig(carbine, { hipZ: RIFLE_HIP_Z + 0.02, muzzleZ: -0.31 - 0.56 - 0.20 }))
+  // 卡宾：把枪拉近换弹匣，不整把压下去。
+  register(6, rifleRig(carbine, { hipZ: RIFLE_HIP_Z + 0.02, muzzleZ: -0.31 - 0.56 - 0.20, reloadK: { x: -0.35, y: -0.45, z: 1.5, pitch: 0.65, yaw: -0.55, roll: -0.7 } }))
 
   // 神射手：最长枪管 + 光学镜；整把枪往前推 4cm、往右让 1cm，长枪身别顶脸。
   const sniper = buildRifle(
@@ -888,6 +903,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       adsPitch: 0,
       adsY: solveAdsY(0, -0.55, SIGHT_Y, SIGHT_REAR_Z, GUN_SCALE),
       muzzleZ: -0.31 - 0.74 - 0.01,
+      // 神射手：动作更慢更稳，枪身往前送。
+      reloadK: { z: 0.9, pitch: 1.2, roll: 0.6, x: -0.2 },
     }),
   )
 
@@ -917,6 +934,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     glow: null,
     glowMat: null,
     parts: { hammers: shotgun.hammers },
+    // 双管：折管换弹 —— 枪口大幅下压，枪身侧过来。
+    reloadK: { pitch: 1.35, roll: 0.35, y: -0.55, z: 0.5 },
   })
 
   // 柯尔特 1878 短管：同一套零件的第二份实例，位置再压低 8mm（重心更低）。
@@ -946,6 +965,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     glow: null,
     glowMat: null,
     parts: { hammers: shotgun2.hammers },
+    reloadK: { pitch: 1.3, roll: 0.45, y: -0.6, z: 0.45 },
   })
 
   const revolver = buildRevolver(mats)
@@ -974,6 +994,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     glow: null,
     glowMat: null,
     parts: { cylinder: revolver.cylinder, hammer: revolver.hammer },
+    // 转轮：把弹巢甩向画面左侧，枪口仍朝前 —— 换弹时看得见转轮。
+    reloadK: { x: -0.55, roll: -1.35, yaw: 0.55, pitch: 0.7, z: 0.3 },
   })
 
   const knife = buildKnife(mats)
@@ -1081,7 +1103,9 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     const ads = clamp01(state.ads)
     const sw = state.switchProgress === undefined ? 1 : clamp01(state.switchProgress)
     // settled：0 = 还在举枪 / 1 = 已经完全就位。切枪期间一切"自由"动画都要乘它。
-    const settled = smoothstep01(sw)
+    // 切枪收尾用 ease-out 而不是 smoothstep：smoothstep 两头都慢，举枪
+    // 最后 20% 会显得"顶不上去"；ease-out 让枪在最后一段快速咬合到位。
+    const settled = 1 - Math.pow(1 - sw, 3)
     // 一切"呼吸/摆动"类动画都乘 motion：开镜混合到 1 时它们必须严格为 0，
     // 否则玩家盯着照门会看到枪在自己晃，"我真的在瞄"的反馈就废了。
     const motion = (1 - ads) * settled
@@ -1303,6 +1327,15 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     // 直接画穿墙。只动视觉，不动相机/射线。
     const wall = state.wallBlock === undefined ? 0 : clamp01(state.wallBlock)
 
+    // 每把枪的换弹姿态系数：没有就是 1，行为与旧版逐像素一致。
+    const rk = rig.reloadK
+    const rkx = rk?.x ?? 1
+    const rky = rk?.y ?? 1
+    const rkz = rk?.z ?? 1
+    const rkPitch = rk?.pitch ?? 1
+    const rkYaw = rk?.yaw ?? 1
+    const rkRoll = rk?.roll ?? 1
+
     const px =
       rig.hipX +
       (rig.adsX - rig.hipX) * ads +
@@ -1312,7 +1345,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       swaySprintX +
       SPRINT_X * sprint +
       SLIDE_X * slide +
-      RELOAD_X * reload +
+      RELOAD_X * reload * rkx +
       shakeX +
       SWITCH_SIDE * slotK * side
     const py =
@@ -1325,7 +1358,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       swaySprintY +
       SPRINT_Y * sprint +
       SLIDE_Y * slide +
-      RELOAD_Y * reload +
+      RELOAD_Y * reload * rky +
       land +
       shakeY -
       SWITCH_DIP * slotK * dip
@@ -1336,7 +1369,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       recBackOff +
       SPRINT_Z * sprint +
       SLIDE_Z * slide +
-      RELOAD_Z * reload +
+      RELOAD_Z * reload * rkz +
       SWITCH_PULL * slotK * pull
 
     // 相机滞后弹簧：目标由"这一帧转了多少"决定，欠阻尼让停手后有过冲。
@@ -1386,7 +1419,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       recPitchOff +
       SPRINT_PITCH * sprint +
       SLIDE_PITCH * slide -
-      (RELOAD_PITCH_DOWN + rig.pitch * motion) * reload +
+      (RELOAD_PITCH_DOWN * rkPitch + rig.pitch * motion) * reload +
       shakeRoll * 0.4 -
       SWITCH_PITCH * slotK * pitchK +
       lagPitch * lagScale
@@ -1396,7 +1429,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       recYawOff +
       SPRINT_YAW * sprint +
       SLIDE_YAW * slide +
-      RELOAD_YAW * reload -
+      RELOAD_YAW * reload * rkYaw -
       SWITCH_YAW * slotK * yawK +
       lagYaw * lagScale
     const rz =
@@ -1407,7 +1440,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       bobRoll +
       swayRotZ +
       recRollOff +
-      RELOAD_ROLL * reload +
+      RELOAD_ROLL * reload * rkRoll +
       shakeRoll -
       SWITCH_ROLL * slotK * rollK +
       MELEE_ROOT_ROLL * punch
@@ -1531,7 +1564,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       } else {
         // sw=0 时 e=0（贴着上一帧的手内姿态），随 sw→0.5 甩到画面外；
         // 反过来会让旧枪第一帧瞬移到最大位移，再倒着飞回来。
-        const e = sw / SWITCH_EXIT_END
+        // 旧枪先快后慢地甩出去：线性出场在前半段像"平移"，压一点指数更利落。
+        const e = Math.pow(sw / SWITCH_EXIT_END, 0.72)
         const g = outgoing.group
         g.position.set(SWITCH_EXIT_X * e, -SWITCH_EXIT_DROP * e, SWITCH_EXIT_Z * e)
         g.rotation.set(-SWITCH_EXIT_PITCH * e, SWITCH_EXIT_YAW * e, SWITCH_EXIT_ROLL * e)
