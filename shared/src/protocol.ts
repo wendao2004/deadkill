@@ -960,6 +960,10 @@ export interface LootPacket {
   bandages: number
   /** 当前包扎进度 0..100，没在包扎就是 0。 */
   healPct: number
+  /** 本局合同 id（0 = 没接）。 */
+  contract: number
+  /** 合同当前进度（击杀/搜刮/撤离次数）。 */
+  contractProgress: number
 }
 
 /**
@@ -970,7 +974,7 @@ export interface LootPacket {
  * 新字段一律追加在 itemCount 之后：物品记录紧跟在包头后面，往前插会连带
  * 改掉每条记录的偏移。
  */
-export const LOOT_HEADER = 1 + 2 + 1 + 2 + 2 + 1 + 1 + 1
+export const LOOT_HEADER = 1 + 2 + 1 + 2 + 2 + 1 + 1 + 1 + 1 + 1
 
 /** 每件物品 2 字节：id(u8) + count(u8)。 */
 export const LOOT_ITEM_SIZE = 2
@@ -1008,6 +1012,8 @@ export function encodeLoot(p: LootPacket): ArrayBuffer {
   view.setUint8(9, Math.max(0, Math.min(LOOT_COUNT_MAX, Math.round(p.bandages))))
   // healPct: 包扎进度 0..100（u8）
   view.setUint8(10, Math.max(0, Math.min(100, Math.round(p.healPct))))
+  view.setUint8(11, Math.max(0, Math.min(255, p.contract)))
+  view.setUint8(12, Math.max(0, Math.min(255, p.contractProgress)))
   let off = LOOT_HEADER
   for (let i = 0; i < count; i++) {
     const item = p.items[i]!
@@ -1031,6 +1037,8 @@ export function decodeLoot(buffer: ArrayBuffer): LootPacket {
   const count = view.getUint8(8)
   const bandages = view.getUint8(9)
   const healPct = view.getUint8(10)
+  const contract = view.getUint8(11)
+  const contractProgress = view.getUint8(12)
   // 先按 itemCount 算出应有长度再读：少一个字节就抛，绝不读出半条记录。
   if (view.byteLength < LOOT_HEADER + count * LOOT_ITEM_SIZE) {
     throw new Error(
@@ -1044,7 +1052,7 @@ export function decodeLoot(buffer: ArrayBuffer): LootPacket {
     items.push({ id: view.getUint8(off), count: view.getUint8(off + 1) })
     off += LOOT_ITEM_SIZE
   }
-  return { value, searchPct, searchSpotId, nearSpotId, items, bandages, healPct }
+  return { value, searchPct, searchSpotId, nearSpotId, items, bandages, healPct, contract, contractProgress }
 }
 
 /** i16 的合法范围。spotId 只可能是 -1 或一个小下标，钳制纯属防御。 */

@@ -49,7 +49,7 @@
  * body（和 #grain 用 multiply 是同一个套路），dispose() 时原样摘掉。
  */
 
-import { RESPAWN_DELAY_MS, wrapAngle } from '@dk/shared'
+import { CONTRACTS, RESPAWN_DELAY_MS, wrapAngle } from '@dk/shared'
 import './hud.css'
 
 // ---------------------------------------------------------------- 对外契约
@@ -73,6 +73,10 @@ export interface ObjectiveModel {
   extractProgress: number
   /** 本局剩余秒数 */
   secondsLeft: number
+  /** 世界事件：0 无 / 1 补给空投 / 2 血月 */
+  event?: number
+  /** 事件剩余秒数 */
+  eventSeconds?: number
   outcome: 'none' | 'escaped' | 'dead'
 
   // ---- 以下全部可选：服务端还在加三槽武器，接线前不传就整块不动 ----
@@ -127,6 +131,7 @@ export interface ObjectiveHud {
     lair: { x: number; z: number } | null,
     extracts: { x: number; z: number }[],
   ): void
+  updateContract(contract: number, progress: number): void
   banner(title: string, subtitle: string, tone?: 'amber' | 'blood' | 'bile'): void
   /**
    * 播一段全屏"幕"。
@@ -304,6 +309,18 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
   const clockSub = el('div', 'dko-clock-sub', '剩余')
   clock.append(clockNum, clockSub)
 
+  // 世界事件横幅：补给空投 / 血月。平时隐藏，事件期间挂在计时器下方。
+  const eventBox = el('div', 'dko-event')
+  const eventTitle = el('div', 'dko-event-title', '')
+  const eventSub = el('div', 'dko-event-sub', '')
+  eventBox.append(eventTitle, eventSub)
+
+  // 合同进度：左下角的小条，只在本局接了合同时出现。
+  const contractBox = el('div', 'dko-contract')
+  const contractName = el('span', 'dko-contract-name', '')
+  const contractProg = el('span', 'dko-contract-prog', '')
+  contractBox.append(contractName, contractProg)
+
   // 携带赏金后的撤离点方位：三行"名字 距离 箭头"，只在本人携带时出现。
   const bearingBox = el('div', 'dko-bearing')
   const bearingRows = [0, 1, 2].map(() => {
@@ -400,7 +417,7 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
     slotNums.push(num)
   }
 
-  host.append(cluesBox, clock, compass, bearingBox, bannerEl, banishBox, extractBox, outcomeBox, slotsBox, curtain)
+  host.append(cluesBox, clock, eventBox, contractBox, compass, bearingBox, bannerEl, banishBox, extractBox, outcomeBox, slotsBox, curtain)
   root.append(host)
 
   // 死亡演出：去饱和层 + UI 层，都挂 body（见文件头的"为什么挂到 body"）
@@ -424,6 +441,8 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
   let lairCache = false
   let carrierCache = -1
   let clockCache = -1
+  let eventCache = -1
+  let eventSecCache = -1
   let criticalCache = false
   let banishCache = -1
   let extractOnCache = false
@@ -970,6 +989,23 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
 
   // ---- 对外方法 ----
 
+  function updateContract(contract: number, progress: number): void {
+    if (contract <= 0) {
+      contractBox.classList.remove('is-on')
+      return
+    }
+    const spec = CONTRACTS[contract]
+    if (!spec) {
+      contractBox.classList.remove('is-on')
+      return
+    }
+    contractBox.classList.add('is-on')
+    const done = progress >= spec.target
+    contractBox.classList.toggle('is-done', done)
+    contractName.textContent = spec.name
+    contractProg.textContent = done ? '完成 +$' + spec.reward : progress + '/' + spec.target
+  }
+
   function update(model: ObjectiveModel): void {
     if (disposed) return
 
@@ -1040,6 +1076,28 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
     if (critical !== criticalCache) {
       criticalCache = critical
       clock.classList.toggle('is-critical', critical)
+    }
+
+    // ---- 世界事件横幅 ----
+    const event = model.event ?? 0
+    if (eventCache !== event) {
+      eventCache = event
+      eventBox.classList.toggle('is-on', event !== 0)
+      eventBox.classList.toggle('is-blood', event === 2)
+      if (event === 1) {
+        eventTitle.textContent = '补 给 空 投'
+        eventSub.textContent = '图心附近 · 高价值木箱'
+      } else if (event === 2) {
+        eventTitle.textContent = '血 月 升 起'
+        eventSub.textContent = '怪物增多 · 现金 +25%'
+      }
+    }
+    if (event === 2) {
+      const eventSec = Math.max(0, Math.round(model.eventSeconds ?? 0))
+      if (eventSecCache !== eventSec) {
+        eventSecCache = eventSec
+        eventSub.textContent = '怪物增多 · 现金 +25% · ' + eventSec + 's'
+      }
     }
 
     // ---- 巢穴暴露 / 赏金持有 ----
@@ -1250,5 +1308,5 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
     dots = []
   }
 
-  return { update, updateBearing, updateCompass, banner, playTransition, setVisible, dispose }
+  return { updateContract, update, updateBearing, updateCompass, banner, playTransition, setVisible, dispose }
 }

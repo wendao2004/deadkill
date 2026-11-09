@@ -2171,6 +2171,8 @@ export class World {
         items: player.loot,
         bandages: this.itemCount(player, LOOT_ITEM.Bandage),
         healPct: Math.min(100, Math.floor((player.healMs / this.healNeed(player)) * 100)),
+        contract: player.contract,
+        contractProgress: player.contractProgress,
       })
       // 比对编码后的字节而不是逐字段：items 是数组，逐字段比较要单独处理长度和顺序，
       // 而包本身就 9 + 2N 字节，比一遍几乎不要钱。

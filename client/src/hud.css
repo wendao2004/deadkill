@@ -1484,3 +1484,81 @@ body:has(> .dko-death-ui.is-on) #crosshair {
   color: var(--bone, #d8cfba);
   letter-spacing: 0.08em;
 }
+
+/* ------------------------------------------------------------------ 世界事件 / 合同 */
+
+/*
+ * 事件横幅：挂在罗盘下方，只在事件期间出现。
+ * 不占中央视野：它回答"现在这局在发生什么"，但不该像阶段横幅那样打断瞄准。
+ */
+.dko-event {
+  position: absolute;
+  left: 50%;
+  top: 112px;
+  transform: translate(-50%, -6px);
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms linear, transform 260ms cubic-bezier(0.2, 0.9, 0.3, 1);
+  padding: 4px 18px 6px;
+  background:
+    linear-gradient(to bottom, rgba(12, 11, 10, 0.62), rgba(12, 11, 10, 0.18) 82%, transparent);
+}
+
+.dko-event.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.dko-event-title {
+  font-family: var(--font-display, 'Arial Black', Impact, sans-serif);
+  font-size: 16px;
+  letter-spacing: 0.24em;
+  color: var(--amber, #d99a4a);
+  text-shadow: 2px 2px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dko-event-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--bone, #d8cfba);
+  opacity: 0.82;
+}
+
+.dko-event.is-blood .dko-event-title {
+  color: var(--blood, #7d2b22);
+  text-shadow: 2px 2px 0 rgba(12, 11, 10, 0.9), 0 0 14px rgba(125, 43, 34, 0.55);
+}
+
+/* 合同进度：左上角线索下方的一条小读数。 */
+.dko-contract {
+  position: absolute;
+  left: 22px;
+  top: 122px;
+  display: none;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 10px 4px;
+  background: rgba(12, 11, 10, 0.5);
+  border-left: 2px solid var(--amber, #d99a4a);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--bone, #d8cfba);
+}
+
+.dko-contract.is-on {
+  display: flex;
+}
+
+.dko-contract-name {
+  color: var(--amber, #d99a4a);
+}
+
+.dko-contract.is-done {
+  border-left-color: var(--bile, #9aa845);
+}
+
+.dko-contract.is-done .dko-contract-name {
+  color: var(--bile, #9aa845);
+}

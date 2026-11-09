@@ -36,7 +36,7 @@
 // 11 = 四种地图 Boss（种类码 3..6）、怪物状态 Special(4) 与事件 BossPulse(8)。
 // 旧客户端不认识种类 4..6 会直接丢掉 Boss（看不见的 Boss 比连不上更糟），
 // 事件 8 还会被当成 Respawn 读 16 字节 —— 所以硬拒。
-export const PROTOCOL_VERSION = 18
+export const PROTOCOL_VERSION = 19
 
 /**
  * 服务端模拟频率（Hz）。

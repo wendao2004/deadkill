@@ -1595,6 +1595,7 @@ export class Game {
       this.options.onTraitFx?.(Trait.QuickHand)
     if (loot.healPct > 0 && healWas === 0) this.audio.searchStart()
     else if (loot.healPct > healWas) this.audio.searchTick(loot.healPct / 100)
+    this.objectiveHud?.updateContract(loot.contract, loot.contractProgress)
   }
 
   private clearResultTimer(): void {
@@ -1780,6 +1781,8 @@ export class Game {
       extractName: index >= 0 && (packet?.extractProgress ?? 0) > 0 ? (extracts[index]?.name ?? '') : '',
       extractProgress: packet?.extractProgress ?? 0,
       secondsLeft: packet?.secondsLeft ?? MATCH_SECONDS,
+      event: packet?.event ?? 0,
+      eventSeconds: packet?.eventSeconds ?? 0,
       outcome: packet?.outcome ?? 'none',
       // 三槽属于"目标 HUD"而不是"我的读数"：它们是常驻的三格栏位图示，
       // 和线索/撤离一样刷新频率低，走同一份缓存比对。

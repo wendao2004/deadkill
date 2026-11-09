@@ -72,10 +72,9 @@ test('战利品包往返：空列表、满列表（255 件）、标量都在', (
   assert.equal(full.value, 1234)
   assert.equal(full.searchPct, 42)
 
-  // 长度必须能从字段清单直接数出来：头部 9 字节 + 每件 2 字节。
-  // v6 起尾部多了绷带数与包扎进度两个 u8：11 = 1 kind + 2 value + 1 searchPct
+
   // + 2 searchSpot + 2 nearSpot + 1 itemCount + 1 bandages + 1 healPct。
-  assert.equal(LOOT_HEADER, 11)
+  assert.equal(LOOT_HEADER, 13)
   assert.equal(LOOT_ITEM_SIZE, 2)
   assert.equal(encodeLoot({ value: 0, searchPct: 0, searchSpotId: -1, nearSpotId: -1, items }).byteLength, LOOT_HEADER + LOOT_MAX_ITEMS * LOOT_ITEM_SIZE)
 })
