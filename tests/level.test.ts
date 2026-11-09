@@ -134,7 +134,7 @@ test('每张图都能被 buildLevelWorld 建成物理世界，且盒子数在上
     // 地面 + 每块可碰撞盒子 + 4 道边界墙
     assert.equal(
       world.colliders.len(),
-      solid(level.boxes).length + 5,
+      solid(level.boxes).length + 5 + (level.doors?.length ?? 0),
       `${level.id} 的碰撞体数量对不上`,
     )
     world.free()

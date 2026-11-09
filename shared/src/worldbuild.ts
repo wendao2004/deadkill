@@ -10,7 +10,7 @@
  * 撞到服务端的一堵隐形墙却看不出原因。反正只有 4 个 cuboid。
  */
 
-import type { ColliderDesc } from '@dimforge/rapier3d-compat'
+import type { Collider, ColliderDesc } from '@dimforge/rapier3d-compat'
 import {
   ColliderDesc as ColliderDescValue,
   init as initRapier,
@@ -64,8 +64,30 @@ export function buildLevelWorld(level: LevelDef): World {
     world.createCollider(desc)
   }
 
+  const doorColliders: Collider[] = []
+  for (const door of level.doors ?? []) {
+    const half = (door.rotY ?? 0) / 2
+    const desc = ColliderDescValue.cuboid(door.hx, door.height / 2, door.hz)
+      .setTranslation(door.x, level.groundY + door.height / 2, door.z)
+      .setFriction(0.6)
+    if (door.rotY) desc.setRotation({ x: 0, y: Math.sin(half), z: 0, w: Math.cos(half) })
+    doorColliders.push(world.createCollider(desc))
+  }
+  DOOR_COLLIDERS.set(world, doorColliders)
+
   addBounds(world, level)
   return world
+}
+
+/**
+ * 每张物理世界的门碰撞体。服务端与客户端都通过它开关门：
+ * 客户端预测必须和服务端同一套碰撞体，否则开门后本地仍被挡住。
+ */
+export const DOOR_COLLIDERS = new WeakMap<World, Collider[]>()
+
+export function setDoorOpen(world: World, index: number, open: boolean): void {
+  const collider = DOOR_COLLIDERS.get(world)?.[index]
+  collider?.setEnabled(!open)
 }
 
 /**

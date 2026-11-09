@@ -133,6 +133,26 @@ export interface HeroAnchor {
   scale?: number
 }
 
+/**
+ * 一扇可开关的门。
+ *
+ * 只描述门板本身：位置、半宽、高度、朝向。碰撞由服务端按它建一个固定
+ * 碰撞体，开门 = 禁用碰撞体；客户端按同一份数据摆一块门板并做旋转动画。
+ * 门框/门洞仍然由盒刷负责 —— 门只是"能堵住这个洞"的那一块板。
+ */
+export interface DoorDef {
+  x: number
+  z: number
+  /** 门板半宽（沿本地 X）。 */
+  hx: number
+  /** 门板半厚（沿本地 Z）。 */
+  hz: number
+  height: number
+  rotY?: number
+  /** 给玩家看的名字（"中殿南门"），靠近时提示用。 */
+  name?: string
+}
+
 export interface LevelDef {
   id: string
   name: string
@@ -143,6 +163,8 @@ export interface LevelDef {
   /** 世界边界半边长，防止玩家走出关卡。 */
   boundsHalf: number
   boxes: BoxBrush[]
+  /** 可开关的门（可选）。碰撞与外观都由它驱动，不占 boxes。 */
+  doors?: DoorDef[]
   /**
    * 程序化 GLB 资产的摆放锚点（可选）。只影响外观，碰撞仍在 boxes 里。
    */

@@ -295,7 +295,7 @@ test('时间耗尽只判负、不踢人：phase 变 over，玩家仍在 actors �
   assert.equal(actors.length, 1, '超时不该把玩家从世界里删掉')
 })
 
-test('目标包是 23 字节，-1 的下标走 NO_EXTRACT，进度量化误差不超过 1/255', () => {
+test('目标包是 24 字节，-1 的下标走 NO_EXTRACT，进度量化误差不超过 1/255', () => {
   const packet: ObjectivePacket = {
     phase: 'banish',
     modifier: 2,
@@ -315,10 +315,11 @@ test('目标包是 23 字节，-1 的下标走 NO_EXTRACT，进度量化误差�
     eventX: -12,
     eventZ: 34,
     eventSeconds: 10,
+    doorsMask: 0b101,
   }
   const buffer = encodeObjective(packet)
   assert.equal(buffer.byteLength, OBJECTIVE_SIZE)
-  assert.equal(OBJECTIVE_SIZE, 23)
+  assert.equal(OBJECTIVE_SIZE, 24)
 
   const view = new DataView(buffer)
   assert.equal(view.getUint8(0), Msg.Objective)

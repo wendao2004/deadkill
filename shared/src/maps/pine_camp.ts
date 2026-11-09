@@ -130,6 +130,7 @@ export const LEVEL_PINE_CAMP: LevelDef = {
   boxes: boxes.list,
   heroes,
   water,
+  doors: [{ x: -10, z: -7.25, hx: 0.7, hz: 0.12, height: 2.2, rotY: Math.PI, name: '猎屋门' }],
   zones: [
     { name: '主营地', x: 0, z: 0, radius: 30 },
     { name: '锯木厂', x: 58, z: -36, radius: 22 },

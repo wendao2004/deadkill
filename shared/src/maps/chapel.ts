@@ -69,6 +69,8 @@ export const LEVEL_CHAPEL: LevelDef = {
   boxes: boxes.list,
   // 钟楼塔尖的风向标：给 20m 的石塔一个金属收尾，远远看也有"这是教堂"的尖。
   heroes: [{ asset: 'weather_vane', x: -18, z: -14, y: 19.6 }],
+  // 中殿南门：4m 门洞，推开才能进出中殿。
+  doors: [{ x: 0, z: -6, hx: 2.0, hz: 0.14, height: 3.2, name: '中殿南门' }],
   zones: [
     { name: '教堂与墓园', x: 0, z: 0, radius: 32 },
     { name: '修士宿舍', x: -33, z: -20, radius: 16 },

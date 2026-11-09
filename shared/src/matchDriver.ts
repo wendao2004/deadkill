@@ -108,6 +108,7 @@ export class MatchDriver {
       eventX: s.eventX,
       eventZ: s.eventZ,
       eventSeconds: s.eventSeconds,
+      doorsMask: s.doorsMask,
     }
   }
 
@@ -362,6 +363,7 @@ export class MatchDriver {
     this.state.eventX = 0
     this.state.eventZ = 0
     this.state.eventSeconds = 0
+    this.state.doorsMask = 0
     this.supplyDone = false
     this.bloodMoonDone = false
     this.supplyUntilTick = 0

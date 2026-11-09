@@ -42,6 +42,7 @@ import {
   MONSTER_SPECS,
   monsterHurtbox,
   spawnMonster,
+  setDoorOpen,
   stepMonster,
   isBossKind,
   bossNameOf,
@@ -367,6 +368,10 @@ interface PlayerState {
   nearSpotId: number
   /** 交互键是否按着。按住语义，取最近一次输入里的那一位。 */
   interact: boolean
+  /** 上一 tick 的交互键状态（门是边沿触发：按住只开一次）。 */
+  prevInteract: boolean
+  /** 身边最近的门下标，-1 = 没有。 */
+  nearDoorId: number
   /**
    * 天赋等级包（见 shared/src/traits.ts）：每 2 bit 一条，0 = 没装备。
    *
@@ -500,6 +505,8 @@ export class World {
   readonly lootSeed: number
   /** 本局搜索点：关卡自带的 + 补给空投动态追加的。 */
   private spots: SearchSpot[] = []
+  /** 每扇门的开关状态（下标与 level.doors 对齐）。 */
+  private doorOpen: boolean[] = []
   private supplySpawned = false
   private bloodMoonSpawned = false
   private escapeCredited = false
@@ -561,6 +568,7 @@ export class World {
     this.level = options.level ?? DEFAULT_LEVEL
     this.bossKind = this.level.bossKind ?? 'boss'
     this.spots = [...(this.level.searchSpots ?? [])]
+    this.doorOpen = (this.level.doors ?? []).map(() => false)
     this.onEmpty = options.onEmpty
     this.physics = createLevelWorld(this.level)
     addBounds(this.physics, this.level)
@@ -1405,6 +1413,8 @@ export class World {
       searchAnchor: null,
       nearSpotId: -1,
       interact: false,
+      prevInteract: false,
+      nearDoorId: -1,
       traits: 0,
       maxHealth: MAX_HEALTH,
       heal: false,
@@ -1590,11 +1600,49 @@ export class World {
     }
   }
 
+  /**
+   * 门的开关。交互键是**边沿触发**：按住 E 只开一次，不会在门口来回抽。
+   * 开门 = 禁用门的碰撞体；客户端预测用同一张世界的同一批碰撞体（见
+   * shared/src/worldbuild.ts 的 setDoorOpen），预测不会跑偏。
+   */
+  private stepDoors(player: Player): void {
+    const doors = this.level.doors ?? []
+    let best = -1
+    let bestDist = 2.6
+    const feet = player.character.feet
+    for (let i = 0; i < doors.length; i++) {
+      const door = doors[i]!
+      const dist = Math.hypot(door.x - feet.x, door.z - feet.z)
+      if (dist < bestDist) {
+        bestDist = dist
+        best = i
+      }
+    }
+    player.nearDoorId = best
+
+    const pressed = player.interact && !player.prevInteract
+    player.prevInteract = player.interact
+    if (!pressed || best < 0 || !player.alive) return
+
+    this.doorOpen[best] = !this.doorOpen[best]
+    setDoorOpen(this.physics, best, this.doorOpen[best])
+    let mask = 0
+    for (let i = 0; i < this.doorOpen.length; i++) if (this.doorOpen[i]) mask |= 1 << i
+    this.match.state.doorsMask = mask & 0xff
+    const name = doors[best]!.name ?? '门'
+    this.sendText(player, this.doorOpen[best] ? `${name}打开了` : `${name}关上了`)
+    // 这一 tick 已经用于开门，别再顺带把旁边的箱子搜起来。
+    player.interact = false
+  }
+
   /** 阶段 5：搜刮与包扎进度。都用物理推进后的落点算，理由见各自动机。 */
   private stepInteractions(): void {
     // 搜索进度用**物理推进后**的落点算：放前面会拿到上一 tick 的脚底位置，
     // 在人贴着木板边缘时表现为"明明没动却判成走开了"。
-    for (const player of this.players.values()) this.stepSearch(player)
+    for (const player of this.players.values()) {
+      this.stepDoors(player)
+      this.stepSearch(player)
+    }
     // 包扎进度也放在物理推进之后：脚底位置是"这一 tick 真的走到了哪"，
     // 放前面会把上一 tick 的位移当成"走开了"，边退边打药会被判成原地不动。
     for (const player of this.players.values()) if (player.heal) this.stepHeal(player)
@@ -1622,6 +1670,9 @@ export class World {
       this.nextBodyId = -2
       this.searchedSpots.clear()
       this.spots = [...(this.level.searchSpots ?? [])]
+      this.doorOpen = (this.level.doors ?? []).map(() => false)
+      for (let i = 0; i < this.doorOpen.length; i++) setDoorOpen(this.physics, i, false)
+      this.match.state.doorsMask = 0
       this.supplySpawned = false
       this.bloodMoonSpawned = false
       this.escapeCredited = false

@@ -495,6 +495,10 @@ export class Renderer {
   private cssHeight = 1
   private readonly levelGroup = new Group()
   private readonly avatars = new Map<number, RemoteAvatar>()
+  /** 门：每扇一个枢轴组，open 0..1 驱动旋转。 */
+  private readonly doors: { pivot: Group; baseYaw: number; side: number; open: number; target: number }[] = []
+  /** 最近一帧的 dt：render() 没有入参，门动画靠它推进。 */
+  private frameDt = 1 / 60
   /**
    * 玩家尸体。服务端的 bodyCaches 只发给"离得近的人一个 spotId"，客户端拿不到
    * 死亡坐标；但快照里有死亡瞬间的位置，所以这里在第一次看到 alive=0 时把
@@ -793,6 +797,7 @@ export class Renderer {
 
     this.scene.add(this.levelGroup)
     this.buildLevel(level)
+    this.buildDoors()
 
     // 装饰与怪物都挂在 scene 上（不是 levelGroup）：它们各自管自己的
     // 生命周期，Renderer.dispose 里逐个释放，混进关卡组会和"重建关卡"纠缠。
@@ -1143,6 +1148,53 @@ export class Renderer {
       }
     } catch (error) {
       console.warn('[generated] 程序化资产加载失败，保留盒刷外观', error)
+    }
+  }
+
+  /**
+   * 可开关的门：每扇一个枢轴组，门板挂在枢轴侧边。
+   *
+   * 服务端只负责碰撞开关，客户端从目标包拿 doorsMask 再决定转到哪；
+   * 0.18s 的指数逼近让门是"被推开"而不是瞬移。
+   */
+  private buildDoors(): void {
+    const defs = this.level.doors ?? []
+    if (defs.length === 0) return
+    const material = this.surfaceMaterial(0x5a3a22, {
+      hatch: 0.12,
+      surface: 'wood',
+      specular: 0.03,
+      rim: 0.05,
+    })
+    for (let i = 0; i < defs.length; i++) {
+      const def = defs[i]!
+      const pivot = new Group()
+      pivot.position.set(def.x, this.level.groundY, def.z)
+      const baseYaw = def.rotY ?? 0
+      pivot.rotation.y = baseYaw
+      const side = i % 2 === 0 ? 1 : -1
+      const panel = new Mesh(new BoxGeometry(def.hx * 2, def.height, def.hz * 2), material)
+      panel.position.set(side * def.hx, def.height / 2, 0)
+      panel.castShadow = true
+      panel.receiveShadow = true
+      if (!this.realistic) this.addInk(panel)
+      pivot.add(panel)
+      this.levelGroup.add(pivot)
+      this.doors.push({ pivot, baseYaw, side, open: 0, target: 0 })
+    }
+  }
+
+  /** 目标包里的门状态位图。 */
+  setDoors(mask: number): void {
+    for (let i = 0; i < this.doors.length; i++) {
+      this.doors[i]!.target = (mask & (1 << i)) !== 0 ? 1 : 0
+    }
+  }
+
+  private updateDoors(dt: number): void {
+    for (const door of this.doors) {
+      door.open += (door.target - door.open) * Math.min(1, dt * 9)
+      door.pivot.rotation.y = door.baseYaw + door.side * door.open * (Math.PI / 2)
     }
   }
 
@@ -2138,6 +2190,7 @@ export class Renderer {
     // 金属读成金属、而不是读成一块灰板的关键。
     const moon = this.atmo.moonDirection
     setInkKeyDirection(moon.x, moon.y, moon.z)
+    this.updateDoors(this.frameDt)
     this.post.renderWorld(this.scene, this.camera)
     // 深度已经写完：把相机矩阵与朝月亮的方向交给接触阴影。放在武器层之前，
     // present 里就能直接用这一帧的深度，不需要额外 prepass。

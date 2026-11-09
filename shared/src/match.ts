@@ -119,6 +119,8 @@ export interface MatchState {
   eventZ: number
   /** 事件剩余秒数；0 表示事件没有持续时间（一次性）。 */
   eventSeconds: number
+  /** 门状态位图：bit i = 第 i 扇门是开着的。最多 8 扇。 */
+  doorsMask: number
 }
 
 /**
@@ -161,6 +163,7 @@ export function createMatchState(): MatchState {
     eventX: 0,
     eventZ: 0,
     eventSeconds: 0,
+    doorsMask: 0,
   }
 }
 
@@ -195,7 +198,7 @@ import { Msg } from './protocol.ts'
  * 状态 1 秒变不了几次。把它们并进去等于为了一个 20 秒的进度条，让每帧的
  * 每个玩家快照都多背 12 字节。
  */
-export const OBJECTIVE_SIZE = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 2 + 2
+export const OBJECTIVE_SIZE = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 2 + 2 + 1
 
 export const OBJECTIVE_FLAG_LAIR = 1 << 0
 export const OBJECTIVE_FLAG_ESCAPED = 1 << 1
@@ -229,6 +232,8 @@ export interface ObjectivePacket {
   eventZ: number
   /** 事件剩余秒数（血月用；补给为 0）。 */
   eventSeconds: number
+  /** 门状态位图（见 MatchState.doorsMask）。 */
+  doorsMask: number
 }
 
 function byte01(value: number): number {
@@ -264,6 +269,7 @@ export function encodeObjective(packet: ObjectivePacket): ArrayBuffer {
   view.setInt16(17, Math.round(packet.eventX), true)
   view.setInt16(19, Math.round(packet.eventZ), true)
   view.setUint16(21, Math.max(0, Math.min(65535, packet.eventSeconds)), true)
+  view.setUint8(23, Math.max(0, Math.min(255, packet.doorsMask)))
   return buffer
 }
 
@@ -293,5 +299,6 @@ export function decodeObjective(buffer: ArrayBuffer): ObjectivePacket {
     eventX: view.getInt16(17, true),
     eventZ: view.getInt16(19, true),
     eventSeconds: view.getUint16(21, true),
+    doorsMask: view.getUint8(23),
   }
 }

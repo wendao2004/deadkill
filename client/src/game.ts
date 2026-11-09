@@ -40,6 +40,7 @@ import {
   fireIntervalScale,
   switchScale,
   buildLevelWorld,
+  setDoorOpen,
   clamp,
   getModifier,
   initPhysics,
@@ -1631,6 +1632,14 @@ export class Game {
   private onObjective(objective: ObjectivePacket): void {
     const previous = this.objective
     this.objective = objective
+    this.renderer.setDoors(objective.doorsMask)
+    // 客户端预测也要用同一套门碰撞体：否则服务端开了门，本地还被挡着。
+    if (this.world) {
+      const doors = this.options.level.doors ?? []
+      for (let i = 0; i < doors.length; i++) {
+        setDoorOpen(this.world, i, (objective.doorsMask & (1 << i)) !== 0)
+      }
+    }
     this.objectiveHud?.update(this.objectiveModel(objective))
     this.updateMarkerView(objective)
 
