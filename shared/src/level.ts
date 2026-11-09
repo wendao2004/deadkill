@@ -140,6 +140,14 @@ export interface HeroAnchor {
  * 碰撞体，开门 = 禁用碰撞体；客户端按同一份数据摆一块门板并做旋转动画。
  * 门框/门洞仍然由盒刷负责 —— 门只是"能堵住这个洞"的那一块板。
  */
+/** 捕兽夹：踩中一次就弹开，不挡路、不参与射线。 */
+export interface TrapDef {
+  x: number
+  z: number
+  rotY?: number
+  name?: string
+}
+
 export interface DoorDef {
   x: number
   z: number
@@ -165,6 +173,8 @@ export interface LevelDef {
   boxes: BoxBrush[]
   /** 可开关的门（可选）。碰撞与外观都由它驱动，不占 boxes。 */
   doors?: DoorDef[]
+  /** 捕兽夹（可选）。踩中扣血并弹开，只有触发状态，没有碰撞体。 */
+  traps?: TrapDef[]
   /**
    * 程序化 GLB 资产的摆放锚点（可选）。只影响外观，碰撞仍在 boxes 里。
    */

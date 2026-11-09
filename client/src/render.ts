@@ -32,6 +32,8 @@ import {
   AmbientLight,
   BackSide,
   BoxGeometry,
+  ConeGeometry,
+  CylinderGeometry,
   BufferAttribute,
   BufferGeometry,
   Color,
@@ -499,6 +501,8 @@ export class Renderer {
   private readonly doors: { pivot: Group; baseYaw: number; side: number; open: number; target: number }[] = []
   /** 最近一帧的 dt：render() 没有入参，门动画靠它推进。 */
   private frameDt = 1 / 60
+  /** 捕兽夹：armed/sprung 两组网格按状态切换。 */
+  private readonly traps: { armed: Group; sprung: Group; sprungOn: boolean }[] = []
   /**
    * 玩家尸体。服务端的 bodyCaches 只发给"离得近的人一个 spotId"，客户端拿不到
    * 死亡坐标；但快照里有死亡瞬间的位置，所以这里在第一次看到 alive=0 时把
@@ -798,6 +802,7 @@ export class Renderer {
     this.scene.add(this.levelGroup)
     this.buildLevel(level)
     this.buildDoors()
+    this.buildTraps()
 
     // 装饰与怪物都挂在 scene 上（不是 levelGroup）：它们各自管自己的
     // 生命周期，Renderer.dispose 里逐个释放，混进关卡组会和"重建关卡"纠缠。
@@ -1181,6 +1186,66 @@ export class Renderer {
       pivot.add(panel)
       this.levelGroup.add(pivot)
       this.doors.push({ pivot, baseYaw, side, open: 0, target: 0 })
+    }
+  }
+
+  /** 捕兽夹：立齿 = 待触发，摊开 = 已弹开。 */
+  private buildTraps(): void {
+    const defs = this.level.traps ?? []
+    if (defs.length === 0) return
+    const material = this.surfaceMaterial(0x4a4d50, {
+      hatch: 0.1,
+      surface: 'metal',
+      specular: 0.25,
+      rim: 0.06,
+    })
+    for (const def of defs) {
+      const root = new Group()
+      root.position.set(def.x, this.level.groundY + 0.02, def.z)
+      root.rotation.y = def.rotY ?? 0
+
+      const base = new Mesh(new CylinderGeometry(0.5, 0.56, 0.08, 10), material)
+      base.position.y = 0.04
+      root.add(base)
+      if (!this.realistic) this.addInk(base)
+
+      const armed = new Group()
+      for (let k = 0; k < 4; k++) {
+        const a = (k / 4) * Math.PI * 2
+        const tooth = new Mesh(new ConeGeometry(0.11, 0.36, 5), material)
+        tooth.position.set(Math.cos(a) * 0.34, 0.24, Math.sin(a) * 0.34)
+        tooth.rotation.set(Math.sin(a) * 0.55, 0, -Math.cos(a) * 0.55)
+        armed.add(tooth)
+        if (!this.realistic) this.addInk(tooth)
+      }
+      root.add(armed)
+
+      const sprung = new Group()
+      for (let k = 0; k < 4; k++) {
+        const a = (k / 4) * Math.PI * 2
+        const tooth = new Mesh(new ConeGeometry(0.11, 0.3, 5), material)
+        tooth.position.set(Math.cos(a) * 0.55, 0.08, Math.sin(a) * 0.55)
+        tooth.rotation.set(0, 0, Math.PI / 2)
+        tooth.rotation.y = -a
+        sprung.add(tooth)
+      }
+      sprung.visible = false
+      root.add(sprung)
+
+      this.levelGroup.add(root)
+      this.traps.push({ armed, sprung, sprungOn: false })
+    }
+  }
+
+  /** 目标包里的捕兽夹状态位图。 */
+  setTraps(mask: number): void {
+    for (let i = 0; i < this.traps.length; i++) {
+      const on = (mask & (1 << i)) !== 0
+      const trap = this.traps[i]!
+      if (trap.sprungOn === on) continue
+      trap.sprungOn = on
+      trap.armed.visible = !on
+      trap.sprung.visible = on
     }
   }
 

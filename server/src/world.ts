@@ -507,6 +507,8 @@ export class World {
   private spots: SearchSpot[] = []
   /** 每扇门的开关状态（下标与 level.doors 对齐）。 */
   private doorOpen: boolean[] = []
+  /** 每个捕兽夹是否已经弹开（下标与 level.traps 对齐）。 */
+  private trapSprung: boolean[] = []
   private supplySpawned = false
   private bloodMoonSpawned = false
   private escapeCredited = false
@@ -569,6 +571,7 @@ export class World {
     this.bossKind = this.level.bossKind ?? 'boss'
     this.spots = [...(this.level.searchSpots ?? [])]
     this.doorOpen = (this.level.doors ?? []).map(() => false)
+    this.trapSprung = (this.level.traps ?? []).map(() => false)
     this.onEmpty = options.onEmpty
     this.physics = createLevelWorld(this.level)
     addBounds(this.physics, this.level)
@@ -1601,6 +1604,44 @@ export class World {
   }
 
   /**
+   * 捕兽夹：踩中一次扣血并弹开。
+   *
+   * 触发半径 0.75m（夹子半径约 0.5m + 玩家半径），只检查活人；弹开状态
+   * 随目标包下发，客户端据此把夹齿从"立着"切到"摊开"。
+   */
+  private stepTraps(player: Player): void {
+    if (!player.alive) return
+    const traps = this.level.traps ?? []
+    if (traps.length === 0) return
+    const feet = player.character.feet
+    for (let i = 0; i < traps.length; i++) {
+      if (this.trapSprung[i]) continue
+      const trap = traps[i]!
+      if (Math.hypot(trap.x - feet.x, trap.z - feet.z) > 0.75) continue
+
+      this.trapSprung[i] = true
+      let mask = 0
+      for (let k = 0; k < this.trapSprung.length; k++) if (this.trapSprung[k]) mask |= 1 << k
+      this.match.state.trapsMask = mask & 0xff
+
+      const taken = Math.max(1, Math.round(35 * damageTakenScale(player.traits)))
+      player.health -= taken
+      this.pendingEvents.push({
+        kind: EventKind.Hit,
+        // 0：陷阱不属于任何玩家，客户端只放受伤反馈，不会给击杀奖励。
+        attackerId: 0,
+        victimId: player.id,
+        damage: taken,
+        headshot: false,
+        point: { x: trap.x, y: feet.y + 0.4, z: trap.z },
+      })
+      this.sendText(player, '踩中了捕兽夹')
+      if (player.health <= 0) this.kill(player, 0, false)
+      break
+    }
+  }
+
+  /**
    * 门的开关。交互键是**边沿触发**：按住 E 只开一次，不会在门口来回抽。
    * 开门 = 禁用门的碰撞体；客户端预测用同一张世界的同一批碰撞体（见
    * shared/src/worldbuild.ts 的 setDoorOpen），预测不会跑偏。
@@ -1641,6 +1682,7 @@ export class World {
     // 在人贴着木板边缘时表现为"明明没动却判成走开了"。
     for (const player of this.players.values()) {
       this.stepDoors(player)
+      this.stepTraps(player)
       this.stepSearch(player)
     }
     // 包扎进度也放在物理推进之后：脚底位置是"这一 tick 真的走到了哪"，
@@ -1673,6 +1715,8 @@ export class World {
       this.doorOpen = (this.level.doors ?? []).map(() => false)
       for (let i = 0; i < this.doorOpen.length; i++) setDoorOpen(this.physics, i, false)
       this.match.state.doorsMask = 0
+      this.trapSprung = (this.level.traps ?? []).map(() => false)
+      this.match.state.trapsMask = 0
       this.supplySpawned = false
       this.bloodMoonSpawned = false
       this.escapeCredited = false

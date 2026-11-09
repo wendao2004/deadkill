@@ -131,6 +131,12 @@ export const LEVEL_PINE_CAMP: LevelDef = {
   heroes,
   water,
   doors: [{ x: -10, z: -7.25, hx: 0.7, hz: 0.12, height: 2.2, rotY: Math.PI, name: '猎屋门' }],
+  // 土路上的捕兽夹：主路不再是可以直线冲刺的安全路线。
+  traps: [
+    { x: 6, z: 40 },
+    { x: 30, z: 24 },
+    { x: -12, z: 16 },
+  ],
   zones: [
     { name: '主营地', x: 0, z: 0, radius: 30 },
     { name: '锯木厂', x: 58, z: -36, radius: 22 },
