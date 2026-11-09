@@ -41,6 +41,7 @@ import {
   switchScale,
   buildLevelWorld,
   attachmentOf,
+  CONTRACTS,
   setDoorOpen,
   clamp,
   getModifier,
@@ -1596,6 +1597,13 @@ export class Game {
     if (loot.healPct > 0 && healWas === 0) this.audio.searchStart()
     else if (loot.healPct > healWas) this.audio.searchTick(loot.healPct / 100)
     this.objectiveHud?.updateContract(loot.contract, loot.contractProgress)
+    // 合同完成那一下必须有自己的横幅：只认"跨过目标线"的那一帧，重复下发不会重播。
+    if (loot.contract > 0 && previous && previous.contract === loot.contract) {
+      const spec = CONTRACTS[loot.contract]
+      if (spec && loot.contractProgress >= spec.target && previous.contractProgress < spec.target) {
+        this.objectiveHud?.banner('合 同 完 成', spec.name + ' · +$' + spec.reward, 'bile')
+      }
+    }
   }
 
   private clearResultTimer(): void {
