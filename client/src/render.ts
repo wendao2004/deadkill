@@ -2096,6 +2096,11 @@ export class Renderer {
     this.meleeHeavy = heavy
   }
 
+  /** 按本局选择的配件显示镜筒/消音器外观。 */
+  setWeaponAttachment(attachment: number): void {
+    this.viewmodel.setAttachment(attachment)
+  }
+
   onLocalShot(kick = 1, muzzle = true): void {
     this.recoil = Math.min(1, this.recoil + 0.55 * kick)
     // 枪模的推背独立于相机：两条弹簧各自过冲，合成后才是"枪撞肩 + 视野抬"。

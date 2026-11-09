@@ -14,7 +14,7 @@
  * 击锤、转轮、刀光保持独立 Mesh，由 viewmodel 每帧驱动。
  */
 
-import { AdditiveBlending, DoubleSide, Group, Mesh, PlaneGeometry } from 'three'
+import { AdditiveBlending, CylinderGeometry, DoubleSide, Group, Mesh, PlaneGeometry } from 'three'
 import type { BufferGeometry, Material } from 'three'
 import {
   Assembly,
@@ -1186,3 +1186,53 @@ export function buildKnife(mats: WeaponMaterialSet): BuiltKnife {
 }
 
 
+
+
+/**
+ * 可拆卸的 2× 镜：出击前选了配件才显示。
+ *
+ * 位置和 buildRifle 内置瞄具一致（y=SIGHT_Y、z=-0.42），所以开镜时的
+ * "枪身对齐瞄准线"逻辑不需要为普通步枪另写一套。
+ */
+export function createScopeAttachment(mats: WeaponMaterialSet): Group {
+  const group = new Group()
+  group.name = 'scope-attachment'
+  const scopeZ = -0.42
+
+  const tube = new Mesh(new CylinderGeometry(0.019, 0.019, 0.30, 16), mats.darkSteel)
+  tube.rotation.x = Math.PI / 2
+  tube.position.set(0, SIGHT_Y, scopeZ)
+  group.add(tube)
+
+  for (const dz of [-0.147, 0.147]) {
+    const lens = new Mesh(new CylinderGeometry(0.0165, 0.0165, 0.006, 16), mats.bore)
+    lens.rotation.x = Math.PI / 2
+    lens.position.set(0, SIGHT_Y, scopeZ + dz)
+    group.add(lens)
+  }
+  for (const dz of [-0.095, 0.095]) {
+    const mount = new Mesh(new CylinderGeometry(0.016, 0.016, 0.05, 10), mats.steel)
+    mount.position.set(0, SIGHT_Y - 0.024, scopeZ + dz)
+    group.add(mount)
+  }
+  const turret = new Mesh(new CylinderGeometry(0.012, 0.012, 0.02, 10), mats.steel)
+  turret.rotation.x = Math.PI / 2
+  turret.position.set(0, SIGHT_Y + 0.026, scopeZ + 0.01)
+  group.add(turret)
+  return group
+}
+
+/** 可拆卸的消音器：拧在枪口上，比枪管粗一圈。 */
+export function createSuppressorAttachment(mats: WeaponMaterialSet, muzzleZ: number): Group {
+  const group = new Group()
+  group.name = 'suppressor-attachment'
+  const can = new Mesh(new CylinderGeometry(0.024, 0.024, 0.18, 16), mats.darkSteel)
+  can.rotation.x = Math.PI / 2
+  can.position.set(0, 0, muzzleZ - 0.09)
+  group.add(can)
+  const cap = new Mesh(new CylinderGeometry(0.026, 0.026, 0.014, 16), mats.steel)
+  cap.rotation.x = Math.PI / 2
+  cap.position.set(0, 0, muzzleZ - 0.182)
+  group.add(cap)
+  return group
+}

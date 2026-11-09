@@ -431,6 +431,9 @@ export class Game {
       now: 0,
     }
     this.renderer = new Renderer(options.container, options.level)
+    // 配件外观在渲染器建好后立刻生效：它只影响枪模上的镜筒/消音器，
+    // 数值效果在服务端与 updateCamera 里各自处理。
+    this.renderer.setWeaponAttachment(options.attachment ?? 0)
     // 反馈层挂 body 而不是 #app：镜筒 #scope 是 fixed 层（z-index 5），
     // #app 会形成自己的层叠上下文，挂在里面的命中标记/击杀播报会被镜筒
     // 一起吃掉。body 直属 + z-index 8 让它稳定压在镜筒之上。

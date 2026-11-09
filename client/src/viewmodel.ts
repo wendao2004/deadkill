@@ -47,7 +47,7 @@ import {
   ShaderMaterial,
 } from 'three'
 import type { Material, Texture } from 'three'
-import { wrapAngle } from '@dk/shared'
+import { ATTACHMENT_SCOPE, ATTACHMENT_SUPPRESSOR, wrapAngle } from '@dk/shared'
 import { mergeAll, ring, tubeZ } from './weapon-kit.ts'
 import { Spring } from './feel.ts'
 import {
@@ -57,6 +57,8 @@ import {
   buildRevolver,
   buildRifle,
   buildShotgun,
+  createScopeAttachment,
+  createSuppressorAttachment,
   type BuiltRifle,
   type WeaponMaterialSet,
 } from './weapon-models.ts'
@@ -162,6 +164,8 @@ export interface Viewmodel {
    * 这里只做"挂上/摘下"，不 new 任何几何。未知 id 回落到步枪。
    */
   setWeapon(weaponId: number): void
+  /** 按出击前选择的配件显示/隐藏镜筒与消音器外观。 */
+  setAttachment(attachment: number): void
   /** 每帧调用。dt 秒。 */
   update(state: ViewmodelState, dt: number): void
   /**
@@ -512,6 +516,9 @@ interface WeaponRig {
    * 在视图模型里飞出去，而不是在枪身上贴一张静态弹壳。
    */
   readonly eject: { x: number; y: number; z: number; vx: number; vy: number; vz: number } | null
+  /** 本局配件外观（默认隐藏，按出击前选择显示）。 */
+  scopeAtt?: Group | null
+  suppAtt?: Group | null
   /** 刀专用：刀光面片与自己的材质（不是刀为 null）。 */
   readonly glow: Mesh | null
   readonly glowMat: Material | null
@@ -839,6 +846,20 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     rigs.set(id, rig)
   }
 
+  /** 给步枪挂上可拆卸配件外观（默认隐藏）。 */
+  const attachAccessories = (id: number, withScope: boolean): void => {
+    const rig = rigs.get(id)
+    if (!rig) return
+    if (withScope) {
+      rig.scopeAtt = createScopeAttachment(mats)
+      rig.scopeAtt.visible = false
+      rig.group.add(rig.scopeAtt)
+    }
+    rig.suppAtt = createSuppressorAttachment(mats, rig.muzzleZ)
+    rig.suppAtt.visible = false
+    rig.group.add(rig.suppAtt)
+  }
+
   /** 步枪系（1 / 6 / 4）共用一套腰射/开镜基准，只在 z 与枪口位置上按枪长微调。 */
   const rifleRig = (built: BuiltRifle, extra: Partial<WeaponRig>): WeaponRig => ({
     group: built.group,
@@ -874,6 +895,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   builtModels.push(rifle)
   inkModel(rifle.group)
   register(1, rifleRig(rifle, { muzzleZ: -0.31 - 0.62 - 0.01, reloadK: { roll: 1.15, pitch: 1.0 } }))
+  attachAccessories(1, true)
 
   // 消音卡宾：枪管与护木都短一截，消音器从枪口再伸出 19cm。
   const carbine = buildRifle(
@@ -884,6 +906,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   inkModel(carbine.group)
   // 卡宾：把枪拉近换弹匣，不整把压下去。
   register(6, rifleRig(carbine, { hipZ: RIFLE_HIP_Z + 0.02, muzzleZ: -0.31 - 0.56 - 0.20, reloadK: { x: -0.35, y: -0.45, z: 1.5, pitch: 0.65, yaw: -0.55, roll: -0.7 } }))
+  attachAccessories(6, true)
 
   // 神射手：最长枪管 + 光学镜；整把枪往前推 4cm、往右让 1cm，长枪身别顶脸。
   const sniper = buildRifle(
@@ -907,6 +930,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       reloadK: { z: 0.9, pitch: 1.2, roll: 0.6, x: -0.2 },
     }),
   )
+  // 神射手自带光学镜，只补消音器外观。
+  attachAccessories(4, false)
 
   const shotgun = buildShotgun(mats)
   builtModels.push(shotgun)
@@ -1632,9 +1657,20 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     puff.mat.uniforms.uOpacity!.value = 0.3
   }
 
+  /** 按出击前选择的配件切换所有枪的配件外观。 */
+  const setAttachment = (attachment: number): void => {
+    const scopeOn = attachment === ATTACHMENT_SCOPE
+    const suppOn = attachment === ATTACHMENT_SUPPRESSOR
+    for (const rig of rigs.values()) {
+      if (rig.scopeAtt) rig.scopeAtt.visible = scopeOn
+      if (rig.suppAtt) rig.suppAtt.visible = suppOn
+    }
+  }
+
   return {
     root,
     setWeapon,
+    setAttachment,
     update,
     kick: kickWeapon,
     flash: triggerFlash,
