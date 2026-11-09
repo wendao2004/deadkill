@@ -29,6 +29,7 @@
  */
 
 import {
+  AdditiveBlending,
   AmbientLight,
   BackSide,
   BoxGeometry,
@@ -503,6 +504,8 @@ export class Renderer {
   private frameDt = 1 / 60
   /** 捕兽夹：armed/sprung 两组网格按状态切换。 */
   private readonly traps: { armed: Group; sprung: Group; sprungOn: boolean }[] = []
+  /** 油灯：点光源 + 发光灯罩。 */
+  private readonly lamps: { light: PointLight; glow: Mesh; lit: boolean }[] = []
   /**
    * 玩家尸体。服务端的 bodyCaches 只发给"离得近的人一个 spotId"，客户端拿不到
    * 死亡坐标；但快照里有死亡瞬间的位置，所以这里在第一次看到 alive=0 时把
@@ -803,6 +806,7 @@ export class Renderer {
     this.buildLevel(level)
     this.buildDoors()
     this.buildTraps()
+    this.buildLamps()
 
     // 装饰与怪物都挂在 scene 上（不是 levelGroup）：它们各自管自己的
     // 生命周期，Renderer.dispose 里逐个释放，混进关卡组会和"重建关卡"纠缠。
@@ -1234,6 +1238,67 @@ export class Renderer {
 
       this.levelGroup.add(root)
       this.traps.push({ armed, sprung, sprungOn: false })
+    }
+  }
+
+  /** 油灯：铁杆 + 灯罩 + 点光源。打灭只切 visible，不销毁光源。 */
+  private buildLamps(): void {
+    const defs = this.level.lamps ?? []
+    if (defs.length === 0) return
+    const iron = this.surfaceMaterial(0x3a3d40, {
+      hatch: 0.1,
+      surface: 'metal',
+      specular: 0.3,
+      rim: 0.08,
+    })
+    const glowMat = new MeshBasicMaterial({
+      color: 0xffc27a,
+      transparent: true,
+      opacity: 0.85,
+      blending: AdditiveBlending,
+      depthWrite: false,
+    })
+    this.disposables.push(glowMat)
+    for (const def of defs) {
+      const baseY = def.y ?? this.level.groundY
+      const root = new Group()
+      root.position.set(def.x, baseY, def.z)
+      root.rotation.y = def.rotY ?? 0
+
+      const post = new Mesh(new CylinderGeometry(0.06, 0.09, 2.4, 6), iron)
+      post.position.y = 1.2
+      post.castShadow = true
+      root.add(post)
+      const arm = new Mesh(new BoxGeometry(0.5, 0.06, 0.06), iron)
+      arm.position.set(0.22, 2.36, 0)
+      root.add(arm)
+      const cage = new Mesh(new BoxGeometry(0.24, 0.32, 0.24), iron)
+      cage.position.set(0.44, 2.2, 0)
+      root.add(cage)
+      if (!this.realistic) this.addInk(cage)
+
+      const glow = new Mesh(new BoxGeometry(0.17, 0.24, 0.17), glowMat)
+      glow.position.set(0.44, 2.2, 0)
+      root.add(glow)
+
+      const light = new PointLight(0xffb060, 1.35, 11, 2)
+      light.position.set(0.44, 2.2, 0)
+      root.add(light)
+
+      this.levelGroup.add(root)
+      this.lamps.push({ light, glow, lit: true })
+    }
+  }
+
+  /** 亮着的灯位图：bit i = 第 i 盏还亮着。 */
+  setLamps(mask: number): void {
+    for (let i = 0; i < this.lamps.length; i++) {
+      const lit = (mask & (1 << i)) !== 0
+      const lamp = this.lamps[i]!
+      if (lamp.lit === lit) continue
+      lamp.lit = lit
+      lamp.light.visible = lit
+      lamp.glow.visible = lit
     }
   }
 

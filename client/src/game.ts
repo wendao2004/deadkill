@@ -1634,6 +1634,7 @@ export class Game {
     this.objective = objective
     this.renderer.setDoors(objective.doorsMask)
     this.renderer.setTraps(objective.trapsMask)
+    this.renderer.setLamps(objective.lightsMask)
     // 客户端预测也要用同一套门碰撞体：否则服务端开了门，本地还被挡着。
     if (this.world) {
       const doors = this.options.level.doors ?? []

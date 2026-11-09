@@ -509,6 +509,10 @@ export class World {
   private doorOpen: boolean[] = []
   /** 每个捕兽夹是否已经弹开（下标与 level.traps 对齐）。 */
   private trapSprung: boolean[] = []
+  /** 油灯：灯头碰撞体、碰撞体→下标映射、是否还亮着。 */
+  private lampColliders: Collider[] = []
+  private readonly lampByCollider = new Map<number, number>()
+  private lampLit: boolean[] = []
   private supplySpawned = false
   private bloodMoonSpawned = false
   private escapeCredited = false
@@ -575,6 +579,17 @@ export class World {
     this.onEmpty = options.onEmpty
     this.physics = createLevelWorld(this.level)
     addBounds(this.physics, this.level)
+    // 油灯灯头：2.35m 高的实心小球。它高于角色胶囊，不会挡路，但会挡子弹。
+    for (const [i, lamp] of (this.level.lamps ?? []).entries()) {
+      const baseY = lamp.y ?? this.level.groundY
+      const collider = this.physics.createCollider(
+        ColliderDesc.ball(0.22).setTranslation(lamp.x, baseY + 2.35, lamp.z).setSensor(true),
+      )
+      this.lampColliders.push(collider)
+      this.lampByCollider.set(collider.handle, i)
+    }
+    this.lampLit = (this.level.lamps ?? []).map(() => true)
+
     const seed = hashSeed(this.id)
     this.stream = new Rng(seed)
     this.rng = () => this.stream.float()
@@ -591,6 +606,8 @@ export class World {
     })
     // modifier 由 World 抽、由目标包下发；MatchDriver 只持有它，一局不变。
     this.match.state.modifier = this.modifier
+    this.match.state.lightsMask =
+      this.lampLit.length >= 8 ? 0xff : (1 << this.lampLit.length) - 1
     this.spawnMonsters()
 
     this.ctx = { time: this.clock.time, world: this }
@@ -1603,6 +1620,17 @@ export class World {
     }
   }
 
+  /** 打灭一盏油灯：灯头碰撞体失效，位图更新，射手得到一句反馈。 */
+  private breakLamp(index: number, shooter: Player): void {
+    this.lampLit[index] = false
+    this.lampColliders[index]?.setEnabled(false)
+    let mask = 0
+    for (let i = 0; i < this.lampLit.length; i++) if (this.lampLit[i]) mask |= 1 << i
+    this.match.state.lightsMask = mask & 0xff
+    const name = this.level.lamps?.[index]?.name ?? '油灯'
+    this.sendText(shooter, `${name}被打灭了`)
+  }
+
   /**
    * 捕兽夹：踩中一次扣血并弹开。
    *
@@ -1717,6 +1745,9 @@ export class World {
       this.match.state.doorsMask = 0
       this.trapSprung = (this.level.traps ?? []).map(() => false)
       this.match.state.trapsMask = 0
+      this.lampLit = (this.level.lamps ?? []).map(() => true)
+      for (const collider of this.lampColliders) collider.setEnabled(true)
+      this.match.state.lightsMask = this.lampLit.length >= 8 ? 0xff : (1 << this.lampLit.length) - 1
       this.supplySpawned = false
       this.bloodMoonSpawned = false
       this.escapeCredited = false
@@ -2286,6 +2317,13 @@ export class World {
             direct.kind === 'monster'
               ? direct.monster.data.y + MONSTER_SPECS[direct.monster.data.kind].height * 0.78
               : HEAD_MIN_HEIGHT
+          break
+        }
+
+        // 灯头：先于"静态遮挡"处理。打在灯上就是打灭它，子弹到灯为止。
+        const lampIndex = this.lampByCollider.get(result.collider.handle)
+        if (lampIndex !== undefined) {
+          if (this.lampLit[lampIndex]) this.breakLamp(lampIndex, player)
           break
         }
 

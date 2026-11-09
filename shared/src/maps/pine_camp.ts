@@ -137,6 +137,13 @@ export const LEVEL_PINE_CAMP: LevelDef = {
     { x: 30, z: 24 },
     { x: -12, z: 16 },
   ],
+  // 油灯：营地与两条土路各一盏，夜里是路标，也可以被打灭。
+  lamps: [
+    { x: 0, z: 6, name: '营地灯' },
+    { x: 26, z: -12, name: '锯木厂灯' },
+    { x: -34, z: 30, name: '焦林灯' },
+    { x: -58, z: -48, name: '运输道灯' },
+  ],
   zones: [
     { name: '主营地', x: 0, z: 0, radius: 30 },
     { name: '锯木厂', x: 58, z: -36, radius: 22 },

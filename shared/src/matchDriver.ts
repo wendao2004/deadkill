@@ -110,6 +110,7 @@ export class MatchDriver {
       eventSeconds: s.eventSeconds,
       doorsMask: s.doorsMask,
       trapsMask: s.trapsMask,
+      lightsMask: s.lightsMask,
     }
   }
 
@@ -366,6 +367,7 @@ export class MatchDriver {
     this.state.eventSeconds = 0
     this.state.doorsMask = 0
     this.state.trapsMask = 0
+    this.state.lightsMask = 0xff
     this.supplyDone = false
     this.bloodMoonDone = false
     this.supplyUntilTick = 0

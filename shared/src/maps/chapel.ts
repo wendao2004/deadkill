@@ -77,6 +77,11 @@ export const LEVEL_CHAPEL: LevelDef = {
     { x: -8, z: 24 },
     { x: 12, z: 2 },
   ],
+  lamps: [
+    { x: 0, z: 14, name: '墓园灯' },
+    { x: -30, z: -14, name: '宿舍灯' },
+    { x: 16, z: 8, name: '祠堂灯' },
+  ],
   zones: [
     { name: '教堂与墓园', x: 0, z: 0, radius: 32 },
     { name: '修士宿舍', x: -33, z: -20, radius: 16 },

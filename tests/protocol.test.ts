@@ -221,7 +221,8 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   // v13：目标包加世界事件（16 → 23 字节），配装包加合同 1 字节；快照布局不变。
   // v14：目标包加门状态位图 1 字节（23 → 24）。
   // v15：目标包加捕兽夹状态位图 1 字节（24 → 25）。
-  assert.equal(PROTOCOL_VERSION, 15)
+  // v16：目标包加油灯状态位图 1 字节（25 → 26）。
+  assert.equal(PROTOCOL_VERSION, 16)
   assert.equal(SNAPSHOT_HEADER, 17)
   assert.equal(PLAYER_SNAPSHOT_SIZE, 36)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)

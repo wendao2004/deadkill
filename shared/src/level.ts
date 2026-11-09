@@ -141,6 +141,16 @@ export interface HeroAnchor {
  * 门框/门洞仍然由盒刷负责 —— 门只是"能堵住这个洞"的那一块板。
  */
 /** 捕兽夹：踩中一次就弹开，不挡路、不参与射线。 */
+/** 油灯：可以被子弹打灭，是全图唯一可被玩家改变的光源。 */
+export interface LampDef {
+  x: number
+  z: number
+  /** 灯柱底面的世界高度；缺省用关卡 groundY。 */
+  y?: number
+  rotY?: number
+  name?: string
+}
+
 export interface TrapDef {
   x: number
   z: number
@@ -175,6 +185,8 @@ export interface LevelDef {
   doors?: DoorDef[]
   /** 捕兽夹（可选）。踩中扣血并弹开，只有触发状态，没有碰撞体。 */
   traps?: TrapDef[]
+  /** 油灯（可选）。可被子弹打灭，灯头有碰撞体。 */
+  lamps?: LampDef[]
   /**
    * 程序化 GLB 资产的摆放锚点（可选）。只影响外观，碰撞仍在 boxes 里。
    */
