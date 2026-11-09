@@ -61,6 +61,8 @@ import {
   CONTRACT_HUNT,
   CONTRACT_SEARCH,
   CONTRACT_EXTRACT,
+  CONTRACT_BOSS,
+  CONTRACT_KNIFE,
   CONTRACT_NONE,
   contractOf,
   clampContract,
@@ -1235,6 +1237,10 @@ export class World {
       killerId,
       monsterKind: entity.kindCode,
     })
+    const killer = this.players.get(killerId)
+    if (isBoss && killer) {
+      this.advanceContract(killer, 1, CONTRACT_BOSS)
+    }
     if (isBoss) {
       this.bossDefeated = true
       for (const player of this.players.values()) {
@@ -1244,7 +1250,6 @@ export class World {
     }
     // 食腐者：亲手打死怪才回血。用 killerId 查而不是查"最近的玩家"——
     // 队友补的最后一枪不该给别人回血。
-    const killer = this.players.get(killerId)
     if (killer) this.advanceContract(killer, 1, CONTRACT_HUNT)
     const heal = killer === undefined ? 0 : carrionHeal(killer.traits)
     if (killer !== undefined && killer.alive && heal > 0) {
@@ -2594,6 +2599,7 @@ export class World {
     if (killerId !== victim.id && killerId < MONSTER_ID_BASE) {
       const killer = this.players.get(killerId)
       if (killer) {
+        if (heldWeapon(killer.loadout).kind === 'knife') this.advanceContract(killer, 1, CONTRACT_KNIFE)
         killer.carriedValue = Math.min(0xffff, killer.carriedValue + KILL_REWARD)
         this.sendText(killer, `击杀奖励 +$${KILL_REWARD} · 去尸体处搜刮`)
       }

@@ -130,6 +130,7 @@ export interface ObjectiveHud {
     clues: { x: number; z: number }[],
     lair: { x: number; z: number } | null,
     extracts: { x: number; z: number }[],
+    event: { x: number; z: number } | null,
   ): void
   updateContract(contract: number, progress: number): void
   banner(title: string, subtitle: string, tone?: 'amber' | 'blood' | 'bile'): void
@@ -351,7 +352,9 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
     compass.append(node)
     return node
   })
-  compass.append(lairPip, el('i', 'dko-compass-center'))
+  // 补给空投的罗盘点：只有事件期间才出现，颜色与事件横幅一致。
+  const eventPip = el('i', 'dko-compass-pip dko-compass-pip--event')
+  compass.append(lairPip, eventPip, el('i', 'dko-compass-center'))
 
   // 阶段横幅（与收场演出刻意分成两层：横幅是"过程"，收场是"结局"，会同时出现）
   const bannerEl = el('div', 'dko-banner')
@@ -1232,6 +1235,7 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
     clues: { x: number; z: number }[],
     lair: { x: number; z: number } | null,
     extracts: { x: number; z: number }[],
+    event: { x: number; z: number } | null,
   ): void {
     if (disposed) return
     const place = (node: HTMLElement, rel: number): void => {
@@ -1269,6 +1273,9 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
 
     if (lair) place(lairPip, relOf(lair.x, lair.z))
     else if (lairPip.style.display !== 'none') lairPip.style.display = 'none'
+
+    if (event) place(eventPip, relOf(event.x, event.z))
+    else if (eventPip.style.display !== 'none') eventPip.style.display = 'none'
 
     for (let i = 0; i < 3; i++) {
       const e = extracts[i]

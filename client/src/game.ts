@@ -2179,6 +2179,7 @@ export class Game {
       this.options.level.clues ?? [],
       this.objective?.lairRevealed ? this.lair : null,
       this.objective?.bountyCarrier === this.myId ? (this.options.level.extracts ?? []) : NO_POINTS,
+      this.objective?.event === 1 ? { x: this.objective.eventX, z: this.objective.eventZ } : null,
     )
     this.mapOverlay?.update(feet.x, feet.z, sample.yaw, {
       clueMask: this.objective?.clueMask ?? -1,

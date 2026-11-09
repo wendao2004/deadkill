@@ -15,8 +15,10 @@ export const CONTRACT_NONE = 0
 export const CONTRACT_HUNT = 1
 export const CONTRACT_SEARCH = 2
 export const CONTRACT_EXTRACT = 3
+export const CONTRACT_BOSS = 4
+export const CONTRACT_KNIFE = 5
 
-export type ContractKey = 'none' | 'hunt' | 'search' | 'extract'
+export type ContractKey = 'none' | 'hunt' | 'search' | 'extract' | 'boss' | 'knife'
 
 export interface ContractSpec {
   id: number
@@ -61,6 +63,22 @@ export const CONTRACTS: readonly ContractSpec[] = [
     target: 1,
     reward: 200,
     desc: '带着赏金成功撤离一次。逼你活着把东西带出去。',
+  },
+  {
+    id: CONTRACT_BOSS,
+    key: 'boss',
+    name: '屠夫',
+    target: 1,
+    reward: 300,
+    desc: '亲手打死血巢的 Boss。全图最硬的骨头，也最值钱。',
+  },
+  {
+    id: CONTRACT_KNIFE,
+    key: 'knife',
+    name: '刀锋',
+    target: 1,
+    reward: 250,
+    desc: '用猎刀击杀一名猎人。安静、近身、没有第二次机会。',
   },
 ]
 

@@ -245,6 +245,8 @@
 .dko-compass-pip--clue { background: var(--amber, #d99a4a); }
 .dko-compass-pip--lair { background: #9bb36a; }
 .dko-compass-pip--extract { background: var(--bone, #d8cfba); }
+/* 补给空投：琥珀色，和事件横幅同一个强调色 */
+.dko-compass-pip--event { background: var(--amber, #d99a4a); box-shadow: 0 0 6px rgba(217, 154, 74, 0.8); }
 
 .dko-compass-center {
   position: absolute;
