@@ -2611,3 +2611,117 @@
   border-left-color: var(--blood);
   color: #c98e84;
 }
+
+/* ------------------------------------------------------------------ 转场增强 */
+
+/*
+ * 分区切换的"方向感"。
+ *
+ * 原先两张 pane 都只是上下淡入淡出，切到下一栏和上一栏在体感上没有区别。
+ * menu.ts 在 activatePane 里写 --dir（+1 向下、-1 向上），入场从该方向
+ * 滑进来、旧 pane 往反方向退出去，视线才有"翻页"的连续感。
+ */
+.dk-pane.is-entering {
+  animation: dk-pane-in 340ms cubic-bezier(0.16, 0.9, 0.24, 1) both;
+}
+
+@keyframes dk-pane-in {
+  from {
+    opacity: 0;
+    transform: translate3d(calc(var(--dir, 1) * 30px), 10px, 0) scale(0.996);
+  }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+
+.dk-pane.is-leaving {
+  animation: dk-pane-out 200ms cubic-bezier(0.4, 0, 0.7, 0.2) both;
+}
+
+@keyframes dk-pane-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to { opacity: 0; transform: translate3d(calc(var(--dir, 1) * -24px), -6px, 0); }
+}
+
+/* 子元素错峰浮起：整块面板一起换会像"翻 PPT"，分层进场才像界面在呼吸。 */
+.dk-pane.is-entering > * {
+  animation: dk-rise-in 440ms cubic-bezier(0.16, 0.9, 0.24, 1) both;
+}
+.dk-pane.is-entering > *:nth-child(2) { animation-delay: 40ms; }
+.dk-pane.is-entering > *:nth-child(3) { animation-delay: 80ms; }
+.dk-pane.is-entering > *:nth-child(4) { animation-delay: 120ms; }
+.dk-pane.is-entering > *:nth-child(5) { animation-delay: 160ms; }
+.dk-pane.is-entering > *:nth-child(n + 6) { animation-delay: 200ms; }
+
+@keyframes dk-rise-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 背景视差：画布只做几像素的跟随，保留"镜头在呼吸"的感觉而不抢注意力。 */
+.dk-bg canvas {
+  transform: translate3d(calc(var(--px, 0) * 14px), calc(var(--py, 0) * 9px), 0) scale(1.04);
+  transition: transform 620ms cubic-bezier(0.16, 0.9, 0.24, 1);
+}
+
+/* 地图卡：悬停抬起、按下回弹，和选中态叠加也不打架。 */
+.dk-map {
+  transition:
+    transform 260ms cubic-bezier(0.22, 0.86, 0.26, 1),
+    background 200ms linear,
+    box-shadow 200ms linear;
+}
+.dk-map:hover { transform: translateY(-3px); }
+.dk-map.is-selected { transform: translateY(-2px); }
+.dk-map:active { transform: translateY(0) scale(0.995); }
+
+/* 面板悬浮：1px 的抬升足够让鼠标下的那块"被拿起来"。 */
+.dk-panel {
+  transition:
+    transform 220ms cubic-bezier(0.22, 0.86, 0.26, 1),
+    box-shadow 220ms linear;
+}
+.dk-panel:hover { transform: translateY(-1px); }
+
+.dk-cta:active,
+.dk-btn:active {
+  transform: scale(0.985);
+}
+
+/* 出击：内容先缩、虚化、让位给 iris，而不是被黑场硬盖过去。 */
+.dk-top,
+.dk-main,
+.dk-bottom {
+  transition:
+    opacity 320ms linear,
+    transform 620ms cubic-bezier(0.22, 0.86, 0.26, 1),
+    filter 420ms linear;
+}
+.dk-menu.is-deploying .dk-top { opacity: 0; transform: translateY(-10px); }
+.dk-menu.is-deploying .dk-main { opacity: 0; transform: scale(1.035); filter: blur(2px); }
+.dk-menu.is-deploying .dk-bottom { opacity: 0; transform: translateY(10px); }
+
+/* 从对局回到菜单：整体从略缩、虚焦回到锐利，像镜头重新对焦。 */
+.dk-menu.is-returning .dk-top,
+.dk-menu.is-returning .dk-main,
+.dk-menu.is-returning .dk-bottom {
+  animation: dk-return 560ms cubic-bezier(0.16, 0.9, 0.24, 1) both;
+}
+.dk-menu.is-returning .dk-bottom { animation-delay: 60ms; }
+
+@keyframes dk-return {
+  from { opacity: 0; transform: scale(0.986); filter: blur(3px); }
+  to { opacity: 1; transform: scale(1); filter: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dk-pane.is-entering,
+  .dk-pane.is-leaving,
+  .dk-pane.is-entering > *,
+  .dk-menu.is-returning .dk-top,
+  .dk-menu.is-returning .dk-main,
+  .dk-menu.is-returning .dk-bottom {
+    animation-duration: 1ms !important;
+  }
+  .dk-bg canvas { transition: none; }
+}

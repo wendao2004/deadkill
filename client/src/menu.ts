@@ -1001,6 +1001,36 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   host.appendChild(mk('div', 'dk-vignette'))
   host.appendChild(mk('div', 'dk-grain'))
 
+  // 背景视差：鼠标位置 → CSS 变量，画布只跟随几像素。相机运动设置关闭时不动。
+  let parallaxRaf = 0
+  let parallaxX = 0
+  let parallaxY = 0
+  const applyParallax = (x: number, y: number): void => {
+    parallaxX = x
+    parallaxY = y
+    if (parallaxRaf) return
+    parallaxRaf = window.requestAnimationFrame(() => {
+      parallaxRaf = 0
+      host.style.setProperty('--px', parallaxX.toFixed(3))
+      host.style.setProperty('--py', parallaxY.toFixed(3))
+    })
+  }
+  host.addEventListener('pointermove', (event) => {
+    if (settings.cameraMotion === 'off') return
+    const rect = host.getBoundingClientRect()
+    const scale = settings.cameraMotion === 'reduced' ? 0.4 : 1
+    applyParallax(
+      -((event.clientX - rect.left) / rect.width - 0.5) * 2 * scale,
+      -((event.clientY - rect.top) / rect.height - 0.5) * 2 * scale,
+    )
+  })
+  host.addEventListener('pointerleave', () => applyParallax(0, 0))
+  // 从对局回到菜单的"重新对焦"只在 .dk-main 的动画结束后摘掉。
+  host.addEventListener('animationend', (event) => {
+    const target = event.target as HTMLElement
+    if (target.classList?.contains('dk-main')) host.classList.remove('is-returning')
+  })
+
   // ---- 顶栏 --------------------------------------------------------
   const top = mk('header', 'dk-top')
   const brand = mk('div', 'dk-brand')
@@ -2311,6 +2341,13 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     const next = panes.get(id)
     if (!previous || !next) return
 
+    // 方向感：向下切栏从下方滑入，向上切栏从上方滑入；旧 pane 往反方向退。
+    const fromIndex = NAV_ENTRIES.findIndex((entry) => entry.id === activePane)
+    const toIndex = NAV_ENTRIES.findIndex((entry) => entry.id === id)
+    const dir = toIndex >= fromIndex ? 1 : -1
+    next.style.setProperty('--dir', String(dir))
+    previous.style.setProperty('--dir', String(-dir))
+
     const previousTab = tabButtons.get(activePane)
     const nextTab = tabButtons.get(id)
     if (previousTab) previousTab.setAttribute('aria-selected', 'false')
@@ -2353,7 +2390,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   buildSettings()
 
   const firstPane = panes.get('deploy')
-  if (firstPane) firstPane.classList.add('is-active')
+  if (firstPane) firstPane.classList.add('is-active', 'is-entering')
   tabButtons.get('deploy')?.classList.add('is-active')
 
   let disposed = false
@@ -2579,6 +2616,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
         // 撤回还没播完的揭开：启动失败退回菜单时，整层必须立刻能点。
         // 这段逻辑必须和 setVisible 的早退解耦：移动端阻断发生在菜单仍可见时。
         abortDeploy()
+        // 从对局回来：整体从略缩/虚焦回到锐利，像镜头重新对焦。
+        host.classList.remove('is-returning')
+        void host.offsetWidth
+        host.classList.add('is-returning')
       } else {
         backdrop?.stop()
         // 关键改动：这里不再立刻加 is-hidden。main.ts 在 await started.start()
