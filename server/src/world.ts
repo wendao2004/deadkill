@@ -64,6 +64,7 @@ import {
   CONTRACT_NONE,
   contractOf,
   clampContract,
+  clampAttachment,
   EVENT_BLOODMOON,
   EVENT_SUPPLY,
   SNAPSHOT_HISTORY,
@@ -1518,7 +1519,7 @@ export class World {
    * 真正开火之后才变成当前 tick）。重生时 resetLoadout 会把它还原，所以
    * 死了之后仍然可以在菜单外重新挑，只是那一局已经打出去的枪作数。
    */
-  receiveLoadout(playerId: number, weaponId: number, traits = 0, contract = 0, extras = 0): void {
+  receiveLoadout(playerId: number, weaponId: number, traits = 0, contract = 0, extras = 0, attachment = 0): void {
     const player = this.players.get(playerId)
     if (!player) return
     if (player.loadout.lastFireTick > 0) {
@@ -1557,8 +1558,9 @@ export class World {
       if (spec.target > 0) this.sendText(player, `合同「${spec.name}」· ${spec.desc}（奖励 ${spec.reward}）`)
     }
     const primary = isPrimaryChoice(weaponId) ? weaponId : DEFAULT_WEAPON_ID
-    if (primary === player.loadout.primaryId) return
-    player.loadout = createLoadout(primary)
+    const attach = clampAttachment(attachment)
+    if (primary === player.loadout.primaryId && attach === player.loadout.attachment) return
+    player.loadout = createLoadout(primary, attach)
     player.reloading = false
   }
 
@@ -2385,6 +2387,7 @@ export class World {
       origin: eye,
       dir: firstDir ?? { x: 0, y: 0, z: -1 },
       weaponId: spec.id,
+      attachment: player.loadout.attachment,
     })
 
     for (const hit of hits) {

@@ -10,6 +10,7 @@
  * 一个 LoadoutState，测试也可以直接构造一个来验证规则。
  */
 
+import { attachmentOf, ATTACHMENT_NONE } from './attachments.ts'
 import {
   DEFAULT_WEAPON_ID,
   DEFAULT_SLOT_ORDER,
@@ -33,12 +34,15 @@ export interface LoadoutState {
   switchDoneTick: number
   /** 上一次开火的 tick。 */
   lastFireTick: number
+  /** 主武器配件 id（见 shared/src/attachments.ts）。 */
+  attachment: number
 }
 
 /** 一套全新的配装（出生、重生都用它）。 */
-export function createLoadout(primaryId: number = DEFAULT_WEAPON_ID): LoadoutState {
-  return {
+export function createLoadout(primaryId: number = DEFAULT_WEAPON_ID, attachment = ATTACHMENT_NONE): LoadoutState {
+  const state: LoadoutState = {
     primaryId,
+    attachment,
     currentSlot: 0,
     ammoBySlot: filledAmmo(primaryId),
     reserveBySlot: filledReserve(primaryId),
@@ -49,9 +53,28 @@ export function createLoadout(primaryId: number = DEFAULT_WEAPON_ID): LoadoutSta
     // 遇敌时表现为"按了左键没反应"。
     lastFireTick: -1e9,
   }
+  // 加长弹仓：开局就把弹匣和备弹一起按新容量填满。
+  if (attachmentOf(attachment).magazineBonus > 0) {
+    for (let slot = 0; slot < state.ammoBySlot.length; slot++) {
+      const spec = WEAPONS[slotWeaponId(state, slot)]!
+      const bonus = slot === 0 ? attachmentOf(attachment).magazineBonus : 0
+      if (bonus > 0) {
+        state.ammoBySlot[slot] = spec.magazine + bonus
+        state.reserveBySlot[slot] = (state.reserveBySlot[slot] ?? 0) + bonus
+      }
+    }
+  }
+  return state
 }
 
 /** 每个槽位满弹时的弹药表。 */
+/** 这个槽位当前的有效弹匣容量（含配件加成）。 */
+export function magazineCap(state: LoadoutState, slot = state.currentSlot): number {
+  const spec = WEAPONS[slotWeaponId(state, slot)]!
+  const bonus = slot === 0 ? attachmentOf(state.attachment).magazineBonus : 0
+  return spec.magazine + bonus
+}
+
 export function filledAmmo(primaryId: number): number[] {
   return DEFAULT_SLOT_ORDER.map((_, slot) => WEAPONS[weaponForSlot(primaryId, slot)]!.magazine)
 }
@@ -151,7 +174,7 @@ export function refillSlot(state: LoadoutState): number {
   if (isKnife(spec)) return 0
   const current = state.ammoBySlot[slot] ?? 0
   const reserve = state.reserveBySlot[slot] ?? 0
-  const take = Math.min(Math.max(0, spec.magazine - current), reserve)
+  const take = Math.min(Math.max(0, magazineCap(state) - current), reserve)
   state.ammoBySlot[slot] = current + take
   state.reserveBySlot[slot] = reserve - take
   return take
@@ -163,7 +186,7 @@ export function canReload(state: LoadoutState): boolean {
   if (isKnife(spec)) return false
   const current = state.ammoBySlot[state.currentSlot] ?? 0
   const reserve = state.reserveBySlot[state.currentSlot] ?? 0
-  return current < spec.magazine && reserve > 0
+  return current < magazineCap(state) && reserve > 0
 }
 
 /** 捡到弹药：按"一个弹匣"往当前槽位备弹里加。 */

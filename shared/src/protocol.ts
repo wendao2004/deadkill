@@ -183,7 +183,7 @@ export function decodeSwitchSlot(buffer: ArrayBuffer): number {
  * 一定会有第 256 把以外的情况——协议里省下这 1 个字节，换来的是一场
  * 谁都没预料到的静默截断。
  */
-export const LOADOUT_SIZE = 1 + 2 + 4 + 1 + 1
+export const LOADOUT_SIZE = 1 + 2 + 4 + 1 + 1 + 1
 
 /**
  * 配装包：u8 kind + u16le 武器 id + u32le 天赋等级包。
@@ -204,9 +204,11 @@ export interface LoadoutRequest {
   contract: number
   /** 随身补给位图：bit0 = 额外绷带，bit1 = 额外备弹。 */
   extras: number
+  /** 主武器配件 id（见 shared/src/attachments.ts）。 */
+  attachment: number
 }
 
-export function encodeLoadout(weaponId: number, traits = 0, contract = 0, extras = 0): ArrayBuffer {
+export function encodeLoadout(weaponId: number, traits = 0, contract = 0, extras = 0, attachment = 0): ArrayBuffer {
   const buffer = new ArrayBuffer(LOADOUT_SIZE)
   const view = new DataView(buffer)
   view.setUint8(0, Msg.Loadout)
@@ -214,6 +216,7 @@ export function encodeLoadout(weaponId: number, traits = 0, contract = 0, extras
   view.setUint32(3, traits >>> 0, true)
   view.setUint8(7, contract & 0xff)
   view.setUint8(8, extras & 0xff)
+  view.setUint8(9, attachment & 0xff)
   return buffer
 }
 
@@ -223,7 +226,8 @@ export function decodeLoadout(buffer: ArrayBuffer): LoadoutRequest {
   if (view.getUint8(0) !== Msg.Loadout) throw new Error('不是选枪包')
   const contract = buffer.byteLength > 7 ? view.getUint8(7) : 0
   const extras = buffer.byteLength > 8 ? view.getUint8(8) : 0
-  return { weaponId: view.getUint16(1, true), traits: view.getUint32(3, true), contract, extras }
+  const attachment = buffer.byteLength > 9 ? view.getUint8(9) : 0
+  return { weaponId: view.getUint16(1, true), traits: view.getUint32(3, true), contract, extras, attachment }
 }
 
 // ---------------------------------------------------------------- 快照
@@ -481,6 +485,8 @@ export interface ShotEvent {
   origin: Vec3
   dir: Vec3
   weaponId: number
+  /** 配件 id（消音器影响远处音量）。旧调用方不传 = 0。 */
+  attachment?: number
 }
 
 export interface HitEvent {
@@ -579,7 +585,8 @@ export function encodeEvents(events: GameEvent[]): ArrayBuffer {
       view.setFloat32(off + 20, ev.dir.y, true)
       view.setFloat32(off + 24, ev.dir.z, true)
       view.setUint8(off + 28, ev.weaponId)
-      off += 29
+      view.setUint8(off + 29, ev.attachment ?? 0)
+      off += 30
     } else if (ev.kind === EventKind.Hit) {
       view.setUint16(off + 2, ev.attackerId, true)
       view.setUint16(off + 4, ev.victimId, true)
@@ -659,8 +666,9 @@ export function decodeEvents(buffer: ArrayBuffer): GameEvent[] {
           z: view.getFloat32(off + 24, true),
         },
         weaponId: view.getUint8(off + 28),
+        attachment: view.getUint8(off + 29),
       })
-      off += 29
+      off += 30
     } else if (kind === EventKind.Hit) {
       out.push({
         kind: EventKind.Hit,

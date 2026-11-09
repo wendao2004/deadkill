@@ -223,7 +223,8 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   // v15：目标包加捕兽夹状态位图 1 字节（24 → 25）。
   // v16：目标包加油灯状态位图 1 字节（25 → 26）。
   // v17：配装包加随身补给 1 字节（8 → 9）；快照与目标包不变。
-  assert.equal(PROTOCOL_VERSION, 17)
+  // v18：配装包加配件 1 字节（9 → 10），Shot 事件加配件 1 字节（29 → 30）。
+  assert.equal(PROTOCOL_VERSION, 18)
   assert.equal(SNAPSHOT_HEADER, 17)
   assert.equal(PLAYER_SNAPSHOT_SIZE, 36)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)
@@ -430,8 +431,8 @@ test('snapshot: 怪物的 kind/state 只留低 8 位，health 不为负，yaw �
 
 // ---------------------------------------------------------------- 事件
 
-test('event: 每种事件占用的字节数是固定的 29 / 21 / 7 / 16 / 20 / 7 / 20', () => {
-  // 最长的事件是 Shot(29)，MAX_EVENT_SIZE 是它的上界，不是"怪物事件变长
+test('event: 每种事件占用的字节数是固定的 30 / 21 / 7 / 16 / 20 / 7 / 20', () => {
+  // 最长的事件是 Shot(30)，MAX_EVENT_SIZE 是它的上界，不是"怪物事件变长
   // 了"——怪物事件比 Shot 短得多。
   assert.equal(MAX_EVENT_SIZE, 35)
 
@@ -442,6 +443,7 @@ test('event: 每种事件占用的字节数是固定的 29 / 21 / 7 / 16 / 20 / 
       origin: { x: 1, y: 2, z: 3 },
       dir: { x: 0, y: 0, z: -1 },
       weaponId: 1,
+      attachment: 0,
     },
     {
       kind: EventKind.Hit,
@@ -466,7 +468,7 @@ test('event: 每种事件占用的字节数是固定的 29 / 21 / 7 / 16 / 20 / 
 
   // 编码器按 MAX_EVENT_SIZE 预分配再 slice 到实际长度：单个事件时
   // 2 字节包头 + 该事件的净长度。
-  const sizes = [29, 21, 7, 16, 20, 7, 20]
+  const sizes = [30, 21, 7, 16, 20, 7, 20]
   for (let i = 0; i < events.length; i++) {
     const buffer = encodeEvents([events[i]!])
     assert.equal(buffer.byteLength, 2 + sizes[i]!, 'event kind=' + events[i]!.kind)
@@ -638,6 +640,7 @@ test('解码器遇到截断缓冲区一律抛 RangeError，绝不返回半截数
           origin: { x: 1, y: 2, z: 3 },
           dir: { x: 0, y: 0, z: -1 },
           weaponId: 1,
+      attachment: 0,
         },
       ]).slice(0, 20),
     ),

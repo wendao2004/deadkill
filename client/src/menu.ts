@@ -24,7 +24,9 @@ import {
   DEFAULT_SECONDARY_ID,
   DEFAULT_WEAPON_ID,
   LEVEL_IDS,
+  ATTACHMENTS,
   CONTRACTS,
+  clampAttachment,
   clampContract,
   MAX_TRAITS,
   MELEE_WEAPON_ID,
@@ -109,6 +111,8 @@ export interface MenuConfig {
   contract?: number
   /** 随身补给位图：bit0 额外绷带，bit1 额外备弹。 */
   extras?: number
+  /** 主武器配件 id（见 shared/src/attachments.ts）。 */
+  attachment?: number
   /**
    * 金币余额。**可选**：main.ts 还没接这条线，必填会让它当场编译不过。
    *
@@ -173,6 +177,8 @@ export interface Menu {
 const KEY_NICKNAME = 'dk.nickname'
 const KEY_CONTRACT = 'dk.contract'
 const KEY_EXTRAS = 'dk.extras'
+const KEY_ATTACH = 'dk.attachment'
+const KEY_ATTACH_UNLOCKS = 'dk.attachmentUnlocks'
 const KEY_MATCH = 'dk.match'
 const KEY_PRIMARY = 'dk.primary'
 const KEY_TRAITS = 'dk.traits'
@@ -267,6 +273,8 @@ export function loadSavedConfig(): Partial<MenuConfig> {
   if (contract !== null) out.contract = clampContract(Number(contract))
   const extras = readRaw(KEY_EXTRAS)
   if (extras !== null) out.extras = Number(extras) & 3
+  const attachment = readRaw(KEY_ATTACH)
+  if (attachment !== null) out.attachment = clampAttachment(Number(attachment))
   // 天赋选中项同样只认白名单：clampSelection 会丢掉非法位、超出上限的按表顺序截断，
   // 所以手改过的存档最差也只是"少带一条"，不会让服务端拒包。
   const traits = Number(readRaw(KEY_TRAITS))
@@ -301,6 +309,7 @@ export function saveConfig(config: Partial<MenuConfig>): void {
   if (config.traits !== undefined) writeRaw(KEY_TRAITS, String(clampSelection(config.traits)))
   if (config.contract !== undefined) writeRaw(KEY_CONTRACT, String(clampContract(config.contract)))
   if (config.extras !== undefined) writeRaw(KEY_EXTRAS, String(config.extras & 3))
+  if (config.attachment !== undefined) writeRaw(KEY_ATTACH, String(clampAttachment(config.attachment)))
   // 金币不进配装包也照样落盘：大厅一刷新，余额和等级都还在。
   if (config.coins !== undefined) writeRaw(KEY_COINS, String(normalizeCoins(config.coins)))
 }
@@ -979,6 +988,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     primaryId: options.initial?.primaryId ?? saved.primaryId ?? DEFAULT_WEAPON_ID,
     contract: clampContract(options.initial?.contract ?? saved.contract ?? 1),
     extras: (options.initial?.extras ?? saved.extras ?? 0) & 3,
+    attachment: clampAttachment(options.initial?.attachment ?? saved.attachment ?? 0),
     traits: clampSelection(options.initial?.traits ?? saved.traits ?? 0),
     coins: normalizeCoins(options.initial?.coins ?? saved.coins ?? 0),
   }
@@ -1161,7 +1171,16 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   // ---------------------------------------------------------------- 出击
 
-  const deployState = { mapId: MAP_ENTRIES[0]?.id ?? 'marsh-p0', squad: 'solo', threat: 1, contract: 1, extras: 0 }
+  const deployState = {
+    mapId: MAP_ENTRIES[0]?.id ?? 'marsh-p0',
+    squad: 'solo',
+    threat: 1,
+    contract: 1,
+    extras: 0,
+    attachment: clampAttachment(config.attachment ?? 0),
+  }
+  /** 永久解锁的配件（bit = 配件 id）。0 号"不装"永远解锁。 */
+  let attachmentUnlocks = (Number(readRaw(KEY_ATTACH_UNLOCKS) ?? '0') | 1) >>> 0
   let deployTimer = 0
   let deploying = false
   let cta: HTMLButtonElement | null = null
@@ -1316,6 +1335,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     side.appendChild(buildThreatPicker())
     side.appendChild(buildContractPicker())
     side.appendChild(buildExtrasPicker())
+    side.appendChild(buildAttachmentPicker())
     side.appendChild(buildIdentityFields())
 
     // 天赋摘要紧跟主武器那行：出击前最后一眼能同时确认"这把枪"和"这三条天赋"。
@@ -1741,6 +1761,53 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     return wrap
   }
 
+  /** 主武器配件：金币一次性解锁，之后每局免费选一件。 */
+  function buildAttachmentPicker(): HTMLElement {
+    const wrap = mk('div', 'dk-field')
+    wrap.appendChild(mk('span', 'dk-field__label', '主武器配件'))
+    const row = mk('div', 'dk-segment')
+    const buttons: HTMLButtonElement[] = []
+    const sync = (): void => {
+      const coins = normalizeCoins(config.coins ?? 0)
+      for (const [i, spec] of ATTACHMENTS.entries()) {
+        const unlocked = ((attachmentUnlocks >>> spec.id) & 1) === 1
+        const on = deployState.attachment === spec.id
+        const btn = buttons[i]!
+        btn.textContent = unlocked ? spec.name : spec.name + ' $' + spec.cost
+        btn.title = spec.desc
+        btn.classList.toggle('is-selected', on)
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+        btn.disabled = !unlocked && coins < spec.cost
+      }
+    }
+    for (const spec of ATTACHMENTS) {
+      const btn = mkButton('dk-segment__item', spec.name)
+      btn.addEventListener('click', () => {
+        const unlocked = ((attachmentUnlocks >>> spec.id) & 1) === 1
+        const coins = normalizeCoins(config.coins ?? 0)
+        if (!unlocked) {
+          if (coins < spec.cost) return
+          config.coins = coins - spec.cost
+          attachmentUnlocks = (attachmentUnlocks | (1 << spec.id)) >>> 0
+          writeRaw(KEY_ATTACH_UNLOCKS, String(attachmentUnlocks))
+          if (dossierCoinsEl) dossierCoinsEl.textContent = formatCoins(config.coins ?? 0)
+        }
+        deployState.attachment = spec.id
+        config.attachment = spec.id
+        saveConfig(config)
+        syncTraits()
+        sync()
+      })
+      buttons.push(btn)
+      row.appendChild(btn)
+    }
+    wrap.appendChild(row)
+    sync()
+    const hint = mk('p', 'dk-deploy__hint', '配件永久解锁；每局可免费选一件。')
+    wrap.appendChild(hint)
+    return wrap
+  }
+
   function buildIdentityFields(): HTMLElement {
     const wrap = mk('div', 'dk-field')
     const nickLabel = mk('label', 'dk-field__label', '猎人代号')
@@ -1815,6 +1882,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       config.matchId = identity.matchInput.value.trim().slice(0, 32) || 'default'
     config.contract = clampContract(deployState.contract)
     config.extras = deployState.extras & 3
+    config.attachment = clampAttachment(deployState.attachment)
     }
     // 本局只剩 ≤3 分钟：不让玩家进去跑 200m 才发现没时间撤，直接分到下一局
     // 的新房间（同名后缀 -next）。旧房间的猎人继续打，互不影响。

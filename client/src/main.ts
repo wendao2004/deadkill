@@ -484,6 +484,7 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
     traits: packSelection(config.traits ?? 0, ownedTraits()),
     contract: config.contract ?? 0,
     extras: config.extras ?? 0,
+    attachment: config.attachment ?? 0,
     onTraitFx: flashTrait,
     onStatus: setStatus,
     onClose: (info) => {

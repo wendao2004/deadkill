@@ -40,6 +40,7 @@ import {
   fireIntervalScale,
   switchScale,
   buildLevelWorld,
+  attachmentOf,
   setDoorOpen,
   clamp,
   getModifier,
@@ -196,6 +197,8 @@ export interface GameOptions {
   contract?: number
   /** 随身补给位图（bit0 绷带、bit1 备弹）。 */
   extras?: number
+  /** 主武器配件 id（见 shared/src/attachments.ts）。 */
+  attachment?: number
   /**
    * 某条天赋刚起了作用。HUD 那颗徽记会闪一下 —— 天赋是看不见的数值加成，
    * 不给这一下反馈，玩家永远不知道自己买的天赋到底生效没有。
@@ -555,6 +558,7 @@ export class Game {
       this.options.traits,
       this.options.contract ?? 0,
       this.options.extras ?? 0,
+      this.options.attachment ?? 0,
       {
       onWelcome: (info) => {
         this.myId = info.playerId
@@ -1281,7 +1285,7 @@ export class Game {
         this.audio.shotAt(
           event.weaponId,
           event.origin,
-          WEAPONS[event.weaponId]?.loudness ?? 1,
+          (WEAPONS[event.weaponId]?.loudness ?? 1) * attachmentOf(event.attachment ?? 0).soundScale,
           this.heardThrough(event.origin),
         )
       } else if (event.kind === 2 /* Hit */) {
@@ -1538,7 +1542,7 @@ export class Game {
       spec?.kind === 'sniper' ? 1.45 : spec?.kind === 'shotgun' ? 1.5 : spec?.kind === 'revolver' ? 0.8 : 1
     if (spec?.kind === 'revolver') this.options.onTraitFx?.(Trait.Ambidextrous)
     if (this.input.ads) this.options.onTraitFx?.(Trait.IronGrip)
-    this.renderer.onLocalShot(kick)
+    this.renderer.onLocalShot(kick * attachmentOf(this.options.attachment ?? 0).recoilScale)
     // 左轮吐轮：每发转 60°，棘轮声必须跟着枪机走，而不是跟着键盘。
     if (spec?.kind === 'revolver') this.audio.cylinderRatchet(false)
     // 最后一发：枪机空仓的机构声。它和"扣空扳机"的 dryFire 是两件事。
@@ -1564,7 +1568,7 @@ export class Game {
     this.audio.shot(
       meNow?.weaponId ?? 1,
       0,
-      WEAPONS[meNow?.weaponId ?? 1]?.loudness ?? 1,
+      (WEAPONS[meNow?.weaponId ?? 1]?.loudness ?? 1) * attachmentOf(this.options.attachment ?? 0).soundScale,
     )
   }
 
@@ -2145,7 +2149,7 @@ export class Game {
       this.heldSlot,
       this.switchProgress(),
       this.meleeProgress(),
-      WEAPONS[this.heldWeapon]?.adsZoom ?? 1,
+      (WEAPONS[this.heldWeapon]?.adsZoom ?? 1) * attachmentOf(this.options.attachment ?? 0).zoomScale,
       this.wallBlock,
     )
     // 指南针/撤离方位必须每帧跟着 yaw 走，不能等 1Hz 的目标包。

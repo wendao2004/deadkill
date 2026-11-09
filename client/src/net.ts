@@ -106,6 +106,8 @@ export class Net {
   private contract = 0
   /** 随身补给位图。 */
   private extras = 0
+  /** 主武器配件 id。 */
+  private attachment = 0
   /** 已经发给服务端的最新输入序号，重连时用来判断是否要丢弃旧输入。 */
   lastSeq = 0
   closed = false
@@ -123,6 +125,7 @@ export class Net {
     traitMask: number,
     contract: number,
     extras: number,
+    attachment: number,
     handlers: NetHandlers,
   ): void {
     this.handlers = handlers
@@ -131,6 +134,7 @@ export class Net {
     this.traitMask = traitMask
     this.contract = contract
     this.extras = extras
+    this.attachment = attachment
     const socket = new WebSocket(wsUrl(matchId))
     // 必须显式设成 arraybuffer：默认是 blob，而 blob 要先 await arrayBuffer()
     // 才能解析，等于给每个快照加一次微任务延迟。
@@ -156,7 +160,7 @@ export class Net {
             }
             // 配装必须在 Welcome 之后发：服务端是在 Hello 里才认识我这个
             // playerId 的，早一毫秒它只能把包丢掉。
-            socket.send(encodeLoadout(this.primaryId, this.traitMask, this.contract, this.extras))
+            socket.send(encodeLoadout(this.primaryId, this.traitMask, this.contract, this.extras, this.attachment))
             this.handlers?.onWelcome(welcome)
             break
           }
