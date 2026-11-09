@@ -483,6 +483,7 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
     // 转换放在进场这一处：局内所有加成判定都只认等级包一种形状。
     traits: packSelection(config.traits ?? 0, ownedTraits()),
     contract: config.contract ?? 0,
+    extras: config.extras ?? 0,
     onTraitFx: flashTrait,
     onStatus: setStatus,
     onClose: (info) => {

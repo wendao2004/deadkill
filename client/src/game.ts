@@ -194,6 +194,8 @@ export interface GameOptions {
   traits: number
   /** 本局合同 id（见 shared/src/contracts.ts）。0 = 不接。 */
   contract?: number
+  /** 随身补给位图（bit0 绷带、bit1 备弹）。 */
+  extras?: number
   /**
    * 某条天赋刚起了作用。HUD 那颗徽记会闪一下 —— 天赋是看不见的数值加成，
    * 不给这一下反馈，玩家永远不知道自己买的天赋到底生效没有。
@@ -552,6 +554,7 @@ export class Game {
       this.options.primaryId,
       this.options.traits,
       this.options.contract ?? 0,
+      this.options.extras ?? 0,
       {
       onWelcome: (info) => {
         this.myId = info.playerId

@@ -394,6 +394,8 @@ interface PlayerState {
   healAnchor: { x: number; z: number } | null
   /** 上次发出去的战利品包字节，用来"只在内容变化时发"（见 publishLoot）。 */
   lastLoot: Uint8Array | null
+  /** 本局随身补给是否已经发放（配装包可能重发）。 */
+  extrasApplied: boolean
   /** 本局合同 id（CONTRACT_*）。 */
   contract: number
   /** 合同进度（击杀数/搜刮数/撤离次数）。 */
@@ -1441,6 +1443,7 @@ export class World {
       healMs: 0,
       healAnchor: null,
       lastLoot: null,
+      extrasApplied: false,
       contract: CONTRACT_NONE,
       contractProgress: 0,
       contractDone: false,
@@ -1515,7 +1518,7 @@ export class World {
    * 真正开火之后才变成当前 tick）。重生时 resetLoadout 会把它还原，所以
    * 死了之后仍然可以在菜单外重新挑，只是那一局已经打出去的枪作数。
    */
-  receiveLoadout(playerId: number, weaponId: number, traits = 0, contract = 0): void {
+  receiveLoadout(playerId: number, weaponId: number, traits = 0, contract = 0, extras = 0): void {
     const player = this.players.get(playerId)
     if (!player) return
     if (player.loadout.lastFireTick > 0) {
@@ -1528,6 +1531,22 @@ export class World {
     // 强健：生命上限跟着天赋走。回血上限、出生血量、血条都得读同一个数。
     player.maxHealth = MAX_HEALTH + maxHealthBonus(player.traits)
     player.health = Math.min(player.health, player.maxHealth)
+    // 随身补给：一次进场只发一次。金币在大厅侧扣，服务端只负责把东西给到。
+    if (!player.extrasApplied) {
+      player.extrasApplied = true
+      if ((extras & 1) !== 0) {
+        const owned = player.loot.find((item) => item.id === LOOT_ITEM.Bandage)
+        if (owned) owned.count = Math.min(255, owned.count + 2)
+        else player.loot.push({ id: LOOT_ITEM.Bandage, count: 2 })
+        this.sendText(player, '随身补给：绷带 +2')
+      }
+      if ((extras & 2) !== 0) {
+        const spec = heldWeapon(player.loadout)
+        player.loadout.reserveBySlot[0] =
+          (player.loadout.reserveBySlot[0] ?? 0) + (spec.kind === 'knife' ? 0 : spec.magazine)
+        this.sendText(player, '随身补给：备弹 +1 匣')
+      }
+    }
     // 合同只在开局配装时生效；开过枪之后配装锁定，合同也跟着锁定。
     const nextContract = clampContract(contract)
     if (nextContract !== player.contract) {

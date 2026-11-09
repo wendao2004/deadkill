@@ -183,7 +183,7 @@ export function decodeSwitchSlot(buffer: ArrayBuffer): number {
  * 一定会有第 256 把以外的情况——协议里省下这 1 个字节，换来的是一场
  * 谁都没预料到的静默截断。
  */
-export const LOADOUT_SIZE = 1 + 2 + 4 + 1
+export const LOADOUT_SIZE = 1 + 2 + 4 + 1 + 1
 
 /**
  * 配装包：u8 kind + u16le 武器 id + u32le 天赋等级包。
@@ -202,15 +202,18 @@ export interface LoadoutRequest {
   traits: number
   /** 本局合同 id（0 = 不接）。 */
   contract: number
+  /** 随身补给位图：bit0 = 额外绷带，bit1 = 额外备弹。 */
+  extras: number
 }
 
-export function encodeLoadout(weaponId: number, traits = 0, contract = 0): ArrayBuffer {
+export function encodeLoadout(weaponId: number, traits = 0, contract = 0, extras = 0): ArrayBuffer {
   const buffer = new ArrayBuffer(LOADOUT_SIZE)
   const view = new DataView(buffer)
   view.setUint8(0, Msg.Loadout)
   view.setUint16(1, weaponId & 0xffff, true)
   view.setUint32(3, traits >>> 0, true)
   view.setUint8(7, contract & 0xff)
+  view.setUint8(8, extras & 0xff)
   return buffer
 }
 
@@ -219,7 +222,8 @@ export function decodeLoadout(buffer: ArrayBuffer): LoadoutRequest {
   const view = new DataView(buffer)
   if (view.getUint8(0) !== Msg.Loadout) throw new Error('不是选枪包')
   const contract = buffer.byteLength > 7 ? view.getUint8(7) : 0
-  return { weaponId: view.getUint16(1, true), traits: view.getUint32(3, true), contract }
+  const extras = buffer.byteLength > 8 ? view.getUint8(8) : 0
+  return { weaponId: view.getUint16(1, true), traits: view.getUint32(3, true), contract, extras }
 }
 
 // ---------------------------------------------------------------- 快照

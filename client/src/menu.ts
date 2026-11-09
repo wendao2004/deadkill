@@ -107,6 +107,8 @@ export interface MenuConfig {
   traits: number
   /** 本局合同 id（见 shared/src/contracts.ts），缺省 0 = 不接。 */
   contract?: number
+  /** 随身补给位图：bit0 额外绷带，bit1 额外备弹。 */
+  extras?: number
   /**
    * 金币余额。**可选**：main.ts 还没接这条线，必填会让它当场编译不过。
    *
@@ -170,6 +172,7 @@ export interface Menu {
 
 const KEY_NICKNAME = 'dk.nickname'
 const KEY_CONTRACT = 'dk.contract'
+const KEY_EXTRAS = 'dk.extras'
 const KEY_MATCH = 'dk.match'
 const KEY_PRIMARY = 'dk.primary'
 const KEY_TRAITS = 'dk.traits'
@@ -262,6 +265,8 @@ export function loadSavedConfig(): Partial<MenuConfig> {
   if (isPrimaryChoice(primary)) out.primaryId = primary
   const contract = readRaw(KEY_CONTRACT)
   if (contract !== null) out.contract = clampContract(Number(contract))
+  const extras = readRaw(KEY_EXTRAS)
+  if (extras !== null) out.extras = Number(extras) & 3
   // 天赋选中项同样只认白名单：clampSelection 会丢掉非法位、超出上限的按表顺序截断，
   // 所以手改过的存档最差也只是"少带一条"，不会让服务端拒包。
   const traits = Number(readRaw(KEY_TRAITS))
@@ -295,6 +300,7 @@ export function saveConfig(config: Partial<MenuConfig>): void {
   // 天赋允许存成 0（玩家主动全取消），所以不判 > 0；非法位先洗一遍再落盘。
   if (config.traits !== undefined) writeRaw(KEY_TRAITS, String(clampSelection(config.traits)))
   if (config.contract !== undefined) writeRaw(KEY_CONTRACT, String(clampContract(config.contract)))
+  if (config.extras !== undefined) writeRaw(KEY_EXTRAS, String(config.extras & 3))
   // 金币不进配装包也照样落盘：大厅一刷新，余额和等级都还在。
   if (config.coins !== undefined) writeRaw(KEY_COINS, String(normalizeCoins(config.coins)))
 }
@@ -972,6 +978,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     matchId: options.initial?.matchId ?? saved.matchId ?? 'default',
     primaryId: options.initial?.primaryId ?? saved.primaryId ?? DEFAULT_WEAPON_ID,
     contract: clampContract(options.initial?.contract ?? saved.contract ?? 1),
+    extras: (options.initial?.extras ?? saved.extras ?? 0) & 3,
     traits: clampSelection(options.initial?.traits ?? saved.traits ?? 0),
     coins: normalizeCoins(options.initial?.coins ?? saved.coins ?? 0),
   }
@@ -1154,7 +1161,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   // ---------------------------------------------------------------- 出击
 
-  const deployState = { mapId: MAP_ENTRIES[0]?.id ?? 'marsh-p0', squad: 'solo', threat: 1, contract: 1 }
+  const deployState = { mapId: MAP_ENTRIES[0]?.id ?? 'marsh-p0', squad: 'solo', threat: 1, contract: 1, extras: 0 }
   let deployTimer = 0
   let deploying = false
   let cta: HTMLButtonElement | null = null
@@ -1308,6 +1315,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     side.appendChild(buildSquadPicker())
     side.appendChild(buildThreatPicker())
     side.appendChild(buildContractPicker())
+    side.appendChild(buildExtrasPicker())
     side.appendChild(buildIdentityFields())
 
     // 天赋摘要紧跟主武器那行：出击前最后一眼能同时确认"这把枪"和"这三条天赋"。
@@ -1683,6 +1691,56 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     return wrap
   }
 
+  /** 随身补给：用金币买这一局的额外绷带/备弹。选中即扣，取消即退。 */
+  const EXTRAS: { bit: number; label: string; cost: number }[] = [
+    { bit: 1, label: '绷带 +2', cost: 100 },
+    { bit: 2, label: '备弹 +1 匣', cost: 80 },
+  ]
+
+  function buildExtrasPicker(): HTMLElement {
+    const wrap = mk('div', 'dk-field')
+    wrap.appendChild(mk('span', 'dk-field__label', '随身补给（金币）'))
+    const row = mk('div', 'dk-segment')
+    const buttons: HTMLButtonElement[] = []
+    const sync = (): void => {
+      const coins = normalizeCoins(config.coins ?? 0)
+      for (const [i, spec] of EXTRAS.entries()) {
+        const on = (deployState.extras & spec.bit) !== 0
+        const btn = buttons[i]!
+        btn.classList.toggle('is-selected', on)
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+        btn.disabled = !on && coins < spec.cost
+      }
+    }
+    for (const spec of EXTRAS) {
+      const btn = mkButton('dk-segment__item', spec.label + ' $' + spec.cost)
+      btn.addEventListener('click', () => {
+        const on = (deployState.extras & spec.bit) !== 0
+        const coins = normalizeCoins(config.coins ?? 0)
+        if (on) {
+          config.coins = coins + spec.cost
+          deployState.extras &= ~spec.bit
+        } else {
+          if (coins < spec.cost) return
+          config.coins = coins - spec.cost
+          deployState.extras |= spec.bit
+        }
+        config.extras = deployState.extras & 3
+        if (dossierCoinsEl) dossierCoinsEl.textContent = formatCoins(config.coins ?? 0)
+        saveConfig(config)
+        syncTraits()
+        sync()
+      })
+      buttons.push(btn)
+      row.appendChild(btn)
+    }
+    wrap.appendChild(row)
+    sync()
+    const hint = mk('p', 'dk-deploy__hint', '进场时发放；死亡不退，撤离后不保留。')
+    wrap.appendChild(hint)
+    return wrap
+  }
+
   function buildIdentityFields(): HTMLElement {
     const wrap = mk('div', 'dk-field')
     const nickLabel = mk('label', 'dk-field__label', '猎人代号')
@@ -1756,6 +1814,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       config.nickname = identity.nickInput.value.trim().slice(0, 16)
       config.matchId = identity.matchInput.value.trim().slice(0, 32) || 'default'
     config.contract = clampContract(deployState.contract)
+    config.extras = deployState.extras & 3
     }
     // 本局只剩 ≤3 分钟：不让玩家进去跑 200m 才发现没时间撤，直接分到下一局
     // 的新房间（同名后缀 -next）。旧房间的猎人继续打，互不影响。
