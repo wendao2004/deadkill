@@ -191,6 +191,8 @@ export interface GameOptions {
   primaryId: number
   /** 本局带的天赋掩码（见 shared/src/traits.ts）。局中不变。 */
   traits: number
+  /** 本局合同 id（见 shared/src/contracts.ts）。0 = 不接。 */
+  contract?: number
   /**
    * 某条天赋刚起了作用。HUD 那颗徽记会闪一下 —— 天赋是看不见的数值加成，
    * 不给这一下反馈，玩家永远不知道自己买的天赋到底生效没有。
@@ -461,6 +463,10 @@ export class Game {
       extracts: options.level.extracts ?? [],
       extractIndex: -1,
       extractProgress: 0,
+      event: 0,
+      eventX: 0,
+      eventZ: 0,
+      eventSeconds: 0,
     }
     // 手上这把枪从开局就得是"大厅里选的那把"：以前初值写死 DEFAULT_WEAPON_ID，
     // 只有切槽才会重算，于是选了神射手步枪进局还是端着温菲尔德的模型，
@@ -544,6 +550,7 @@ export class Game {
       this.options.level.id,
       this.options.primaryId,
       this.options.traits,
+      this.options.contract ?? 0,
       {
       onWelcome: (info) => {
         this.myId = info.playerId

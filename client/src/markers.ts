@@ -79,6 +79,7 @@ import {
   InstancedMesh,
   Matrix4,
   Mesh,
+  MeshBasicMaterial,
   MeshToonMaterial,
   NearestFilter,
   PlaneGeometry,
@@ -124,6 +125,11 @@ export interface ObjectiveView {
   /** 玩家所在的撤离点下标，-1 = 不在任何撤离点内 */
   extractIndex: number
   extractProgress: number
+  /** 世界事件（EVENT_*）；eventX/Z 是补给空投落点。 */
+  event: number
+  eventX: number
+  eventZ: number
+  eventSeconds: number
 }
 
 export interface ObjectiveMarkers {
@@ -791,6 +797,7 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
 
   let lairFade = 0
   let extractFade = 0
+  let supplyPulse = 0
   /** 本帧活动的火星/烟气槽位数（0..EMBER_SLOTS / 0..SMOKE_SLOTS）。 */
   let emberOn = 0
   let smokeOn = 0
@@ -843,6 +850,38 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
 
   // ------------------------------------------------------------ sync
 
+  // ------------------------------------------------------------ 补给空投光柱
+  const supplyGroup = new Group()
+  supplyGroup.visible = false
+  const supplyBeamMat = new MeshBasicMaterial({
+    color: 0xffc06a,
+    transparent: true,
+    opacity: 0.16,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    side: DoubleSide,
+  })
+  const supplyBeamGeo = new CylinderGeometry(0.75, 0.75, 60, 12, 1, true)
+  const supplyBeam = new Mesh(supplyBeamGeo, supplyBeamMat)
+  supplyBeam.position.y = 30
+  supplyBeam.renderOrder = 2
+  supplyGroup.add(supplyBeam)
+  const supplyRingMat = new MeshBasicMaterial({
+    color: 0xffb457,
+    transparent: true,
+    opacity: 0.5,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    side: DoubleSide,
+  })
+  const supplyRingGeo = new RingGeometry(1.4, 2.4, 40)
+  const supplyRing = new Mesh(supplyRingGeo, supplyRingMat)
+  supplyRing.rotation.x = -Math.PI / 2
+  supplyRing.position.y = 0.04
+  supplyGroup.add(supplyRing)
+  root.add(supplyGroup)
+  keep(supplyGroup)
+
   function sync(view: ObjectiveView, dt: number, time: number): void {
     const step = Math.min(Math.max(dt, 0), 0.1)
 
@@ -852,6 +891,20 @@ export function createObjectiveMarkers(level: LevelDef): ObjectiveMarkers {
 
     lairFade = approach(lairFade, view.lairRevealed ? 1 : 0, step, 4.5)
     if (lairFade < 0.002) lairFade = 0
+    // 补给空投：只画一根可穿墙的金色光柱 + 地面圆环，全图可见。
+    if (view.event === 1) {
+      supplyGroup.visible = true
+      supplyGroup.position.set(view.eventX, 0, view.eventZ)
+      supplyPulse += dt
+      const pulse = 1 + Math.sin(supplyPulse * 3.2) * 0.06
+      supplyBeam.scale.set(pulse, 1, pulse)
+      supplyRing.scale.setScalar(pulse)
+      supplyBeamMat.opacity = 0.13 + Math.sin(supplyPulse * 4.1) * 0.04
+      supplyRingMat.opacity = 0.42 + Math.sin(supplyPulse * 2.7) * 0.12
+    } else if (supplyGroup.visible) {
+      supplyGroup.visible = false
+    }
+
     const extractOn = view.extractIndex >= 0 && view.extractIndex < view.extracts.length
     extractFade = approach(extractFade, extractOn ? 1 : 0, step, 4.5)
     if (extractFade < 0.002) extractFade = 0

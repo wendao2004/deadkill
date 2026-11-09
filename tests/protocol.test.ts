@@ -218,7 +218,8 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   // v10：玩家快照多 1 字节 reserve（34 → 35）。
   // v11：四种地图 Boss 与 BossPulse 事件，快照布局不变。
   // v12：flags 从 u8 扩到 u16（35 → 36），攀爬位进快照。
-  assert.equal(PROTOCOL_VERSION, 12)
+  // v13：目标包加世界事件（16 → 23 字节），配装包加合同 1 字节；快照布局不变。
+  assert.equal(PROTOCOL_VERSION, 13)
   assert.equal(SNAPSHOT_HEADER, 17)
   assert.equal(PLAYER_SNAPSHOT_SIZE, 36)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)

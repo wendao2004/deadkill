@@ -24,6 +24,8 @@ import {
   DEFAULT_SECONDARY_ID,
   DEFAULT_WEAPON_ID,
   LEVEL_IDS,
+  CONTRACTS,
+  clampContract,
   MAX_TRAITS,
   MELEE_WEAPON_ID,
   PROTOCOL_VERSION,
@@ -103,6 +105,8 @@ export interface MenuConfig {
    * "缺省" —— 传 0 就是一条天赋都没带，玩家的数值加成会当场消失。
    */
   traits: number
+  /** 本局合同 id（见 shared/src/contracts.ts），缺省 0 = 不接。 */
+  contract?: number
   /**
    * 金币余额。**可选**：main.ts 还没接这条线，必填会让它当场编译不过。
    *
@@ -165,6 +169,7 @@ export interface Menu {
 // ---------------------------------------------------------------- 存档
 
 const KEY_NICKNAME = 'dk.nickname'
+const KEY_CONTRACT = 'dk.contract'
 const KEY_MATCH = 'dk.match'
 const KEY_PRIMARY = 'dk.primary'
 const KEY_TRAITS = 'dk.traits'
@@ -255,6 +260,8 @@ export function loadSavedConfig(): Partial<MenuConfig> {
   // 由调用方回落到 DEFAULT_WEAPON_ID。Number(null) 是 0，正好被 isPrimaryChoice 挡掉。
   const primary = Number(readRaw(KEY_PRIMARY))
   if (isPrimaryChoice(primary)) out.primaryId = primary
+  const contract = readRaw(KEY_CONTRACT)
+  if (contract !== null) out.contract = clampContract(Number(contract))
   // 天赋选中项同样只认白名单：clampSelection 会丢掉非法位、超出上限的按表顺序截断，
   // 所以手改过的存档最差也只是"少带一条"，不会让服务端拒包。
   const traits = Number(readRaw(KEY_TRAITS))
@@ -287,6 +294,7 @@ export function saveConfig(config: Partial<MenuConfig>): void {
   }
   // 天赋允许存成 0（玩家主动全取消），所以不判 > 0；非法位先洗一遍再落盘。
   if (config.traits !== undefined) writeRaw(KEY_TRAITS, String(clampSelection(config.traits)))
+  if (config.contract !== undefined) writeRaw(KEY_CONTRACT, String(clampContract(config.contract)))
   // 金币不进配装包也照样落盘：大厅一刷新，余额和等级都还在。
   if (config.coins !== undefined) writeRaw(KEY_COINS, String(normalizeCoins(config.coins)))
 }
@@ -963,6 +971,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     nickname: options.initial?.nickname ?? saved.nickname ?? '',
     matchId: options.initial?.matchId ?? saved.matchId ?? 'default',
     primaryId: options.initial?.primaryId ?? saved.primaryId ?? DEFAULT_WEAPON_ID,
+    contract: clampContract(options.initial?.contract ?? saved.contract ?? 1),
     traits: clampSelection(options.initial?.traits ?? saved.traits ?? 0),
     coins: normalizeCoins(options.initial?.coins ?? saved.coins ?? 0),
   }
@@ -1145,7 +1154,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   // ---------------------------------------------------------------- 出击
 
-  const deployState = { mapId: MAP_ENTRIES[0]?.id ?? 'marsh-p0', squad: 'solo', threat: 1 }
+  const deployState = { mapId: MAP_ENTRIES[0]?.id ?? 'marsh-p0', squad: 'solo', threat: 1, contract: 1 }
   let deployTimer = 0
   let deploying = false
   let cta: HTMLButtonElement | null = null
@@ -1298,6 +1307,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     const side = mk('div', 'dk-deploy__side')
     side.appendChild(buildSquadPicker())
     side.appendChild(buildThreatPicker())
+    side.appendChild(buildContractPicker())
     side.appendChild(buildIdentityFields())
 
     // 天赋摘要紧跟主武器那行：出击前最后一眼能同时确认"这把枪"和"这三条天赋"。
@@ -1646,6 +1656,33 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     return wrap
   }
 
+  function buildContractPicker(): HTMLElement {
+    const wrap = mk('div', 'dk-field')
+    wrap.appendChild(mk('span', 'dk-field__label', '局内合同'))
+    const row = mk('div', 'dk-segment')
+    for (const spec of CONTRACTS) {
+      const btn = mkButton('dk-segment__item', spec.name)
+      btn.title = spec.desc + (spec.reward > 0 ? ` · 奖励 ${spec.reward}` : '')
+      btn.setAttribute('aria-pressed', deployState.contract === spec.id ? 'true' : 'false')
+      if (deployState.contract === spec.id) btn.classList.add('is-selected')
+      btn.addEventListener('click', () => {
+        deployState.contract = spec.id
+        config.contract = spec.id
+        for (const other of row.querySelectorAll('.dk-segment__item')) {
+          const isSelf = other === btn
+          other.classList.toggle('is-selected', isSelf)
+          other.setAttribute('aria-pressed', isSelf ? 'true' : 'false')
+        }
+        saveConfig(config)
+      })
+      row.appendChild(btn)
+    }
+    wrap.appendChild(row)
+    const hint = mk('p', 'dk-deploy__hint', '合同不改变胜负，只给你一个额外的目标。')
+    wrap.appendChild(hint)
+    return wrap
+  }
+
   function buildIdentityFields(): HTMLElement {
     const wrap = mk('div', 'dk-field')
     const nickLabel = mk('label', 'dk-field__label', '猎人代号')
@@ -1718,6 +1755,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     if (identity) {
       config.nickname = identity.nickInput.value.trim().slice(0, 16)
       config.matchId = identity.matchInput.value.trim().slice(0, 32) || 'default'
+    config.contract = clampContract(deployState.contract)
     }
     // 本局只剩 ≤3 分钟：不让玩家进去跑 200m 才发现没时间撤，直接分到下一局
     // 的新房间（同名后缀 -next）。旧房间的猎人继续打，互不影响。

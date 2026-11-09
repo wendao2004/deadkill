@@ -482,6 +482,7 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
     // 大厅存的是"选中了哪几条"的位掩码，服务端要的是"每条几级"的等级包。
     // 转换放在进场这一处：局内所有加成判定都只认等级包一种形状。
     traits: packSelection(config.traits ?? 0, ownedTraits()),
+    contract: config.contract ?? 0,
     onTraitFx: flashTrait,
     onStatus: setStatus,
     onClose: (info) => {

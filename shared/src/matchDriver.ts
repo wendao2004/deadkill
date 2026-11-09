@@ -24,6 +24,9 @@ import {
   EXTRACT_MS,
   EXTRACT_RADIUS,
   LAIR_RADIUS,
+  EVENT_BLOODMOON,
+  EVENT_NONE,
+  EVENT_SUPPLY,
   MATCH_RESET_MS,
   MATCH_SECONDS,
   createMatchState,
@@ -64,6 +67,10 @@ export class MatchDriver {
   private readonly lair: { x: number; z: number }
   /** 本驱动自己的 tick 计数（从 0 起），只用来换算倒计时与各阶段时长。 */
   private tick = 0
+  /** 世界事件只触发一次。 */
+  private supplyDone = false
+  private bloodMoonDone = false
+  private supplyUntilTick = 0
 
   constructor(level: LevelDef, actors: MatchActors) {
     this.level = level
@@ -97,6 +104,10 @@ export class MatchDriver {
       secondsLeft: s.secondsLeft,
       outcome: s.outcome,
       modifier: s.modifier,
+      event: s.event,
+      eventX: s.eventX,
+      eventZ: s.eventZ,
+      eventSeconds: s.eventSeconds,
     }
   }
 
@@ -130,9 +141,55 @@ export class MatchDriver {
       return
     }
 
+    this.stepEvents(secondsLeft)
     if (s.phase === 'hunt') this.stepHunt()
     else if (s.phase === 'banish') this.stepBanish()
     else this.stepExtract()
+  }
+
+  /**
+   * 世界事件排期：每局都不同，但由 tick 决定，两端 + 重放完全一致。
+   *
+   * - 补给空投：开局 5 分钟，落点是离图心最近的区域（所有人都会去抢）。
+   * - 血月：最后 3 分钟，怪更多、收益更高。
+   */
+  private stepEvents(secondsLeft: number): void {
+    const s = this.state
+    if (s.phase === 'over') return
+    const elapsed = MATCH_SECONDS - secondsLeft
+
+    if (!this.supplyDone && elapsed >= 300) {
+      this.supplyDone = true
+      const spot = this.supplyPoint()
+      s.event = EVENT_SUPPLY
+      s.eventX = spot.x
+      s.eventZ = spot.z
+      this.supplyUntilTick = this.tick + Math.ceil(10_000 / TICK_MS)
+      s.eventSeconds = 10
+      return
+    }
+    if (!this.bloodMoonDone && secondsLeft <= 180) {
+      this.bloodMoonDone = true
+      s.event = EVENT_BLOODMOON
+      s.eventSeconds = secondsLeft
+      return
+    }
+    if (s.event === EVENT_SUPPLY) {
+      s.eventSeconds = Math.max(0, Math.ceil(((this.supplyUntilTick - this.tick) * TICK_MS) / 1000))
+      if (s.eventSeconds <= 0) s.event = EVENT_NONE
+    } else if (s.event === EVENT_BLOODMOON) {
+      s.eventSeconds = secondsLeft
+    }
+  }
+
+  private supplyPoint(): { x: number; z: number } {
+    const zones = this.level.zones ?? []
+    if (zones.length === 0) return { x: 0, z: 0 }
+    let best = zones[0]!
+    for (const zone of zones) {
+      if (Math.hypot(zone.x, zone.z) < Math.hypot(best.x, best.z)) best = zone
+    }
+    return { x: best.x, z: best.z }
   }
 
   // ------------------------------------------------------------ 三个阶段
@@ -301,6 +358,13 @@ export class MatchDriver {
     this.state.secondsLeft = MATCH_SECONDS
     this.state.outcome = 'none'
     this.state.overTick = 0
+    this.state.event = EVENT_NONE
+    this.state.eventX = 0
+    this.state.eventZ = 0
+    this.state.eventSeconds = 0
+    this.supplyDone = false
+    this.bloodMoonDone = false
+    this.supplyUntilTick = 0
     this.tick = 0
   }
 }

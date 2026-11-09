@@ -28,6 +28,11 @@ export const PHASE_CODES: Record<MatchPhase, number> = {
 }
 export const PHASE_NAMES: MatchPhase[] = ['hunt', 'banish', 'extract', 'over']
 
+/** 世界事件的线上 id。 */
+export const EVENT_NONE = 0
+export const EVENT_SUPPLY = 1
+export const EVENT_BLOODMOON = 2
+
 /** 一局的总时长。15 分钟是"够跑三处线索 + 一次放逐 + 一次撤离"的下限。 */
 export const MATCH_SECONDS = 900
 
@@ -107,6 +112,13 @@ export interface MatchState {
   outcome: MatchOutcome
   /** 比赛结束的时刻（tick），0 = 还没结束。 */
   overTick: number
+  /** 当前世界事件 id（EVENT_*），0 = 没有。 */
+  event: number
+  /** 事件位置（补给空投用；其它事件为 0）。 */
+  eventX: number
+  eventZ: number
+  /** 事件剩余秒数；0 表示事件没有持续时间（一次性）。 */
+  eventSeconds: number
 }
 
 /**
@@ -145,6 +157,10 @@ export function createMatchState(): MatchState {
     secondsLeft: MATCH_SECONDS,
     outcome: 'none',
     overTick: 0,
+    event: EVENT_NONE,
+    eventX: 0,
+    eventZ: 0,
+    eventSeconds: 0,
   }
 }
 
@@ -179,7 +195,7 @@ import { Msg } from './protocol.ts'
  * 状态 1 秒变不了几次。把它们并进去等于为了一个 20 秒的进度条，让每帧的
  * 每个玩家快照都多背 12 字节。
  */
-export const OBJECTIVE_SIZE = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 2 + 1 + 1
+export const OBJECTIVE_SIZE = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 2 + 2
 
 export const OBJECTIVE_FLAG_LAIR = 1 << 0
 export const OBJECTIVE_FLAG_ESCAPED = 1 << 1
@@ -207,6 +223,12 @@ export interface ObjectivePacket {
   extractProgress: number
   secondsLeft: number
   outcome: MatchOutcome
+  /** 世界事件：EVENT_*；eventX/Z 是补给空投的落点。 */
+  event: number
+  eventX: number
+  eventZ: number
+  /** 事件剩余秒数（血月用；补给为 0）。 */
+  eventSeconds: number
 }
 
 function byte01(value: number): number {
@@ -238,6 +260,10 @@ export function encodeObjective(packet: ObjectivePacket): ArrayBuffer {
   view.setUint16(12, Math.max(0, Math.min(65535, packet.secondsLeft)), true)
   view.setUint8(14, Math.max(0, Math.min(255, packet.clueMask)))
   view.setUint8(15, Math.max(0, Math.min(255, packet.modifier)))
+  view.setUint8(16, Math.max(0, Math.min(255, packet.event)))
+  view.setInt16(17, Math.round(packet.eventX), true)
+  view.setInt16(19, Math.round(packet.eventZ), true)
+  view.setUint16(21, Math.max(0, Math.min(65535, packet.eventSeconds)), true)
   return buffer
 }
 
@@ -263,5 +289,9 @@ export function decodeObjective(buffer: ArrayBuffer): ObjectivePacket {
     extractProgress: back01(view.getUint8(11)),
     secondsLeft: view.getUint16(12, true),
     outcome,
+    event: view.getUint8(16),
+    eventX: view.getInt16(17, true),
+    eventZ: view.getInt16(19, true),
+    eventSeconds: view.getUint16(21, true),
   }
 }

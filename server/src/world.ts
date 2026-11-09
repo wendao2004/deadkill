@@ -57,6 +57,14 @@ import {
   PLAYER_HALF_HEIGHT,
   PLAYER_RADIUS,
   RESPAWN_DELAY_MS,
+  CONTRACT_HUNT,
+  CONTRACT_SEARCH,
+  CONTRACT_EXTRACT,
+  CONTRACT_NONE,
+  contractOf,
+  clampContract,
+  EVENT_BLOODMOON,
+  EVENT_SUPPLY,
   SNAPSHOT_HISTORY,
   SNAPSHOT_RATE,
   StateFlags,
@@ -381,6 +389,11 @@ interface PlayerState {
   healAnchor: { x: number; z: number } | null
   /** 上次发出去的战利品包字节，用来"只在内容变化时发"（见 publishLoot）。 */
   lastLoot: Uint8Array | null
+  /** 本局合同 id（CONTRACT_*）。 */
+  contract: number
+  /** 合同进度（击杀数/搜刮数/撤离次数）。 */
+  contractProgress: number
+  contractDone: boolean
 }
 
 /**
@@ -485,6 +498,11 @@ export class World {
   readonly modifier: number
   /** 本局战利品骰子的偏移。测试要复现同一个点掉什么，就得拿着它去算。 */
   readonly lootSeed: number
+  /** 本局搜索点：关卡自带的 + 补给空投动态追加的。 */
+  private spots: SearchSpot[] = []
+  private supplySpawned = false
+  private bloodMoonSpawned = false
+  private escapeCredited = false
   /** 血巢的 Boss 是否已经刷过。一局只刷一次，死了就不再刷。 */
   private bossSpawned = false
   /** Boss 是否已经被打死 —— 放逐进度的门禁（见 server/src/match.ts 的 stepBanish）。 */
@@ -542,6 +560,7 @@ export class World {
     this.id = options.id
     this.level = options.level ?? DEFAULT_LEVEL
     this.bossKind = this.level.bossKind ?? 'boss'
+    this.spots = [...(this.level.searchSpots ?? [])]
     this.onEmpty = options.onEmpty
     this.physics = createLevelWorld(this.level)
     addBounds(this.physics, this.level)
@@ -1195,6 +1214,7 @@ export class World {
     // 食腐者：亲手打死怪才回血。用 killerId 查而不是查"最近的玩家"——
     // 队友补的最后一枪不该给别人回血。
     const killer = this.players.get(killerId)
+    if (killer) this.advanceContract(killer, 1, CONTRACT_HUNT)
     const heal = killer === undefined ? 0 : carrionHeal(killer.traits)
     if (killer !== undefined && killer.alive && heal > 0) {
       killer.health = Math.min(killer.maxHealth, killer.health + heal)
@@ -1391,6 +1411,9 @@ export class World {
       healMs: 0,
       healAnchor: null,
       lastLoot: null,
+      contract: CONTRACT_NONE,
+      contractProgress: 0,
+      contractDone: false,
     }
     this.players.set(player.id, player)
     this.byCollider.set(player.character.collider.handle, player)
@@ -1462,7 +1485,7 @@ export class World {
    * 真正开火之后才变成当前 tick）。重生时 resetLoadout 会把它还原，所以
    * 死了之后仍然可以在菜单外重新挑，只是那一局已经打出去的枪作数。
    */
-  receiveLoadout(playerId: number, weaponId: number, traits = 0): void {
+  receiveLoadout(playerId: number, weaponId: number, traits = 0, contract = 0): void {
     const player = this.players.get(playerId)
     if (!player) return
     if (player.loadout.lastFireTick > 0) {
@@ -1475,6 +1498,15 @@ export class World {
     // 强健：生命上限跟着天赋走。回血上限、出生血量、血条都得读同一个数。
     player.maxHealth = MAX_HEALTH + maxHealthBonus(player.traits)
     player.health = Math.min(player.health, player.maxHealth)
+    // 合同只在开局配装时生效；开过枪之后配装锁定，合同也跟着锁定。
+    const nextContract = clampContract(contract)
+    if (nextContract !== player.contract) {
+      player.contract = nextContract
+      player.contractProgress = 0
+      player.contractDone = false
+      const spec = contractOf(nextContract)
+      if (spec.target > 0) this.sendText(player, `合同「${spec.name}」· ${spec.desc}（奖励 ${spec.reward}）`)
+    }
     const primary = isPrimaryChoice(weaponId) ? weaponId : DEFAULT_WEAPON_ID
     if (primary === player.loadout.primaryId) return
     player.loadout = createLoadout(primary)
@@ -1573,6 +1605,11 @@ export class World {
     // 目标状态放在快照之前推进：本 tick 的线索/放逐进度要跟着这一帧的位置走，
     // 放到快照之后会让 HUD 永远比画面慢一帧。
     this.match.step()
+    if (!this.escapeCredited && this.match.state.outcome === 'escaped') {
+      this.escapeCredited = true
+      const carrier = this.players.get(this.match.state.bountyCarrier)
+      if (carrier) this.advanceContract(carrier, 1, CONTRACT_EXTRACT)
+    }
     // 上一局结束、match.reset() 回到 hunt 的那一 tick：上一局的尸体缓存不能
     // 跟着进新一局（赏金/现金已经结算过，再留在地上就是白送第二次）。
     const matchPhase = this.match.state.phase
@@ -1584,6 +1621,10 @@ export class World {
       // 下一次死亡会把带赏金/战利品的尸体顶掉。
       this.nextBodyId = -2
       this.searchedSpots.clear()
+      this.spots = [...(this.level.searchSpots ?? [])]
+      this.supplySpawned = false
+      this.bloodMoonSpawned = false
+      this.escapeCredited = false
       for (const player of this.players.values()) {
         player.carriedValue = 0
         player.loot = STARTING_BANDAGES > 0 ? [{ id: LOOT_ITEM.Bandage, count: STARTING_BANDAGES }] : []
@@ -1612,7 +1653,57 @@ export class World {
     // 刷 Boss 的时机就是"lairRevealed 变 true 的那一 tick"。
     if (this.match.state.phase === 'hunt' && this.bossSpawned) this.despawnBoss()
     else if (this.match.state.lairRevealed && !this.bossSpawned) this.spawnBoss()
+    this.applyWorldEvent()
     this.publishObjective()
+  }
+
+  /** 把 MatchDriver 排好的世界事件落成实际效果。只在这一刻触发一次。 */
+  private applyWorldEvent(): void {
+    const state = this.match.state
+    if (state.event === EVENT_SUPPLY && !this.supplySpawned) {
+      this.supplySpawned = true
+      this.spots.push({ x: state.eventX, z: state.eventZ, kind: 'crate' })
+      for (const player of this.players.values()) {
+        this.sendText(player, '补给空投已投放 · 图心附近出现高价值木箱')
+      }
+    }
+    if (state.event === EVENT_BLOODMOON && !this.bloodMoonSpawned) {
+      this.bloodMoonSpawned = true
+      this.spawnBloodMoonPack()
+      for (const player of this.players.values()) {
+        this.sendText(player, '血月升起 · 怪物增多，现金 +25%')
+      }
+    }
+  }
+
+  private spawnBloodMoonPack(): void {
+    const nests = this.level.nests ?? []
+    if (nests.length === 0) return
+    const count = Math.min(4, nests.length)
+    for (let i = 0; i < count; i++) {
+      const nest = nests[Math.floor(this.rng() * nests.length)] ?? nests[0]!
+      const data = spawnMonster(
+        this.rollNestKind(),
+        MONSTER_ID_BASE + 0x0c00 + i,
+        { x: nest.x, y: this.level.groundY, z: nest.z },
+        this.rng,
+      )
+      this.monsters.push(this.createMonsterEntity(data))
+    }
+  }
+
+  /** 推进玩家合同；完成时把奖励直接加进身上的现金。 */
+  private advanceContract(player: Player, amount: number, kind: number): void {
+    if (player.contract !== kind || player.contractDone) return
+    const spec = contractOf(kind)
+    player.contractProgress = Math.min(spec.target, player.contractProgress + amount)
+    if (player.contractProgress >= spec.target) {
+      player.contractDone = true
+      player.carriedValue = Math.min(0xffff, player.carriedValue + spec.reward)
+      this.sendText(player, `合同完成「${spec.name}」+${spec.reward}`)
+    } else {
+      this.sendText(player, `合同「${spec.name}」${player.contractProgress}/${spec.target}`)
+    }
   }
 
   /** 阶段 9：出网节奏 —— 快照 / 战利品 / 事件。 */
@@ -1684,8 +1775,8 @@ export class World {
     let best = SPOT_ID_NONE
     // 半径当初始上界：<= SEARCH_RADIUS 才算"够得着"。
     let bestDist = SEARCH_RADIUS
-    const spots = this.level.searchSpots
-    if (spots) {
+    const spots = this.spots
+    if (spots.length > 0) {
       for (let i = 0; i < spots.length; i++) {
         if (this.searchedSpots.has(i)) continue
         const spot = spots[i]!
@@ -1747,7 +1838,7 @@ export class World {
       this.completeBodySearch(player, spotId)
       return
     }
-    const spot = this.level.searchSpots?.[spotId]
+    const spot = this.spots[spotId]
     if (!spot) {
       this.abortSearch(player)
       return
@@ -1759,7 +1850,11 @@ export class World {
     // 这个天赋的人给出的数字不同 —— 这正是"天赋改变了你的收益曲线"。
     // 再乘本局 modifier 的现金倍率：虫潮那种"怪多钱多"的局，收益曲线整条上移。
     const modifier = getModifier(this.modifier)
-    let cash = Math.round(roll.cash * lootCashScale(player.traits) * modifier.cashScale)
+    // 补给空投的点是关卡外的动态点（下标 >= 关卡自带数量），现金 ×3。
+    const dynamic = spotId >= (this.level.searchSpots?.length ?? 0)
+    const supplyK = dynamic ? 3 : 1
+    const bloodK = this.bloodMoonSpawned ? 1.25 : 1
+    let cash = Math.round(roll.cash * lootCashScale(player.traits) * modifier.cashScale * supplyK * bloodK)
     const gains: string[] = [`$${roll.cash}`]
 
     for (const item of roll.items) {
@@ -1789,6 +1884,7 @@ export class World {
     player.carriedValue += cash
     // 提示走已有的事件/文本通道发给本人：搜到东西必须有反馈，否则玩家不知道自己拿到了什么。
     this.sendText(player, `搜到 ${gains.join('、')}`)
+    this.advanceContract(player, 1, CONTRACT_SEARCH)
     this.abortSearch(player)
   }
 
