@@ -125,6 +125,8 @@ export interface MatchState {
   trapsMask: number
   /** 油灯状态位图：bit i = 第 i 盏灯还亮着。 */
   lightsMask: number
+  /** 巢穴状态位图：bit i = 第 i 个巢穴已经被打掉。 */
+  nestsMask: number
 }
 
 /**
@@ -170,6 +172,7 @@ export function createMatchState(): MatchState {
     doorsMask: 0,
     trapsMask: 0,
     lightsMask: 0xff,
+    nestsMask: 0,
   }
 }
 
@@ -211,7 +214,7 @@ export const OBJECTIVE_SIZE =
   2 + // secondsLeft (u16)
   1 + 1 + // clueMask, modifier
   1 + 2 + 2 + 2 + // event, eventX, eventZ, eventSeconds
-  1 + 1 + 1 // doorsMask, trapsMask, lightsMask
+  1 + 1 + 1 + 1 // doorsMask, trapsMask, lightsMask, nestsMask
 
 export const OBJECTIVE_FLAG_LAIR = 1 << 0
 export const OBJECTIVE_FLAG_ESCAPED = 1 << 1
@@ -251,6 +254,8 @@ export interface ObjectivePacket {
   trapsMask: number
   /** 油灯状态位图（bit i = 还亮着）。 */
   lightsMask: number
+  /** 巢穴状态位图（bit i = 已摧毁）。 */
+  nestsMask: number
 }
 
 function byte01(value: number): number {
@@ -289,6 +294,7 @@ export function encodeObjective(packet: ObjectivePacket): ArrayBuffer {
   view.setUint8(23, Math.max(0, Math.min(255, packet.doorsMask)))
   view.setUint8(24, Math.max(0, Math.min(255, packet.trapsMask)))
   view.setUint8(25, Math.max(0, Math.min(255, packet.lightsMask)))
+  view.setUint8(26, Math.max(0, Math.min(255, packet.nestsMask)))
   return buffer
 }
 
@@ -321,5 +327,6 @@ export function decodeObjective(buffer: ArrayBuffer): ObjectivePacket {
     doorsMask: view.getUint8(23),
     trapsMask: view.getUint8(24),
     lightsMask: view.getUint8(25),
+    nestsMask: view.getUint8(26),
   }
 }

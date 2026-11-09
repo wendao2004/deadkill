@@ -506,6 +506,8 @@ export class Renderer {
   private readonly traps: { armed: Group; sprung: Group; sprungOn: boolean }[] = []
   /** 油灯：点光源 + 发光灯罩。 */
   private readonly lamps: { light: PointLight; glow: Mesh; lit: boolean }[] = []
+  /** 巢穴骨堆：完整 / 坍塌两组网格。 */
+  private readonly nests: { intact: Group; broken: Group; destroyed: boolean }[] = []
   /**
    * 玩家尸体。服务端的 bodyCaches 只发给"离得近的人一个 spotId"，客户端拿不到
    * 死亡坐标；但快照里有死亡瞬间的位置，所以这里在第一次看到 alive=0 时把
@@ -807,6 +809,7 @@ export class Renderer {
     this.buildDoors()
     this.buildTraps()
     this.buildLamps()
+    this.buildNests()
 
     // 装饰与怪物都挂在 scene 上（不是 levelGroup）：它们各自管自己的
     // 生命周期，Renderer.dispose 里逐个释放，混进关卡组会和"重建关卡"纠缠。
@@ -1287,6 +1290,76 @@ export class Renderer {
 
       this.levelGroup.add(root)
       this.lamps.push({ light, glow, lit: true })
+    }
+  }
+
+  /** 巢穴骨堆：完整时是一圈竖起的骨刺，被打掉后塌成碎石堆。 */
+  private buildNests(): void {
+    const defs = this.level.nests ?? []
+    if (defs.length === 0) return
+    const bone = this.surfaceMaterial(0x8a8270, {
+      hatch: 0.12,
+      surface: 'stone',
+      specular: 0.03,
+    })
+    const ember = new MeshBasicMaterial({
+      color: 0xc0554a,
+      transparent: true,
+      opacity: 0.55,
+      blending: AdditiveBlending,
+      depthWrite: false,
+    })
+    this.disposables.push(ember)
+    for (const nest of defs.slice(0, 8)) {
+      const root = new Group()
+      root.position.set(nest.x, this.level.groundY, nest.z)
+      const intact = new Group()
+      const mound = new Mesh(new IcosahedronGeometry(0.75, 0), bone)
+      mound.scale.set(1, 0.5, 1)
+      mound.position.y = 0.2
+      mound.castShadow = true
+      intact.add(mound)
+      if (!this.realistic) this.addInk(mound)
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + 0.4
+        const spike = new Mesh(new ConeGeometry(0.09, 1.0, 5), bone)
+        spike.position.set(Math.cos(a) * 0.42, 0.6, Math.sin(a) * 0.42)
+        spike.rotation.set(Math.sin(a) * 0.28, 0, -Math.cos(a) * 0.28)
+        intact.add(spike)
+      }
+      const glow = new Mesh(new SphereGeometry(0.22, 8, 6), ember)
+      glow.position.y = 0.45
+      intact.add(glow)
+      root.add(intact)
+      const broken = new Group()
+      const rubble = new Mesh(new IcosahedronGeometry(0.7, 0), bone)
+      rubble.scale.set(1.15, 0.16, 1.15)
+      rubble.position.y = 0.08
+      rubble.receiveShadow = true
+      broken.add(rubble)
+      for (let i = 0; i < 3; i++) {
+        const a = i * 2.1
+        const chip = new Mesh(new BoxGeometry(0.22, 0.12, 0.18), bone)
+        chip.position.set(Math.cos(a) * 0.55, 0.06, Math.sin(a) * 0.55)
+        chip.rotation.y = a
+        broken.add(chip)
+      }
+      broken.visible = false
+      root.add(broken)
+      this.levelGroup.add(root)
+      this.nests.push({ intact, broken, destroyed: false })
+    }
+  }
+
+  /** 目标包里的巢穴状态位图：bit i = 已摧毁。 */
+  setNests(mask: number): void {
+    for (let i = 0; i < this.nests.length; i++) {
+      const destroyed = (mask & (1 << i)) !== 0
+      const nest = this.nests[i]!
+      if (nest.destroyed === destroyed) continue
+      nest.destroyed = destroyed
+      nest.intact.visible = !destroyed
+      nest.broken.visible = destroyed
     }
   }
 

@@ -518,6 +518,10 @@ export class World {
   private lampColliders: Collider[] = []
   private readonly lampByCollider = new Map<number, number>()
   private lampLit: boolean[] = []
+  /** 巢穴：骨堆碰撞体、映射、是否被打掉。 */
+  private nestColliders: Collider[] = []
+  private readonly nestByCollider = new Map<number, number>()
+  private nestDestroyed: boolean[] = []
   private supplySpawned = false
   private bloodMoonSpawned = false
   private escapeCredited = false
@@ -594,6 +598,16 @@ export class World {
       this.lampByCollider.set(collider.handle, i)
     }
     this.lampLit = (this.level.lamps ?? []).map(() => true)
+    // 巢穴骨堆：地面以上 0.6m 的传感器球，子弹能打掉，角色不会撞到。
+    for (const [i, nest] of (this.level.nests ?? []).entries()) {
+      if (i >= 8) break // 位图只有 8 位
+      const collider = this.physics.createCollider(
+        ColliderDesc.ball(0.7).setTranslation(nest.x, this.level.groundY + 0.6, nest.z).setSensor(true),
+      )
+      this.nestColliders.push(collider)
+      this.nestByCollider.set(collider.handle, i)
+    }
+    this.nestDestroyed = (this.level.nests ?? []).slice(0, 8).map(() => false)
 
     const seed = hashSeed(this.id)
     this.stream = new Rng(seed)
@@ -1646,6 +1660,17 @@ export class World {
     }
   }
 
+  /** 打掉一个巢穴：碰撞体失效、位图更新、射手拿赏金。 */
+  private destroyNest(index: number, shooter: Player): void {
+    this.nestDestroyed[index] = true
+    this.nestColliders[index]?.setEnabled(false)
+    let mask = 0
+    for (let i = 0; i < this.nestDestroyed.length; i++) if (this.nestDestroyed[i]) mask |= 1 << i
+    this.match.state.nestsMask = mask & 0xff
+    shooter.carriedValue = Math.min(0xffff, shooter.carriedValue + 50)
+    this.sendText(shooter, '巢穴被摧毁 +$50 · 血月会少刷一只')
+  }
+
   /** 打灭一盏油灯：灯头碰撞体失效，位图更新，射手得到一句反馈。 */
   private breakLamp(index: number, shooter: Player): void {
     this.lampLit[index] = false
@@ -1773,6 +1798,9 @@ export class World {
       this.match.state.trapsMask = 0
       this.lampLit = (this.level.lamps ?? []).map(() => true)
       for (const collider of this.lampColliders) collider.setEnabled(true)
+      this.nestDestroyed = (this.level.nests ?? []).slice(0, 8).map(() => false)
+      for (const collider of this.nestColliders) collider.setEnabled(true)
+      this.match.state.nestsMask = 0
       this.match.state.lightsMask = this.lampLit.length >= 8 ? 0xff : (1 << this.lampLit.length) - 1
       this.supplySpawned = false
       this.bloodMoonSpawned = false
@@ -1829,11 +1857,12 @@ export class World {
   }
 
   private spawnBloodMoonPack(): void {
-    const nests = this.level.nests ?? []
-    if (nests.length === 0) return
-    const count = Math.min(4, nests.length)
+    // 只从还活着的巢穴里刷：拆掉巢穴是血月之前最有效的准备。
+    const alive = (this.level.nests ?? []).filter((_, i) => i >= 8 || !this.nestDestroyed[i])
+    if (alive.length === 0) return
+    const count = Math.min(4, alive.length)
     for (let i = 0; i < count; i++) {
-      const nest = nests[Math.floor(this.rng() * nests.length)] ?? nests[0]!
+      const nest = alive[Math.floor(this.rng() * alive.length)] ?? alive[0]!
       const data = spawnMonster(
         this.rollNestKind(),
         MONSTER_ID_BASE + 0x0c00 + i,
@@ -2345,6 +2374,13 @@ export class World {
             direct.kind === 'monster'
               ? direct.monster.data.y + MONSTER_SPECS[direct.monster.data.kind].height * 0.78
               : HEAD_MIN_HEIGHT
+          break
+        }
+
+        // 巢穴骨堆：打中即摧毁，子弹停在这一层。
+        const nestIndex = this.nestByCollider.get(result.collider.handle)
+        if (nestIndex !== undefined) {
+          if (!this.nestDestroyed[nestIndex]) this.destroyNest(nestIndex, player)
           break
         }
 

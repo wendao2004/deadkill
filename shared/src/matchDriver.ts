@@ -111,6 +111,7 @@ export class MatchDriver {
       doorsMask: s.doorsMask,
       trapsMask: s.trapsMask,
       lightsMask: s.lightsMask,
+      nestsMask: s.nestsMask,
     }
   }
 
@@ -368,6 +369,7 @@ export class MatchDriver {
     this.state.doorsMask = 0
     this.state.trapsMask = 0
     this.state.lightsMask = 0xff
+    this.state.nestsMask = 0
     this.supplyDone = false
     this.bloodMoonDone = false
     this.supplyUntilTick = 0
