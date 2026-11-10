@@ -58,6 +58,11 @@ import {
   PLAYER_HALF_HEIGHT,
   PLAYER_RADIUS,
   RESPAWN_DELAY_MS,
+  DOWNED_BLEED_MS,
+  REVIVE_MS,
+  REVIVE_RADIUS,
+  DOWNED_CRAWL_SCALE,
+  REVIVE_HEALTH_FRACTION,
   CONTRACT_HUNT,
   CONTRACT_SEARCH,
   CONTRACT_EXTRACT,
@@ -397,6 +402,18 @@ interface PlayerState {
   healAnchor: { x: number; z: number } | null
   /** 上次发出去的战利品包字节，用来"只在内容变化时发"（见 publishLoot）。 */
   lastLoot: Uint8Array | null
+  /** 队伍 id：同队不友伤；单人模式等于 1000+id。 */
+  team: number
+  /** 是否选择了双人组队。 */
+  squad: number
+  /** 倒地等待救援。 */
+  downed: boolean
+  /** 倒地流血结束的 tick；0 = 没在流血。 */
+  bleedDoneTick: number
+  /** 正在救援的队友 id，0 = 没在救。 */
+  reviveTargetId: number
+  /** 本轮救援已累积的毫秒数。 */
+  reviveMs: number
   /** 本局随身补给是否已经发放（配装包可能重发）。 */
   extrasApplied: boolean
   /** 本局合同 id（CONTRACT_*）。 */
@@ -1463,6 +1480,12 @@ export class World {
       healMs: 0,
       healAnchor: null,
       lastLoot: null,
+      team: 0,
+      squad: 0,
+      downed: false,
+      bleedDoneTick: 0,
+      reviveTargetId: 0,
+      reviveMs: 0,
       extrasApplied: false,
       contract: CONTRACT_NONE,
       contractProgress: 0,
@@ -1538,7 +1561,7 @@ export class World {
    * 真正开火之后才变成当前 tick）。重生时 resetLoadout 会把它还原，所以
    * 死了之后仍然可以在菜单外重新挑，只是那一局已经打出去的枪作数。
    */
-  receiveLoadout(playerId: number, weaponId: number, traits = 0, contract = 0, extras = 0, attachment = 0): void {
+  receiveLoadout(playerId: number, weaponId: number, traits = 0, contract = 0, extras = 0, attachment = 0, squad = 0): void {
     const player = this.players.get(playerId)
     if (!player) return
     if (player.loadout.lastFireTick > 0) {
@@ -1576,6 +1599,9 @@ export class World {
       const spec = contractOf(nextContract)
       if (spec.target > 0) this.sendText(player, `合同「${spec.name}」· ${spec.desc}（奖励 ${spec.reward}）`)
     }
+    // 组队偏好先于武器生效：它决定这个人和谁同队。
+    player.squad = squad > 0 ? 1 : 0
+    this.assignTeam(player)
     const primary = isPrimaryChoice(weaponId) ? weaponId : DEFAULT_WEAPON_ID
     const attach = clampAttachment(attachment)
     if (primary === player.loadout.primaryId && attach === player.loadout.attachment) return
@@ -1682,6 +1708,95 @@ export class World {
     this.sendText(shooter, `${name}被打灭了`)
   }
 
+  /** 按选择把玩家编队：单人每人一队，双人两两一队。 */
+  private assignTeam(player: Player): void {
+    if (player.squad === 0) {
+      player.team = 1000 + player.id
+      return
+    }
+    const counts = new Map<number, number>()
+    for (const other of this.players.values()) {
+      if (other.id === player.id || other.squad === 0) continue
+      if (other.team <= 0 || other.team >= 1000) continue
+      counts.set(other.team, (counts.get(other.team) ?? 0) + 1)
+    }
+    for (const [team, n] of counts) {
+      if (n < 2) {
+        player.team = team
+        return
+      }
+    }
+    let next = 1
+    for (const team of counts.keys()) next = Math.max(next, team + 1)
+    player.team = next
+  }
+
+  private hasLivingTeammate(victim: Player): boolean {
+    if (victim.team <= 0 || victim.team >= 1000) return false
+    for (const other of this.players.values()) {
+      if (other.id === victim.id || !other.alive || other.downed) continue
+      if (other.team === victim.team) return true
+    }
+    return false
+  }
+
+  /** 致命伤但还有队友：倒地 30 秒，等救援。 */
+  private enterDowned(victim: Player): void {
+    victim.downed = true
+    victim.health = 1
+    victim.bleedDoneTick = this.tick + Math.ceil(DOWNED_BLEED_MS / TICK_MS)
+    victim.reloading = false
+    victim.ads = false
+    victim.heavyHeld = false
+    this.sendText(victim, '你倒下了 · 等待队友救援（30 秒）')
+    for (const other of this.players.values()) {
+      if (other.team === victim.team && other.id !== victim.id && other.alive) {
+        this.sendText(other, '队友倒下了 · 靠近按住 E 救援')
+      }
+    }
+  }
+
+  /** 按住 E 救起附近的倒地队友。 */
+  private stepRevive(player: Player): void {
+    if (!player.alive || player.downed || !player.interact) {
+      player.reviveTargetId = 0
+      player.reviveMs = 0
+      return
+    }
+    const feet = player.character.feet
+    let best: Player | null = null
+    let bestDist = REVIVE_RADIUS
+    for (const other of this.players.values()) {
+      if (other.id === player.id || !other.alive || !other.downed) continue
+      if (player.team <= 0 || player.team !== other.team) continue
+      const otherFeet = other.character.feet
+      const d = Math.hypot(otherFeet.x - feet.x, otherFeet.z - feet.z)
+      if (d < bestDist) {
+        bestDist = d
+        best = other
+      }
+    }
+    if (!best) {
+      player.reviveTargetId = 0
+      player.reviveMs = 0
+      return
+    }
+    if (player.reviveTargetId !== best.id) {
+      player.reviveTargetId = best.id
+      player.reviveMs = 0
+    }
+    player.reviveMs += TICK_MS
+    if (player.reviveMs >= REVIVE_MS) {
+      best.downed = false
+      best.bleedDoneTick = 0
+      best.health = Math.max(40, Math.round(best.maxHealth * REVIVE_HEALTH_FRACTION))
+      player.reviveTargetId = 0
+      player.reviveMs = 0
+      this.sendText(player, '救援完成')
+      this.sendText(best, '你被队友救起')
+    }
+  }
+
   /**
    * 捕兽夹：踩中一次扣血并弹开。
    *
@@ -1760,9 +1875,13 @@ export class World {
     // 搜索进度用**物理推进后**的落点算：放前面会拿到上一 tick 的脚底位置，
     // 在人贴着木板边缘时表现为"明明没动却判成走开了"。
     for (const player of this.players.values()) {
-      this.stepDoors(player)
+      this.stepRevive(player)
+      // 救援中的玩家不再同时开门/搜箱：按住 E 只应该做一件事。
+      if (player.reviveTargetId === 0) {
+        this.stepDoors(player)
+        this.stepSearch(player)
+      }
       this.stepTraps(player)
-      this.stepSearch(player)
     }
     // 包扎进度也放在物理推进之后：脚底位置是"这一 tick 真的走到了哪"，
     // 放前面会把上一 tick 的位移当成"走开了"，边退边打药会被判成原地不动。
@@ -1813,6 +1932,10 @@ export class World {
         this.abortHeal(player)
         // 新一局必须是干净的开局：满血、满弹、拿回出生绷带、活人/死人都回到出生点。
         player.health = player.maxHealth
+        player.downed = false
+        player.bleedDoneTick = 0
+        player.reviveTargetId = 0
+        player.reviveMs = 0
         player.reloading = false
         player.ads = false
         resetLoadout(player.loadout)
@@ -1906,6 +2029,15 @@ export class World {
     player.heal = (input.buttons & Buttons.Heal) !== 0
     player.lastInput = input
 
+    // 倒地：不能开火/开镜/换弹/冲刺，只能以 35% 速度爬行。
+    if (player.downed) {
+      input.buttons &= ~(Buttons.Fire | Buttons.Ads | Buttons.Reload | Buttons.Sprint | Buttons.Jump)
+      input.forward *= DOWNED_CRAWL_SCALE
+      input.right *= DOWNED_CRAWL_SCALE
+      player.ads = false
+      player.reloading = false
+    }
+
     this.characterStep(player, input)
 
     // 切枪途中不接受换弹：手上这把还没举稳，谈换弹没有意义；更实际的理由是
@@ -1937,10 +2069,13 @@ export class World {
     player.character.step(this.physics, input, TICK_DT)
   }
 
-  private tickTimers(player: PlayerState): void {
+  private tickTimers(player: Player): void {
     if (player.reloading && this.tick >= player.reloadDoneTick) {
       player.reloading = false
       refillSlot(player.loadout)
+    }
+    if (player.downed && this.tick >= player.bleedDoneTick) {
+      this.kill(player, 0, false)
     }
   }
 
@@ -2207,6 +2342,7 @@ export class World {
         healPct: Math.min(100, Math.floor((player.healMs / this.healNeed(player)) * 100)),
         contract: player.contract,
         contractProgress: player.contractProgress,
+        revivePct: Math.min(100, Math.floor((player.reviveMs / REVIVE_MS) * 100)),
       })
       // 比对编码后的字节而不是逐字段：items 是数组，逐字段比较要单独处理长度和顺序，
       // 而包本身就 9 + 2N 字节，比一遍几乎不要钱。
@@ -2571,6 +2707,14 @@ export class World {
 
     const victim = target.player
     if (!victim.alive) return
+    // 同队不友伤（包括补枪倒地队友）。单人模式的 team 唯一，这条永远不生效。
+    if (victim.team > 0 && attacker.team === victim.team && attacker.id !== victim.id) return
+    // 对倒地的人开枪 = 处决。
+    if (victim.downed) {
+      victim.health = 0
+      this.kill(victim, attacker.id, headshot)
+      return
+    }
     // 处刑者：打残血目标额外加成。用**这一枪落下之前**的血量比例判定，
     // 否则"这一枪刚好把人打到 39%"也会被算成处刑，读起来是随缘的。
     const ratio = victim.maxHealth > 0 ? victim.health / victim.maxHealth : 1
@@ -2578,7 +2722,8 @@ export class World {
     // 硬皮：受到的伤害 -15%。事件里报的必须是**实际扣掉的血**，否则客户端
     // 那行"命中 75"会和血条对不上，玩家会怀疑是自己没打中。
     const taken = Math.max(1, Math.round(dmg * execute * damageTakenScale(victim.traits)))
-    victim.health -= taken
+    const lethal = victim.health - taken <= 0
+    victim.health = Math.max(0, victim.health - taken)
     this.pendingEvents.push({
       kind: EventKind.Hit,
       attackerId: attacker.id,
@@ -2587,7 +2732,11 @@ export class World {
       headshot,
       point,
     })
-    if (victim.health <= 0) this.kill(victim, attacker.id, headshot)
+    if (lethal) {
+      // 有活着的队友：倒地等救援；否则直接死。
+      if (this.hasLivingTeammate(victim)) this.enterDowned(victim)
+      else this.kill(victim, attacker.id, headshot)
+    }
   }
 
   /** killerId 可以是玩家也可以是怪物（共用一套 id 空间），所以只传 id 不传对象。 */
@@ -2598,6 +2747,10 @@ export class World {
     const hadBounty = this.match.state.bountyCarrier === victim.id
     victim.health = 0
     victim.alive = false
+    victim.downed = false
+    victim.bleedDoneTick = 0
+    victim.reviveTargetId = 0
+    victim.reviveMs = 0
     victim.respawnTick = this.tick + Math.ceil(RESPAWN_DELAY_MS / TICK_MS)
     victim.reloading = false
     // 死即掉落：现金和背包转进尸体缓存，而不是凭空消失。击杀者/其他人必须
@@ -2660,6 +2813,10 @@ export class World {
     const spawn = this.pickSpawn()
     player.health = player.maxHealth
     player.alive = true
+    player.downed = false
+    player.bleedDoneTick = 0
+    player.reviveTargetId = 0
+    player.reviveMs = 0
     player.reloading = false
     player.ads = false
     player.heavyHeld = false
@@ -2750,7 +2907,9 @@ export class World {
             sliding: player.character.sliding,
             vaulting: player.character.vaulting,
             climbing: player.character.climbing,
+            downed: player.downed,
           }),
+          team: player.team,
           weaponId: heldWeapon(player.loadout).id,
           ammo: heldAmmo(player.loadout),
           reserve: player.loadout.reserveBySlot[player.loadout.currentSlot] ?? 0,

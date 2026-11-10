@@ -74,7 +74,7 @@ test('战利品包往返：空列表、满列表（255 件）、标量都在', (
 
 
   // + 2 searchSpot + 2 nearSpot + 1 itemCount + 1 bandages + 1 healPct。
-  assert.equal(LOOT_HEADER, 13)
+  assert.equal(LOOT_HEADER, 14)
   assert.equal(LOOT_ITEM_SIZE, 2)
   assert.equal(encodeLoot({ value: 0, searchPct: 0, searchSpotId: -1, nearSpotId: -1, items }).byteLength, LOOT_HEADER + LOOT_MAX_ITEMS * LOOT_ITEM_SIZE)
 })

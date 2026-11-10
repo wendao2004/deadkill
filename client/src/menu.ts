@@ -113,6 +113,8 @@ export interface MenuConfig {
   extras?: number
   /** 主武器配件 id（见 shared/src/attachments.ts）。 */
   attachment?: number
+  /** 0 单人 / 1 双人：请求服务端把相邻入场的两人编进同一队。 */
+  squad?: number
   /**
    * 金币余额。**可选**：main.ts 还没接这条线，必填会让它当场编译不过。
    *
@@ -179,6 +181,7 @@ const KEY_CONTRACT = 'dk.contract'
 const KEY_EXTRAS = 'dk.extras'
 const KEY_ATTACH = 'dk.attachment'
 const KEY_ATTACH_UNLOCKS = 'dk.attachmentUnlocks'
+const KEY_SQUAD = 'dk.squad'
 const KEY_MATCH = 'dk.match'
 const KEY_PRIMARY = 'dk.primary'
 const KEY_TRAITS = 'dk.traits'
@@ -274,7 +277,9 @@ export function loadSavedConfig(): Partial<MenuConfig> {
   const extras = readRaw(KEY_EXTRAS)
   if (extras !== null) out.extras = Number(extras) & 3
   const attachment = readRaw(KEY_ATTACH)
+  const squad = readRaw(KEY_SQUAD)
   if (attachment !== null) out.attachment = clampAttachment(Number(attachment))
+  if (squad !== null) out.squad = Number(squad) === 1 ? 1 : 0
   // 天赋选中项同样只认白名单：clampSelection 会丢掉非法位、超出上限的按表顺序截断，
   // 所以手改过的存档最差也只是"少带一条"，不会让服务端拒包。
   const traits = Number(readRaw(KEY_TRAITS))
@@ -310,6 +315,7 @@ export function saveConfig(config: Partial<MenuConfig>): void {
   if (config.contract !== undefined) writeRaw(KEY_CONTRACT, String(clampContract(config.contract)))
   if (config.extras !== undefined) writeRaw(KEY_EXTRAS, String(config.extras & 3))
   if (config.attachment !== undefined) writeRaw(KEY_ATTACH, String(clampAttachment(config.attachment)))
+  if (config.squad !== undefined) writeRaw(KEY_SQUAD, config.squad ? '1' : '0')
   // 金币不进配装包也照样落盘：大厅一刷新，余额和等级都还在。
   if (config.coins !== undefined) writeRaw(KEY_COINS, String(normalizeCoins(config.coins)))
 }
@@ -989,6 +995,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     contract: clampContract(options.initial?.contract ?? saved.contract ?? 1),
     extras: (options.initial?.extras ?? saved.extras ?? 0) & 3,
     attachment: clampAttachment(options.initial?.attachment ?? saved.attachment ?? 0),
+    squad: (options.initial?.squad ?? saved.squad ?? 0) === 1 ? 1 : 0,
     traits: clampSelection(options.initial?.traits ?? saved.traits ?? 0),
     coins: normalizeCoins(options.initial?.coins ?? saved.coins ?? 0),
   }
@@ -1173,7 +1180,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   const deployState = {
     mapId: MAP_ENTRIES[0]?.id ?? 'marsh-p0',
-    squad: 'solo',
+    squad: (config.squad === 1 ? 'duo' : 'solo') as 'solo' | 'duo',
     threat: 1,
     contract: 1,
     extras: 0,
@@ -1621,19 +1628,22 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     const wrap = mk('div', 'dk-field')
     wrap.appendChild(mk('span', 'dk-field__label', '队伍规模'))
     const row = mk('div', 'dk-segment')
-    const entries: Array<[string, string]> = [
+    const entries: Array<['solo' | 'duo', string]> = [
       ['solo', '单人'],
       ['duo', '双人'],
     ]
     for (const [value, label] of entries) {
       const btn = mkButton('dk-segment__item', label)
-      // 组队还没有服务端字段：不要让玩家以为选了“双人”就能合作。
-      btn.disabled = true
-      btn.title = '组队系统未接入 · 暂不可选'
+      btn.title =
+        value === 'duo'
+          ? '同一局里相邻入场的两人自动同队；同队不友伤，倒地可互相救援'
+          : '每个人各自一队，没有队友'
       btn.setAttribute('aria-pressed', deployState.squad === value ? 'true' : 'false')
       if (deployState.squad === value) btn.classList.add('is-selected')
       btn.addEventListener('click', () => {
         deployState.squad = value
+        config.squad = value === 'duo' ? 1 : 0
+        saveConfig(config)
         for (const other of row.querySelectorAll('.dk-segment__item')) {
           const isSelf = other === btn
           other.classList.toggle('is-selected', isSelf)
@@ -1883,6 +1893,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     config.contract = clampContract(deployState.contract)
     config.extras = deployState.extras & 3
     config.attachment = clampAttachment(deployState.attachment)
+    config.squad = deployState.squad === 'duo' ? 1 : 0
     }
     // 本局只剩 ≤3 分钟：不让玩家进去跑 200m 才发现没时间撤，直接分到下一局
     // 的新房间（同名后缀 -next）。旧房间的猎人继续打，互不影响。

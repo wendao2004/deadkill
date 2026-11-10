@@ -189,7 +189,7 @@ function handleConnection(
     if (kind === Msg.Loadout) {
       try {
         const loadout = decodeLoadout(buffer)
-        world.receiveLoadout(playerId, loadout.weaponId, loadout.traits, loadout.contract, loadout.extras, loadout.attachment)
+        world.receiveLoadout(playerId, loadout.weaponId, loadout.traits, loadout.contract, loadout.extras, loadout.attachment, loadout.squad)
       } catch {
         socket.close(4003, '选枪包解析失败')
       }

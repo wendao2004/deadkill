@@ -2319,6 +2319,7 @@ export class Renderer {
       const grounded = (player.flags & StateFlags.Grounded) !== 0
       const vaulting = (player.flags & StateFlags.Vaulting) !== 0
       const climbing = (player.flags & StateFlags.Climbing) !== 0
+      const downed = (player.flags & StateFlags.Downed) !== 0
       const sprinting = !sliding && avatar.speed > 6.4
       const walking = avatar.speed > 0.25
       if (walking) avatar.phase += avatar.speed * dt * (sprinting ? 1.9 : 2.4)
@@ -2334,6 +2335,7 @@ export class Renderer {
         ads,
         vault: vaulting ? avatar.vaultTime / VAULT_TIME : -1,
         climbing,
+        downed,
         phase: avatar.phase,
         dt,
       })

@@ -890,6 +890,8 @@ export function stateFlagsOf(c: {
   vaulting?: boolean
   /** 攀爬中。可选：旧调用方不传时保持原行为。 */
   climbing?: boolean
+  /** 倒地等待救援。可选：旧调用方不传时保持原行为。 */
+  downed?: boolean
 }): number {
   let f = 0
   if (c.grounded) f |= StateFlags.Grounded
@@ -901,6 +903,7 @@ export function stateFlagsOf(c: {
   if (c.sliding) f |= StateFlags.Sliding
   if (c.vaulting) f |= StateFlags.Vaulting
   if (c.climbing) f |= StateFlags.Climbing
+  if (c.downed) f |= StateFlags.Downed
   return f
 }
 

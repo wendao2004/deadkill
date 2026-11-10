@@ -29,6 +29,7 @@ export interface PlayerViewSource {
   health: number
   /** 姿态位（站立/蹲/开镜/换弹…），由 stateFlagsOf 算好再传进来。 */
   flags: number
+  team: number
   weaponId: number
   ammo: number
   reserve: number
@@ -54,6 +55,7 @@ export function projectPlayer(src: PlayerViewSource): PlayerSnapshot {
     pitch: src.pitch,
     health: src.health,
     flags: src.flags,
+    team: src.team,
     weaponId: src.weaponId,
     ammo: src.ammo,
     reserve: src.reserve,

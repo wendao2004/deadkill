@@ -200,6 +200,8 @@ export interface GameOptions {
   extras?: number
   /** 主武器配件 id（见 shared/src/attachments.ts）。 */
   attachment?: number
+  /** 0 单人 / 1 双人（双人两两编队）。 */
+  squad?: number
   /**
    * 某条天赋刚起了作用。HUD 那颗徽记会闪一下 —— 天赋是看不见的数值加成，
    * 不给这一下反馈，玩家永远不知道自己买的天赋到底生效没有。
@@ -563,6 +565,7 @@ export class Game {
       this.options.contract ?? 0,
       this.options.extras ?? 0,
       this.options.attachment ?? 0,
+      this.options.squad ?? 0,
       {
       onWelcome: (info) => {
         this.myId = info.playerId
@@ -1795,6 +1798,9 @@ export class Game {
       secondsLeft: packet?.secondsLeft ?? MATCH_SECONDS,
       event: packet?.event ?? 0,
       eventSeconds: packet?.eventSeconds ?? 0,
+      selfDowned:
+        ((this.lastSnapshot?.players.find((p) => p.id === this.myId)?.flags ?? 0) & StateFlags.Downed) !== 0,
+      revivePct: (this.loot?.revivePct ?? 0) / 100,
       outcome: packet?.outcome ?? 'none',
       // 三槽属于"目标 HUD"而不是"我的读数"：它们是常驻的三格栏位图示，
       // 和线索/撤离一样刷新频率低，走同一份缓存比对。

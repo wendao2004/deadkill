@@ -183,7 +183,7 @@ export function decodeSwitchSlot(buffer: ArrayBuffer): number {
  * 一定会有第 256 把以外的情况——协议里省下这 1 个字节，换来的是一场
  * 谁都没预料到的静默截断。
  */
-export const LOADOUT_SIZE = 1 + 2 + 4 + 1 + 1 + 1
+export const LOADOUT_SIZE = 1 + 2 + 4 + 1 + 1 + 1 + 1
 
 /**
  * 配装包：u8 kind + u16le 武器 id + u32le 天赋等级包。
@@ -206,9 +206,11 @@ export interface LoadoutRequest {
   extras: number
   /** 主武器配件 id（见 shared/src/attachments.ts）。 */
   attachment: number
+  /** 0 单人 / 1 双人：决定服务端是否把相邻入场的两人编进同一队。 */
+  squad: number
 }
 
-export function encodeLoadout(weaponId: number, traits = 0, contract = 0, extras = 0, attachment = 0): ArrayBuffer {
+export function encodeLoadout(weaponId: number, traits = 0, contract = 0, extras = 0, attachment = 0, squad = 0): ArrayBuffer {
   const buffer = new ArrayBuffer(LOADOUT_SIZE)
   const view = new DataView(buffer)
   view.setUint8(0, Msg.Loadout)
@@ -217,6 +219,7 @@ export function encodeLoadout(weaponId: number, traits = 0, contract = 0, extras
   view.setUint8(7, contract & 0xff)
   view.setUint8(8, extras & 0xff)
   view.setUint8(9, attachment & 0xff)
+  view.setUint8(10, squad & 0xff)
   return buffer
 }
 
@@ -227,7 +230,8 @@ export function decodeLoadout(buffer: ArrayBuffer): LoadoutRequest {
   const contract = buffer.byteLength > 7 ? view.getUint8(7) : 0
   const extras = buffer.byteLength > 8 ? view.getUint8(8) : 0
   const attachment = buffer.byteLength > 9 ? view.getUint8(9) : 0
-  return { weaponId: view.getUint16(1, true), traits: view.getUint32(3, true), contract, extras, attachment }
+  const squad = buffer.byteLength > 10 ? view.getUint8(10) : 0
+  return { weaponId: view.getUint16(1, true), traits: view.getUint32(3, true), contract, extras, attachment, squad }
 }
 
 // ---------------------------------------------------------------- 快照
@@ -252,6 +256,8 @@ export interface PlayerSnapshot {
   reserve: number
   /** 当前槽位：0 主武器、1 副武器、2 近战。客户端据此换模型/换准星。 */
   slot: number
+  /** 队伍 id：同队不友伤；单人模式每个人的 team 唯一。 */
+  team: number
   /** 服务端最近处理到的输入序号。 */
   ackSeq: number
 }
@@ -271,7 +277,8 @@ export const PLAYER_SNAPSHOT_SIZE =
   2 + // yaw
   2 + // pitch
   2 + // health
-  2 + // flags（u16：滑铲/翻越/攀爬三个状态位）
+  2 + // flags（u16：滑铲/翻越/攀爬/倒地）
+  1 + // team
   1 + // weaponId
   1 + // ammo
   1 + // reserve
@@ -365,11 +372,12 @@ export function encodeSnapshot(snapshot: Snapshot): ArrayBuffer {
     view.setUint16(off + 22, quantizeAngle(p.pitch), true)
     view.setUint16(off + 24, Math.max(0, Math.round(p.health)), true)
     view.setUint16(off + 26, p.flags & 0xffff, true)
-    view.setUint8(off + 28, p.weaponId & 0xff)
-    view.setUint8(off + 29, p.ammo & 0xff)
-    view.setUint8(off + 30, p.reserve & 0xff)
-    view.setUint8(off + 31, p.slot & 0xff)
-    view.setUint32(off + 32, p.ackSeq >>> 0, true)
+    view.setUint8(off + 28, p.team & 0xff)
+    view.setUint8(off + 29, p.weaponId & 0xff)
+    view.setUint8(off + 30, p.ammo & 0xff)
+    view.setUint8(off + 31, p.reserve & 0xff)
+    view.setUint8(off + 32, p.slot & 0xff)
+    view.setUint32(off + 33, p.ackSeq >>> 0, true)
     off += PLAYER_SNAPSHOT_SIZE
   }
 
@@ -409,11 +417,12 @@ export function decodeSnapshot(buffer: ArrayBuffer): Snapshot {
       pitch: dequantizeAngle(view.getUint16(off + 22, true)),
       health: view.getUint16(off + 24, true),
       flags: view.getUint16(off + 26, true),
-      weaponId: view.getUint8(off + 28),
-      ammo: view.getUint8(off + 29),
-      reserve: view.getUint8(off + 30),
-      slot: view.getUint8(off + 31),
-      ackSeq: view.getUint32(off + 32, true),
+      team: view.getUint8(off + 28),
+      weaponId: view.getUint8(off + 29),
+      ammo: view.getUint8(off + 30),
+      reserve: view.getUint8(off + 31),
+      slot: view.getUint8(off + 32),
+      ackSeq: view.getUint32(off + 33, true),
     })
     off += PLAYER_SNAPSHOT_SIZE
   }
@@ -964,6 +973,8 @@ export interface LootPacket {
   contract: number
   /** 合同当前进度（击杀/搜刮/撤离次数）。 */
   contractProgress: number
+  /** 正在执行的救援进度 0..100，没在救就是 0。 */
+  revivePct: number
 }
 
 /**
@@ -974,7 +985,7 @@ export interface LootPacket {
  * 新字段一律追加在 itemCount 之后：物品记录紧跟在包头后面，往前插会连带
  * 改掉每条记录的偏移。
  */
-export const LOOT_HEADER = 1 + 2 + 1 + 2 + 2 + 1 + 1 + 1 + 1 + 1
+export const LOOT_HEADER = 1 + 2 + 1 + 2 + 2 + 1 + 1 + 1 + 1 + 1 + 1
 
 /** 每件物品 2 字节：id(u8) + count(u8)。 */
 export const LOOT_ITEM_SIZE = 2
@@ -1014,6 +1025,7 @@ export function encodeLoot(p: LootPacket): ArrayBuffer {
   view.setUint8(10, Math.max(0, Math.min(100, Math.round(p.healPct))))
   view.setUint8(11, Math.max(0, Math.min(255, p.contract)))
   view.setUint8(12, Math.max(0, Math.min(255, p.contractProgress)))
+  view.setUint8(13, Math.max(0, Math.min(100, Math.round(p.revivePct))))
   let off = LOOT_HEADER
   for (let i = 0; i < count; i++) {
     const item = p.items[i]!
@@ -1039,6 +1051,7 @@ export function decodeLoot(buffer: ArrayBuffer): LootPacket {
   const healPct = view.getUint8(10)
   const contract = view.getUint8(11)
   const contractProgress = view.getUint8(12)
+  const revivePct = view.getUint8(13)
   // 先按 itemCount 算出应有长度再读：少一个字节就抛，绝不读出半条记录。
   if (view.byteLength < LOOT_HEADER + count * LOOT_ITEM_SIZE) {
     throw new Error(
@@ -1052,7 +1065,7 @@ export function decodeLoot(buffer: ArrayBuffer): LootPacket {
     items.push({ id: view.getUint8(off), count: view.getUint8(off + 1) })
     off += LOOT_ITEM_SIZE
   }
-  return { value, searchPct, searchSpotId, nearSpotId, items, bandages, healPct, contract, contractProgress }
+  return { value, searchPct, searchSpotId, nearSpotId, items, bandages, healPct, contract, contractProgress, revivePct }
 }
 
 /** i16 的合法范围。spotId 只可能是 -1 或一个小下标，钳制纯属防御。 */

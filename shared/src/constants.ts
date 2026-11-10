@@ -36,7 +36,7 @@
 // 11 = 四种地图 Boss（种类码 3..6）、怪物状态 Special(4) 与事件 BossPulse(8)。
 // 旧客户端不认识种类 4..6 会直接丢掉 Boss（看不见的 Boss 比连不上更糟），
 // 事件 8 还会被当成 Respawn 读 16 字节 —— 所以硬拒。
-export const PROTOCOL_VERSION = 20
+export const PROTOCOL_VERSION = 21
 
 /**
  * 服务端模拟频率（Hz）。
@@ -324,6 +324,8 @@ export const StateFlags = {
   Vaulting: 1 << 7,
   /** 攀爬中：贴着墙向上爬。flags 从 u8 扩到 u16 就是为了它。 */
   Climbing: 1 << 8,
+  /** 倒地：等待队友救援，不能开火、只能缓慢爬行。 */
+  Downed: 1 << 9,
 } as const
 
 // ---------------------------------------------------------------- 搜刮
@@ -676,3 +678,16 @@ export const PRIMARY_CHOICES: readonly number[] = [1, 6, 3, 2, 4]
 export function isPrimaryChoice(id: number): boolean {
   return PRIMARY_CHOICES.includes(id)
 }
+
+// ---------------------------------------------------------------- 倒地 / 救援
+
+/** 倒地后的流血时间：30 秒内没人救就死。 */
+export const DOWNED_BLEED_MS = 30_000
+/** 队友按住交互键救援所需的时长。 */
+export const REVIVE_MS = 4_000
+/** 救援交互半径（米）。 */
+export const REVIVE_RADIUS = 2.6
+/** 倒地时的爬行速度倍率。 */
+export const DOWNED_CRAWL_SCALE = 0.35
+/** 被救起后恢复的生命比例。 */
+export const REVIVE_HEALTH_FRACTION = 0.4

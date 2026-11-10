@@ -110,6 +110,8 @@ export interface HunterPoseInput {
   vault: number
   /** 是否在贴墙攀爬。 */
   climbing?: boolean
+  /** 是否倒地。 */
+  downed?: boolean
   /** 步态相位（由调用方按位移累加）。 */
   phase: number
   dt: number
@@ -417,7 +419,23 @@ export function animateHunter(model: HunterModel, input: HunterPoseInput): void 
   let elbowL = 0.38
   let elbowR = 0.42
 
-  if (input.climbing) {
+  if (input.downed) {
+    // 倒地：髋压到最低、脊柱几乎水平，四肢摊开——远看就是地上躺着一个人。
+    hipY = 0.30
+    spineRx = 1.28
+    spineRz = 0.08
+    headRx = -0.35
+    thighL = 0.55
+    thighR = 0.15
+    kneeL = -0.55
+    kneeR = -0.35
+    shoulderLx = 1.35
+    shoulderLz = 0.55
+    shoulderRx = 1.15
+    shoulderRz = -0.45
+    elbowL = 0.45
+    elbowR = 0.5
+  } else if (input.climbing) {
     // 攀爬：双手举过头顶抓墙，膝盖收起，身体贴近墙面。
     hipY = 0.88
     spineRx = -0.12

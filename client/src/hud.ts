@@ -77,6 +77,10 @@ export interface ObjectiveModel {
   event?: number
   /** 事件剩余秒数 */
   eventSeconds?: number
+  /** 自己是否倒地等待救援 */
+  selfDowned?: boolean
+  /** 队友正在救自己的进度 0..1 */
+  revivePct?: number
   outcome: 'none' | 'escaped' | 'dead'
 
   // ---- 以下全部可选：服务端还在加三槽武器，接线前不传就整块不动 ----
@@ -322,6 +326,12 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
   const contractProg = el('span', 'dko-contract-prog', '')
   contractBox.append(contractName, contractProg)
 
+  // 倒地提示：自己倒下时压在画面中下方，直到被救起或死亡。
+  const downedBox = el('div', 'dko-downed')
+  const downedTitle = el('div', 'dko-downed-title', '倒 下')
+  const downedSub = el('div', 'dko-downed-sub', '等待队友救援')
+  downedBox.append(downedTitle, downedSub)
+
   // 携带赏金后的撤离点方位：三行"名字 距离 箭头"，只在本人携带时出现。
   const bearingBox = el('div', 'dko-bearing')
   const bearingRows = [0, 1, 2].map(() => {
@@ -420,7 +430,7 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
     slotNums.push(num)
   }
 
-  host.append(cluesBox, clock, eventBox, contractBox, compass, bearingBox, bannerEl, banishBox, extractBox, outcomeBox, slotsBox, curtain)
+  host.append(cluesBox, clock, eventBox, contractBox, downedBox, compass, bearingBox, bannerEl, banishBox, extractBox, outcomeBox, slotsBox, curtain)
   root.append(host)
 
   // 死亡演出：去饱和层 + UI 层，都挂 body（见文件头的"为什么挂到 body"）
@@ -446,6 +456,8 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
   let clockCache = -1
   let eventCache = -1
   let eventSecCache = -1
+  let downedCache: boolean | null = null
+  let reviveCache = -1
   let criticalCache = false
   let banishCache = -1
   let extractOnCache = false
@@ -1079,6 +1091,20 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
     if (critical !== criticalCache) {
       criticalCache = critical
       clock.classList.toggle('is-critical', critical)
+    }
+
+    // ---- 倒地 / 救援 ----
+    const selfDowned = model.selfDowned === true
+    if (downedCache !== selfDowned) {
+      downedCache = selfDowned
+      downedBox.classList.toggle('is-on', selfDowned)
+    }
+    if (selfDowned) {
+      const revive = Math.round((model.revivePct ?? 0) * 100)
+      if (reviveCache !== revive) {
+        reviveCache = revive
+        downedSub.textContent = revive > 0 ? '队 友 救 援 中 ' + revive + '%' : '等 待 队 友 救 援'
+      }
     }
 
     // ---- 世界事件横幅 ----

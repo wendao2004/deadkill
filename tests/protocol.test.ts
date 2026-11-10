@@ -226,9 +226,10 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   // v18：配装包加配件 1 字节（9 → 10），Shot 事件加配件 1 字节（29 → 30）。
   // v19：战利品包加合同 id/进度 2 字节（11 → 13）。
   // v20：目标包加巢穴状态位图 1 字节（26 → 27）。
-  assert.equal(PROTOCOL_VERSION, 20)
+  // v21：玩家快照加队伍 1 字节（36 → 37）；配装包加组队偏好，战利品包加救援进度。
+  assert.equal(PROTOCOL_VERSION, 21)
   assert.equal(SNAPSHOT_HEADER, 17)
-  assert.equal(PLAYER_SNAPSHOT_SIZE, 36)
+  assert.equal(PLAYER_SNAPSHOT_SIZE, 37)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)
 
   for (const n of [0, 1, 3]) {
@@ -275,18 +276,19 @@ test('snapshot: slot 单独占 1 字节，夹在 ammo 与 ackSeq 之间（v3 布
   const view = new DataView(buffer)
   const off = SNAPSHOT_HEADER
   assert.equal(view.getUint16(off + 26, true), 0) // flags（u16）
-  assert.equal(view.getUint8(off + 28), 10) // weaponId
-  assert.equal(view.getUint8(off + 29), 0) // ammo
-  assert.equal(view.getUint8(off + 30), 32) // reserve
-  assert.equal(view.getUint8(off + 31), 2) // slot
-  assert.equal(view.getUint32(off + 32, true), 0x01020304) // ackSeq
+  assert.equal(view.getUint8(off + 28), 0) // team
+  assert.equal(view.getUint8(off + 29), 10) // weaponId
+  assert.equal(view.getUint8(off + 30), 0) // ammo
+  assert.equal(view.getUint8(off + 31), 32) // reserve
+  assert.equal(view.getUint8(off + 32), 2) // slot
+  assert.equal(view.getUint32(off + 33, true), 0x01020304) // ackSeq
 
   const decoded = decodeSnapshot(buffer)
   assert.equal(decoded.players[0]!.slot, 2)
   assert.equal(decoded.players[0]!.ackSeq, 0x01020304)
 })
 
-test('snapshot: 怪物段紧跟在玩家段之后，偏移 17 + n * 36 才是第一个怪物记录', () => {
+test('snapshot: 怪物段紧跟在玩家段之后，偏移 17 + n * 37 才是第一个怪物记录', () => {
   const buffer = encodeSnapshot({
     tick: 5,
     serverTime: 1.5,
