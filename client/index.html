@@ -234,6 +234,28 @@
       }
 
       /*
+        机瞄的"最后一个点"：开镜时在弹道中心钉一颗信号橙珠。
+
+        为什么不是 3D 模型里那颗珠：照门缺口、准星片和枪身会在 0.38~0.95m
+        的深度区间里互相遮挡，程序化几何稍微一改，珠子就被埋进准星片或墨线壳；
+        而玩家真正需要的是"枪会打向哪里"的权威读数。这颗 DOM 珠钉在屏幕中心，
+        与相机/弹道轴完全同源，任何背景下都读得出来；3D 照门仍然负责"三点一线"
+        的构图。腰射不显示（硬核机瞄），带镜的枪也不显示（镜筒分划自己就是准心）。
+      */
+      #sightdot {
+        position: fixed; left: 50%; top: 50%;
+        width: 5px; height: 5px; border-radius: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--amber);
+        box-shadow: 0 0 0 1.5px var(--ink), 0 0 5px rgba(217, 154, 74, 0.55);
+        opacity: 0;
+        pointer-events: none;
+        z-index: 6;
+        transition: opacity 80ms steps(2, end);
+      }
+      body.dk-ads:not(.dk-scoped) #sightdot { opacity: 0.96; }
+
+      /*
         HUD 的 DOM 契约（main.ts 直接取 #hp / #ammo / #log / #debug）把生命与弹药
         拆进了两行。两行都贴底、用 space-between 分居左右：第一行左侧生命，
         第二行左侧日志 + 右侧弹药，于是左下是文字信息、右下是弹药数字。
@@ -419,6 +441,7 @@
       body.dk-qa-clean #vignette,
       body.dk-qa-clean #crosshair,
       body.dk-qa-clean #scope,
+      body.dk-qa-clean #sightdot,
       body.dk-qa-clean #dead,
       /* 目标 HUD 与覆盖层由 JS 挂到 body，不在 #hud 里，必须单列。 */
       body.dk-qa-clean .dko,
@@ -451,6 +474,7 @@
       <i class="cross-v"></i>
       <i class="center"></i>
     </div>
+    <div id="sightdot" aria-hidden="true"></div>
     <div id="crosshair">
       <i class="arm up"></i>
       <i class="arm down"></i>

@@ -46,6 +46,8 @@ export interface WeaponMaterialSet {
   wood: Material
   brass: Material
   sight: Material
+  /** 前准星亮珠：用信号色，不能和照门耳同色，否则"最后一个点"看不见。 */
+  sightBead: Material
   bore: Material
   blade: Material
   bladeEdge: Material
@@ -96,6 +98,7 @@ function materialMap(mats: WeaponMaterialSet): Record<string, Material> {
     wood: mats.wood,
     brass: mats.brass,
     sight: mats.sight,
+    sightBead: mats.sightBead,
     bore: mats.bore,
     blade: mats.blade,
     bladeEdge: mats.bladeEdge,
@@ -533,29 +536,34 @@ export function buildRifle(
   // 上沿对齐的规则不变：准星、照门耳、亮珠的**上沿**都落在 SIGHT_Y，
   // 相机/弹道也沿 SIGHT_Y 出发，所以"上沿对齐 = 弹道对准"。
   // 准星与照门的几何中心都不在 SIGHT_Y 上 —— 这是故意的。
-  asm.add(box(0.020, 0.006, 0.026, 0.0010, 2), 'steel', { y: 0.018, z: sightFrontZ })
+  // 准星底座压到 0.011（顶面 0.014）：旧版顶面 0.021，正好挡住 11mm 亮珠的
+  // 下半球，缺口里只剩一条蓝灰横条。底座下沉后，整颗亮珠都在它上方。
+  asm.add(box(0.020, 0.006, 0.026, 0.0010, 2), 'steel', { y: 0.011, z: sightFrontZ })
   // 竖片：上沿 SIGHT_Y，下段埋进枪管，视觉上只露出护木以上的一截。
   asm.add(box(0.018, 0.024, 0.006, 0.0006, 1), 'sight', {
     y: SIGHT_Y - 0.012,
     z: sightFrontZ,
   })
-  // 亮珠：直径 8mm，球心在 SIGHT_Y - 半径，上沿正好与准星片同高。
-  // 暗墙前看到的是"一个亮点"，而准星片给它的上下留出读数边。
-  const bead = blob(0.008, 0.008, 0.005, 0.0018, 1)
-  asm.add(bead, 'sight', { y: SIGHT_Y - 0.004, z: sightFrontZ })
+  // 亮珠：直径加 8mm → 11mm，单独用信号橙。旧版与照门耳同色、又只有 8mm，
+  // 在暗墙/深色机匣前会糊成一块浅色方块——玩家找不到"最后一个点"。
+  // 上沿仍严格落在 SIGHT_Y，所以"上沿对齐 = 弹道对准"的归零规则不变。
+  const bead = blob(0.012, 0.012, 0.007, 0.002, 1)
+  // 前移 12mm：珠子必须画在准星片和它那圈墨线壳前面，否则会被盖成一条蓝灰横条。
+  asm.add(bead, 'sightBead', { y: SIGHT_Y - 0.006, z: sightFrontZ + 0.012 })
   bead.dispose()
-  // 照门：薄底座 + 两片窄耳。耳内缘在 ±0.010，缺口宽 20mm；
-  // 底座上表面 0.016（SIGHT_Y - 10mm）同时充当缺口下沿，投影里准星片
-  // 的下端正好落在它上面，读起来是一个完整的 U 形缺口。
-  asm.add(box(0.034, 0.006, 0.014, 0.0008, 2), 'steel', { y: 0.013, z: SIGHT_REAR_Z })
-  asm.add(box(0.007, 0.010, 0.008, 0.0006, 1), 'sight', {
+  // 照门：薄底座 + 两片窄耳。耳内缘仍在 ±0.010，缺口 20mm；
+  // 底座上表面从 0.016 压到 0.012（SIGHT_Y - 14mm），让前准星片在缺口里
+  // 多露出 4mm；耳片同步加高，底边与底座接上。投影里能看到一根完整的
+  // "准星柱 + 顶部亮点"，而不是只露出一个边。
+  asm.add(box(0.034, 0.006, 0.014, 0.0008, 2), 'steel', { y: 0.009, z: SIGHT_REAR_Z })
+  asm.add(box(0.007, 0.014, 0.008, 0.0006, 1), 'sight', {
     x: -0.0135,
-    y: SIGHT_Y - 0.005,
+    y: SIGHT_Y - 0.007,
     z: SIGHT_REAR_Z,
   })
-  asm.add(box(0.007, 0.010, 0.008, 0.0006, 1), 'sight', {
+  asm.add(box(0.007, 0.014, 0.008, 0.0006, 1), 'sight', {
     x: 0.0135,
-    y: SIGHT_Y - 0.005,
+    y: SIGHT_Y - 0.007,
     z: SIGHT_REAR_Z,
   })
 

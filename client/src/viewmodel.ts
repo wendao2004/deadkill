@@ -42,6 +42,7 @@ import {
   DoubleSide,
   Group,
   Mesh,
+  MeshBasicMaterial,
   NormalBlending,
   PlaneGeometry,
   ShaderMaterial,
@@ -645,6 +646,15 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
    * 这里改的只是钢、木、黄铜各自的细节参数。金属的 specular 是这次升级里
    * "枪不再像一块灰板"的关键 —— 倒角接住一条高光，轮廓才读得出是个零件。
    */
+  /**
+   * 前准星亮珠：**无光照**信号橙。
+   *
+   * 它是一颗 12mm 的珠子，塞在照门缺口里；用受光材质时，背光的正面会被
+   * 环境蓝压成灰蓝，和准星片/照门耳糊在一起。准星是瞄准的最终读数，
+   * 不该参与光照叙事 —— 固定颜色、固定亮度，任何背景前都是同一个点。
+   */
+  const sightBeadMat = new MeshBasicMaterial({ color: 0xffb347, toneMapped: false })
+
   const mats: WeaponMaterialSet = {
     steel: kit.toon(0x5a6879, {
       hatch: 0.18,
@@ -684,6 +694,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       // 是画面里最稳的亮点，不能被背景或机匣吃掉。
       emissive: 0.8,
     }),
+    sightBead: sightBeadMat,
     bore: kit.toon(0x0a0d12, { hatch: 0, specular: 0 }),
     blade: kit.toon(0x8c99aa, {
       hatch: 0.08,
@@ -1782,6 +1793,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       // 每把枪自己持有一批合并几何与刀光克隆材质；逐个还回去。
       for (const model of builtModels) model.dispose()
       builtModels.length = 0
+      sightBeadMat.dispose()
       flashGeo.dispose()
       flashMat.dispose()
       smokeGeo.dispose()
