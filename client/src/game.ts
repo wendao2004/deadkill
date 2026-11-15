@@ -740,6 +740,7 @@ export class Game {
       geometries: render.geometries,
       textures: render.textures,
       renderPath: render.renderPath,
+      scene: render.scene,
       width: this.viewWidth,
       height: this.viewHeight,
       ads: this.input.ads,

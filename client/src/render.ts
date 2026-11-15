@@ -47,6 +47,7 @@ import {
   Group,
   HemisphereLight,
   IcosahedronGeometry,
+  InstancedMesh,
   Line,
   LineBasicMaterial,
   LineSegments,
@@ -95,6 +96,7 @@ import { loadGeneratedAssets, type GeneratedAssets } from './generated-assets.ts
 import { decorateGenerated } from './forest-scene.ts'
 import type { GraphicsQuality } from './settings.ts'
 import { qa, type QaCamera } from './qa.ts'
+import { SceneHasher, combineHashes, type SceneSignature } from './scene-hash.ts'
 import { buildProps, type Props } from './props.ts'
 import { createMonsterRenderer, type MonsterRenderer, type MonsterView } from './monsters.ts'
 import { createObjectiveMarkers, type ObjectiveMarkers, type ObjectiveView } from './markers.ts'
@@ -553,6 +555,8 @@ export class Renderer {
   private postEnabled = true
   /** 后处理自检失败/被强制关闭时，整条链绕过，直接画到画布。 */
   private directRender = false
+  /** 静态场景指纹的缓存；场景构建完成后只算一次。 */
+  private sceneHashCache: SceneSignature | null = null
   /** auto 解析后的实际档位；接触阴影/降档判断要用它，而不是靠 minScale 反推。 */
   private resolvedQuality: Exclude<GraphicsQuality, 'auto'> = 'balanced'
   /** QA 子系统展示：mats / fx / weapon；null = 正常游戏。 */
@@ -2830,6 +2834,135 @@ export class Renderer {
   }
 
   /**
+   * 静态场景指纹：同一张图、同一套资源，两次启动必须一致。
+   *
+   * 只遍历**静态根**（关卡、装饰、村庄外壳、自然资产、生成森林），并跳过
+   * 门/捕兽夹/巢穴这些会随玩法变化的分组。每个对象单独哈希后排序合并，
+   * 因此异步 GLB 加载完成的先后顺序不会影响结果。
+   *
+   * 第一次调用会走一遍全部顶点/实例矩阵；之后缓存。`__stats()` 在 QA
+   * 脚本里是低频调用，这个成本可以接受。
+   */
+  sceneSignature(): SceneSignature {
+    if (this.sceneHashCache !== null) return this.sceneHashCache
+
+    const roots: Object3D[] = [this.levelGroup, this.props.root]
+    if (this.natureGroup) roots.push(this.natureGroup)
+    if (this.villageGroup) roots.push(this.villageGroup)
+    const generated = this.scene.getObjectByName('generated-forest')
+    if (generated) roots.push(generated)
+
+    // 随玩法变化的分组：门、捕兽夹、巢穴。它们的几何/变换不代表"这张图"。
+    const skip = new Set<Object3D>()
+    const mark = (object: Object3D): void => {
+      object.traverse((child) => skip.add(child))
+    }
+    for (const door of this.doors) mark(door.pivot)
+    for (const trap of this.traps) {
+      mark(trap.armed)
+      mark(trap.sprung)
+    }
+    for (const nest of this.nests) {
+      mark(nest.intact)
+      mark(nest.broken)
+    }
+
+    const materialKey = (m: Material): string => {
+      const anyMat = m as Material & {
+        color?: { getHexString(): string }
+        emissive?: { getHexString(): string }
+        map?: Texture | null
+        opacity?: number
+        transparent?: boolean
+        side?: number
+        vertexColors?: boolean
+      }
+      const image = anyMat.map?.image as { width?: number; height?: number } | undefined
+      return [
+        m.type,
+        m.name,
+        anyMat.color?.getHexString() ?? '',
+        anyMat.emissive?.getHexString() ?? '',
+        String(anyMat.opacity ?? 1),
+        anyMat.transparent ? '1' : '0',
+        String(anyMat.side ?? 0),
+        anyMat.vertexColors ? '1' : '0',
+        anyMat.map?.name ?? '',
+        String(image?.width ?? 0),
+        String(image?.height ?? 0),
+      ].join('|')
+    }
+
+    const parts: string[] = []
+    const materialKeys = new Set<string>()
+    let nodes = 0
+    let vertices = 0
+
+    for (const root of roots) {
+      root.updateWorldMatrix(true, true)
+      root.traverse((object) => {
+        if (skip.has(object)) return
+        const mesh = object as Mesh & { isLine?: boolean; isLineSegments?: boolean }
+        if (!mesh.isMesh && !mesh.isLine && !mesh.isLineSegments) return
+        const geometry = mesh.geometry
+        const position = geometry?.getAttribute('position')
+        if (!geometry || !position) return
+
+        const hasher = new SceneHasher()
+        hasher.addString(object.type)
+        hasher.addString(object.name)
+        const matrix = object.matrixWorld.elements
+        for (let i = 0; i < 16; i++) hasher.addQuantized(matrix[i]!)
+        hasher.addBytes(
+          new Uint8Array(position.array.buffer, position.array.byteOffset, position.array.byteLength),
+        )
+        const index = geometry.getIndex()
+        if (index) {
+          hasher.addBytes(new Uint8Array(index.array.buffer, index.array.byteOffset, index.array.byteLength))
+        }
+
+        let instances = 1
+        const instanced = object as InstancedMesh
+        if (instanced.isInstancedMesh) {
+          instances = instanced.count
+          hasher.addNumber(instanced.count)
+          const matrices = instanced.instanceMatrix.array
+          hasher.addBytes(
+            new Uint8Array(matrices.buffer, matrices.byteOffset, Math.min(matrices.byteLength, instances * 16 * 4)),
+          )
+          if (instanced.instanceColor) {
+            const colors = instanced.instanceColor.array
+            hasher.addBytes(
+              new Uint8Array(colors.buffer, colors.byteOffset, Math.min(colors.byteLength, instances * 3 * 4)),
+            )
+          }
+        }
+
+        const material = (object as Mesh).material
+        const list = Array.isArray(material) ? material : [material]
+        for (const m of list) {
+          if (!m) continue
+          const key = materialKey(m)
+          materialKeys.add(key)
+          hasher.addString(key)
+        }
+
+        parts.push(hasher.digest())
+        nodes++
+        vertices += position.count * instances
+      })
+    }
+
+    this.sceneHashCache = {
+      hash: combineHashes(parts),
+      nodes,
+      vertices,
+      materials: materialKeys.size,
+    }
+    return this.sceneHashCache
+  }
+
+  /**
    * 渲染开销探针。
    *
    * 只靠 fps 判断性能是错的：fps 里混着服务端 tick、物理步进、DOM 写入和
@@ -2845,6 +2978,7 @@ export class Renderer {
     geometries: number
     textures: number
     renderPath: 'post' | 'direct'
+    scene: SceneSignature
   } {
     const info = this.gl.info
     return {
@@ -2856,6 +2990,7 @@ export class Renderer {
       geometries: info.memory.geometries,
       textures: info.memory.textures,
       renderPath: this.directRender ? 'direct' : 'post',
+      scene: this.sceneSignature(),
     }
   }
 
