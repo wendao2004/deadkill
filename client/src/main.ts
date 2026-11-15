@@ -461,13 +461,13 @@ function scheduleReconnect(config: MenuConfig): void {
 }
 
 async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
-  // 触屏设备/没有 Pointer Lock 的浏览器：菜单能开、进图却完全不能转视角。
-  // 在进入前拦截，别让玩家进去后才看到角色不能动。
+  // 触屏设备没有键盘，移动端仍不支持；但"有键鼠却拿不到 Pointer Lock"
+  // （iframe sandbox / 权限策略 / 远程桌面）不再拒绝进场 —— InputController
+  // 会自动降级为"移动鼠标转向"，键盘移动与开火照常。
   const touchOnly =
     window.matchMedia('(pointer: coarse)').matches &&
     !window.matchMedia('(any-pointer: fine)').matches
-  const canLock = 'requestPointerLock' in HTMLElement.prototype
-  if (touchOnly || !canLock) {
+  if (touchOnly) {
     exitToMenu('本作需要键盘与鼠标 · 移动端暂不支持')
     return
   }
@@ -564,7 +564,7 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
   prompt = createInteractPrompt()
   settlement = createSettlement()
   pause = createPauseOverlay({
-    onResume: () => setStatus('点击画面锁定鼠标'),
+    onResume: () => setStatus(game?.lookHint() ?? '点击画面锁定鼠标'),
     onQuit: () => {
       if (window.confirm('放弃本局会丢掉这一趟带出来的东西，确定吗？')) {
         exitToMenu('已放弃本局')
@@ -612,8 +612,9 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
     lastHealth = 150
     // 不在这里主动 requestPointerLock：它必须发生在真实用户手势的激活窗口内，
     // 而 start() 里有 await，窗口早已过期，调用会被浏览器拒绝。改成让玩家
-    // 点一下画面 —— InputController 已经在 canvas 的 click 上挂了请求。
-    setStatus('点击画面锁定鼠标')
+    // 点一下画面 —— InputController 已经在 canvas 的 click 上挂了请求；
+    // 拿不到锁时会自动降级，lookHint() 给出对应文案。
+    setStatus(started.lookHint())
   } catch (error) {
     // 失败要能重试：dispose 掉半死不活的实例，把主界面放回来。
     started.dispose()

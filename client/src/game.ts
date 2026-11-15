@@ -528,12 +528,19 @@ export class Game {
     // 只有切槽才会重算，于是选了神射手步枪进局还是端着温菲尔德的模型，
     // 倍镜、后坐力、换弹速度也全按温菲尔德走（服务端给的伤害却是对的）。
     this.heldWeapon = weaponForSlot(options.primaryId, 0)
-    this.input = new InputController(this.renderer.canvas, (locked) => {
-      if (!locked) options.onStatus('已释放鼠标 · 点击画面继续')
-      // 每次点回画面都是一次真实手势，顺手把音频上下文捞起来 ——
-      // Chrome 在标签页失焦后会挂起 AudioContext，不 resume 就永久静音。
-      else void this.audio.unlock().then(() => this.audio.startAmbience())
-    })
+    this.input = new InputController(
+      this.renderer.canvas,
+      (locked) => {
+        if (!locked) options.onStatus('已释放鼠标 · 点击画面继续')
+        // 每次点回画面都是一次真实手势，顺手把音频上下文捞起来 ——
+        // Chrome 在标签页失焦后会挂起 AudioContext，不 resume 就永久静音。
+        else void this.audio.unlock().then(() => this.audio.startAmbience())
+      },
+      (mode) => {
+        // 指针锁不可用/被拒绝：输入层已自动降级，状态条要告诉玩家怎么转向。
+        if (mode === 'fallback') options.onStatus('移动鼠标转向 · 指针锁不可用')
+      },
+    )
     this.input.applySettings(this.settings)
 
     // 注册顺序就是声明，依赖关系由 deps 兜底。这里刻意把四个阶段拆开：
@@ -689,6 +696,11 @@ export class Game {
 
   qualityLabel(): string {
     return this.qualityTier === 'performance' ? '性能' : this.qualityTier === 'balanced' ? '均衡' : '高清'
+  }
+
+  /** 进场/恢复时的转向提示。降级模式没有"点击锁定鼠标"这一步。 */
+  lookHint(): string {
+    return this.input.fallbackLook ? '移动鼠标转向 · 指针锁不可用' : '点击画面锁定鼠标'
   }
 
   /**

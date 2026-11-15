@@ -55,6 +55,18 @@ export class InputController {
   /** 待消费的切枪请求，语义见 takeSlotRequest()。 */
   private slotQueued: number | null = null
   private locked = false
+  /**
+   * 指针锁不可用/被拒绝时的降级：不锁指针，鼠标在画布上移动即转向。
+   *
+   * 浏览器/iframe 可能直接没有 Pointer Lock API，或者有 API 但请求被拒绝
+   * （sandbox、权限策略、某些远程桌面）。这种情况下拒绝进游戏是最差的选择；
+   * 有键盘就能移动，转向退化成"移动鼠标"，仍然可玩。
+   */
+  private fallback = false
+  /** 非锁定模式下的 client 坐标差，避免部分设备 movementX 恒为 0。 */
+  private lastX = 0
+  private lastY = 0
+  private hasLast = false
   /** 指针锁生效的时刻（ms）。用来吞掉「请求锁的那一下点击」变成的开火。 */
   private lockAt = 0
   /** 供 HUD 显示的最近一次按键状态（疾跑/蹲下提示用）。 */
@@ -81,6 +93,7 @@ export class InputController {
   constructor(
     private readonly target: HTMLElement,
     private readonly onLockChange?: (locked: boolean) => void,
+    private readonly onLookMode?: (mode: 'locked' | 'fallback' | 'idle') => void,
   ) {
     window.addEventListener('keydown', this.handleKeyDown)
     window.addEventListener('keyup', this.handleKeyUp)
@@ -90,11 +103,39 @@ export class InputController {
     window.addEventListener('wheel', this.handleWheel, { passive: false })
     window.addEventListener('blur', this.handleBlur)
     document.addEventListener('pointerlockchange', this.handlePointerLock)
+    document.addEventListener('pointerlockerror', this.handlePointerLockError)
     target.addEventListener('click', this.handleCanvasClick)
+    target.addEventListener('mouseleave', this.handleMouseLeave)
+    // 非锁定模式下右键是开镜/重刀，不能让浏览器弹出上下文菜单。
+    target.addEventListener('contextmenu', this.handleContextMenu)
+    if (typeof this.target.requestPointerLock !== 'function') {
+      this.setFallbackLook(true)
+    }
   }
 
   get pointerLocked(): boolean {
     return this.locked
+  }
+
+  /** 是否在使用"无指针锁"的降级转向。 */
+  get fallbackLook(): boolean {
+    return this.fallback
+  }
+
+  /**
+   * 开启/关闭降级转向。API 缺失、请求被拒绝时自动调用；也可以由外层显式指定。
+   * 关闭时恢复系统光标。
+   */
+  setFallbackLook(enabled: boolean): void {
+    if (this.fallback === enabled) return
+    this.fallback = enabled
+    this.hasLast = false
+    this.target.style.cursor = enabled ? 'none' : ''
+    if (enabled) {
+      this.locked = false
+      this.handleBlur()
+    }
+    this.onLookMode?.(enabled ? 'fallback' : this.locked ? 'locked' : 'idle')
   }
 
   dispose(): void {
@@ -106,6 +147,11 @@ export class InputController {
     window.removeEventListener('wheel', this.handleWheel)
     window.removeEventListener('blur', this.handleBlur)
     document.removeEventListener('pointerlockchange', this.handlePointerLock)
+    document.removeEventListener('pointerlockerror', this.handlePointerLockError)
+    this.target.removeEventListener('click', this.handleCanvasClick)
+    this.target.removeEventListener('mouseleave', this.handleMouseLeave)
+    this.target.removeEventListener('contextmenu', this.handleContextMenu)
+    this.target.style.cursor = ''
   }
 
   /** 一局开始时把视角设成服务端给的朝向，避免继承上一局的鼠标状态。 */
@@ -218,7 +264,8 @@ export class InputController {
   }
 
   private handleWheel = (event: WheelEvent): void => {
-    if (!this.locked) return
+    // 非锁定模式只在画布上滚，避免在暂停层/菜单里误切枪。
+    if (!this.locked && (!this.fallback || event.target !== this.target)) return
     if (event.deltaY === 0) return
     // 只看符号：鼠标一格 deltaY 是 100，触控板是小数，用大小判方向会飘。
     this.slotQueued = event.deltaY > 0 ? SLOT_CYCLE_FORWARD : SLOT_CYCLE_BACK
@@ -230,23 +277,50 @@ export class InputController {
   }
 
   private handleMouseMove = (event: MouseEvent): void => {
-    if (!this.locked) return
-    // 锁刚拿到的那几毫秒里，Chrome 会补发一个"光标被挪到窗口中心"的位移，
-    // 值可以上千像素 —— 落到视角上就是"一转进游戏，视角自己甩了大半圈"。
-    // 它和 handleMouseDown 里吞掉的那一击是同一个理由、同一个时间窗。
-    if (performance.now() - this.lockAt < LOOK_GRACE_MS) return
-    // 单事件位移上限：真人甩鼠标一秒 4000px，60fps 下也就 66px/帧；而系统级
-    // 光标跳变、驱动抽风、切换全屏时的一次重排能给出几千像素。夹住它，宁可
-    // 丢这一帧的极端位移 —— 视角猛然翻转会让玩家之后几秒都找不回刚才瞄的人。
-    this.accumX += clamp(event.movementX, -MAX_LOOK_DELTA, MAX_LOOK_DELTA)
-    this.accumY += clamp(event.movementY, -MAX_LOOK_DELTA, MAX_LOOK_DELTA)
+    if (this.locked) {
+      // 锁刚拿到的那几毫秒里，Chrome 会补发一个"光标被挪到窗口中心"的位移，
+      // 值可以上千像素 —— 落到视角上就是"一转进游戏，视角自己甩了大半圈"。
+      // 它和 handleMouseDown 里吞掉的那一击是同一个理由、同一个时间窗。
+      if (performance.now() - this.lockAt < LOOK_GRACE_MS) return
+      // 单事件位移上限：真人甩鼠标一秒 4000px，60fps 下也就 66px/帧；而系统级
+      // 光标跳变、驱动抽风、切换全屏时的一次重排能给出几千像素。夹住它，宁可
+      // 丢这一帧的极端位移 —— 视角猛然翻转会让玩家之后几秒都找不回刚才瞄的人。
+      this.accumX += clamp(event.movementX, -MAX_LOOK_DELTA, MAX_LOOK_DELTA)
+      this.accumY += clamp(event.movementY, -MAX_LOOK_DELTA, MAX_LOOK_DELTA)
+      return
+    }
+
+    if (!this.fallback) return
+    // 降级模式只认画布上的移动：鼠标移到暂停层/菜单上时不能继续转视角。
+    if (event.target !== this.target) {
+      this.hasLast = false
+      return
+    }
+    // 部分浏览器/触控板在非锁定状态下 movementX 恒为 0，用 client 坐标差兜底。
+    // 第一次进入画布只记起点，不产生位移（否则从菜单点进来的那一下会甩视角）。
+    if (!this.hasLast) {
+      this.lastX = event.clientX
+      this.lastY = event.clientY
+      this.hasLast = true
+      return
+    }
+    const dx = event.clientX - this.lastX
+    const dy = event.clientY - this.lastY
+    this.lastX = event.clientX
+    this.lastY = event.clientY
+    this.accumX += clamp(dx, -MAX_LOOK_DELTA, MAX_LOOK_DELTA)
+    this.accumY += clamp(dy, -MAX_LOOK_DELTA, MAX_LOOK_DELTA)
   }
 
   private handleMouseDown = (event: MouseEvent): void => {
-    if (!this.locked) return
-    // 锁生效与这次点击到达只差几毫秒：这次点击是「点画面拿锁定」的手势，
-    // 不是开火指令。不吞掉它，进游戏就会凭空少一发子弹。
-    if (performance.now() - this.lockAt < FIRE_GRACE_MS) return
+    if (this.locked) {
+      // 锁生效与这次点击到达只差几毫秒：这次点击是「点画面拿锁定」的手势，
+      // 不是开火指令。不吞掉它，进游戏就会凭空少一发子弹。
+      if (performance.now() - this.lockAt < FIRE_GRACE_MS) return
+    } else if (!this.fallback || event.target !== this.target) {
+      // 非锁定模式：只有点在画布上才算开火/瞄准，点暂停层按钮不能走火。
+      return
+    }
     if (event.button === 0) {
       this.mouseLeft = true
       this.fireQueued = true
@@ -267,14 +341,41 @@ export class InputController {
   }
 
   private handleCanvasClick = (): void => {
+    // 降级模式不请求锁（API 不存在或已被拒绝），点击直接用于开火。
+    // 同时重置坐标起点：暂停层收起后光标可能已经挪过，不能按旧起点算一个大跳。
+    if (this.fallback) {
+      this.hasLast = false
+      return
+    }
     if (this.locked) return
     void this.target.requestPointerLock?.()
   }
 
+  private handlePointerLockError = (): void => {
+    // 有 API 但被拒绝（iframe sandbox / 权限策略 / 远程桌面）：不要卡在
+    // "点画面没反应"。退化成移动鼠标转向，键盘移动与开火仍然可用。
+    this.setFallbackLook(true)
+  }
+
   private handlePointerLock = (): void => {
     this.locked = document.pointerLockElement === this.target
-    if (this.locked) this.lockAt = performance.now()
-    if (!this.locked) this.handleBlur()
+    if (this.locked) {
+      this.lockAt = performance.now()
+      // 之前因为一次失败进了降级，后来锁又成功了：恢复系统光标与正常路径。
+      if (this.fallback) this.setFallbackLook(false)
+    } else {
+      this.handleBlur()
+    }
     this.onLockChange?.(this.locked)
+  }
+
+  private handleMouseLeave = (): void => {
+    // 光标离开画布后，下一次回来要重新记起点，否则会按离开前的坐标算出一个大跳。
+    this.hasLast = false
+  }
+
+  private handleContextMenu = (event: Event): void => {
+    // 右键是开镜/重刀；非锁定模式下必须自己吞掉浏览器菜单。
+    event.preventDefault()
   }
 }
