@@ -11,7 +11,7 @@
  * 木头脚步声、看到泥屑飞溅。
  */
 
-import type { LevelDef, Vec3 } from '@dk/shared'
+import type { BoxBrush, LevelDef, Vec3 } from '@dk/shared'
 
 /** 脚步/命中推断出的表面。`water` 只出现在水面区域，不会出现在 BoxBrush 上。 */
 export type SurfaceMaterial = 'wood' | 'stone' | 'mud' | 'metal' | 'foliage' | 'water'
@@ -115,6 +115,65 @@ export function surfaceAt(level: LevelDef, point: Vec3, tolerance = 0.45): Surfa
   // 泥屑在半空里飞才更怪。
   if (at.y > level.groundY + 0.35) return 'wood'
   return ground
+}
+
+/** 命中点表面法线（世界空间，单位向量）。贴花靠它贴在墙上而不是永远面向玩家。 */
+export interface SurfaceNormal {
+  x: number
+  y: number
+  z: number
+}
+
+/**
+ * 命中点的表面法线。
+ *
+ * 协议里没有法线：为一发子弹多传三个 float，只为了贴花朝向，不值得。
+ * 客户端有关卡盒刷的完整数据，和 `surfaceAt` 一样就地推断即可。
+ *
+ * 算法：找最近盒子里"最接近表面"的那一轴 —— 点在盒内时各轴到面的距离
+ * 都是负数，绝对值最小（gap 最大）的那一轴就是它贴着的那一面。带 rotY
+ * 的盒子先把法线转回世界空间；rotY 只绕 Y，Y 分量不受影响。
+ *
+ * 不贴盒子的点按地面算（沼泽/采石场的地面都是平面）。命中的是水面或
+ * 半空中的落点时也返回向上：贴花贴在水面/贴在空中都比消失好，
+ * 而"空中落点"本来只可能出现在穿模的极端情况。
+ */
+export function surfaceNormalAt(level: LevelDef, point: Vec3, tolerance = 0.4): SurfaceNormal {
+  const at = toVec3(point)
+  let best: { brush: BoxBrush; dx: number; dz: number } | null = null
+  let bestDistance = tolerance
+  for (const brush of level.boxes) {
+    if (brush.noCollide) continue
+    const { dx, dz } = localXZ(at.x, at.z, brush.x, brush.z, brush.rotY)
+    const ox = Math.max(Math.abs(dx) - brush.hx, 0)
+    const oy = Math.max(Math.abs(at.y - brush.y) - brush.hy, 0)
+    const oz = Math.max(Math.abs(dz) - brush.hz, 0)
+    const distance = Math.hypot(ox, oy, oz)
+    if (distance >= bestDistance) continue
+    bestDistance = distance
+    best = { brush, dx, dz }
+  }
+
+  if (best === null) return { x: 0, y: 1, z: 0 }
+
+  const { brush, dx, dz } = best
+  const dy = at.y - brush.y
+  // gap 越大 = 离那一面越近（点在盒内时全为负，仍挑最大的）。
+  const gx = Math.abs(dx) - brush.hx
+  const gy = Math.abs(dy) - brush.hy
+  const gz = Math.abs(dz) - brush.hz
+  let lx = 0
+  let ly = 0
+  let lz = 0
+  if (gx >= gy && gx >= gz) lx = dx >= 0 ? 1 : -1
+  else if (gy >= gz) ly = dy >= 0 ? 1 : -1
+  else lz = dz >= 0 ? 1 : -1
+
+  const rot = brush.rotY ?? 0
+  if (rot === 0) return { x: lx, y: ly, z: lz }
+  const c = Math.cos(rot)
+  const s = Math.sin(rot)
+  return { x: lx * c - lz * s, y: ly, z: lx * s + lz * c }
 }
 
 /** 命中特效的五档材质（`vfx.ts` 的 ImpactKind 只认这五种）。 */

@@ -24,6 +24,7 @@ import {
   MAX_EVENT_SIZE,
   MAX_INPUTS_PER_PACKET,
   MONSTER_SNAPSHOT_SIZE,
+  MonsterStateCode,
   Msg,
   PLAYER_SNAPSHOT_SIZE,
   PROTOCOL_VERSION,
@@ -231,6 +232,10 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   assert.equal(SNAPSHOT_HEADER, 17)
   assert.equal(PLAYER_SNAPSHOT_SIZE, 37)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)
+  // 调查/搜索是**追加**的状态码：u8 里有空位，快照布局不变，所以不 bump
+  // 协议版本；旧客户端会落到 idle 分支，不会崩。
+  assert.equal(MonsterStateCode.Investigate, 5)
+  assert.equal(MonsterStateCode.Search, 6)
 
   for (const n of [0, 1, 3]) {
     for (const m of [0, 1, 2]) {

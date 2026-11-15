@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 
 // 相对路径的原因同 tests/protocol.test.ts：仓库根没有 @dk/* 的 workspace 链接。
 import {
+  ATTACHMENTS_ENABLED,
+  ATTACHMENT_NONE,
+  ATTACHMENT_SCOPE,
   DEFAULT_SECONDARY_ID,
   DEFAULT_SLOT_ORDER,
   DEFAULT_WEAPON_ID,
@@ -10,6 +13,8 @@ import {
   StateFlags,
   TICK_MS,
   WEAPONS,
+  attachmentOf,
+  clampAttachment,
   canFire,
   canReload,
   addReserve,
@@ -20,6 +25,7 @@ import {
   heldAmmo,
   heldWeapon,
   isSwitching,
+  magazineCap,
   meleeStrike,
   refillSlot,
   requestSwitch,
@@ -260,4 +266,24 @@ test('备弹：换弹从备弹池扣，备弹为 0 时不能再装填', () => {
 
   resetLoadout(lo)
   assert.deepEqual(lo.reserveBySlot, filledReserve(DEFAULT_WEAPON_ID), '重生补满备弹')
+})
+
+// ---------------------------------------------------------------- 配件（暂时收起）
+
+test('配件：总开关关闭时选择被强制回落到"不装"，数值链路不受旧存档影响', () => {
+  // 这段测试钉住的是"先隐藏旧配件系统"这个明确决定（见
+  // shared/src/attachments.ts 的 ATTACHMENTS_ENABLED）。塔科夫式多槽位系统
+  // 落地后把开关打开，这条测试应随之改写。
+  assert.equal(ATTACHMENTS_ENABLED, false)
+  assert.equal(clampAttachment(ATTACHMENT_SCOPE), ATTACHMENT_NONE)
+  assert.equal(attachmentOf(ATTACHMENT_SCOPE).key, 'none')
+  assert.equal(attachmentOf(ATTACHMENT_SCOPE).zoomScale, 1)
+  assert.equal(attachmentOf(ATTACHMENT_SCOPE).magazineBonus, 0)
+
+  // 旧存档里存着 2× 镜也不能凭空多出弹匣容量。
+  const lo = createLoadout(DEFAULT_WEAPON_ID, ATTACHMENT_SCOPE)
+  assert.equal(lo.attachment, 0)
+  assert.equal(lo.ammoBySlot[0], RIFLE.magazine)
+  assert.equal(lo.reserveBySlot[0], RIFLE.reserve)
+  assert.equal(magazineCap(lo), RIFLE.magazine)
 })

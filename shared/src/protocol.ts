@@ -307,7 +307,17 @@ export const MonsterKindCode = {
   Golem: 5,
   Conductor: 6,
 } as const
-export const MonsterStateCode = { Idle: 0, Chase: 1, Attack: 2, Dead: 3, Special: 4 } as const
+export const MonsterStateCode = {
+  Idle: 0,
+  Chase: 1,
+  Attack: 2,
+  Dead: 3,
+  Special: 4,
+  /** 去最后目击点/声源查看。客户端暂时复用 chase 步态。 */
+  Investigate: 5,
+  /** 到达后绕圈搜索。客户端暂时复用 idle 呼吸。 */
+  Search: 6,
+} as const
 
 export interface MonsterSnapshot {
   id: number

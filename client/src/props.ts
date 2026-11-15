@@ -56,6 +56,7 @@ import {
 import type { ComicSurface } from './ink.ts'
 import { OUTLINE_SHARED } from './outline.ts'
 import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './shadows.ts'
+import { handTint, tintInstances } from './procedural-tint.ts'
 
 export interface PropsOptions {
   /** 放大/缩小装饰密度，1 = 正常。低配机器可以给 0.5。 */
@@ -72,6 +73,8 @@ export interface Props {
    * 调 false；加载失败时保持可见，作为回退。
    */
   setNatureVisible(visible: boolean): void
+  /** 天气湿度 0..1：驱动水面雨圈（骤雨才有，死寂没有）。 */
+  setWetness(value: number): void
   dispose(): void
 }
 
@@ -188,6 +191,9 @@ export function buildProps(scene: Scene, level: LevelDef, options?: PropsOptions
     setNatureVisible(visible: boolean): void {
       natureRoot.visible = visible
     },
+    setWetness(value: number): void {
+      if (water) water.wet.value = Math.min(1, Math.max(0, value))
+    },
     update(dt: number): void {
       // 夹住 dt：切后台回来时 dt 可能是好几秒，草会瞬间抽一下。
       time += Math.min(Math.max(dt, 0), 0.1)
@@ -214,6 +220,8 @@ export function buildProps(scene: Scene, level: LevelDef, options?: PropsOptions
 const WATER_DEEP = 0x1d2a2a
 const WATER_PALE = 0x3f5652
 const WATER_CREST = 0x7d968c
+/** 藻膜/浮萍的暗绿：比芦苇更深、更脏，不能读成"发光的草地"。 */
+const WATER_SCUM = 0x4a5530
 
 /** 芦苇目标数量（密度 1 时）；一整片是**一次** draw call。 */
 const REED_TARGET = 420
@@ -527,7 +535,7 @@ function buildWater(
   level: LevelDef,
   bag: GpuBag,
   wetness: (x: number, z: number) => number,
-): { time: { value: number } } {
+): { time: { value: number }; wet: { value: number } } {
   const size = level.boundsHalf * 2
   const segments = 64
   const geo = new PlaneGeometry(size, size, segments, segments)
@@ -543,6 +551,8 @@ function buildWater(
   geo.setAttribute('aMarsh', new Float32BufferAttribute(marshData, 1))
 
   const time = { value: 0 }
+  /** 天气湿度：骤雨才有雨圈，死寂时水面是平的。由 Renderer.setWetness 喂。 */
+  const wet = { value: 0.55 }
   const mat = new ShaderMaterial({
     transparent: true,
     depthWrite: false,
@@ -554,9 +564,11 @@ function buildWater(
     fog: false,
     uniforms: {
       uTime: time,
+      uWet: wet,
       uDeep: { value: new Color(WATER_DEEP) },
       uPale: { value: new Color(WATER_PALE) },
       uCrest: { value: new Color(WATER_CREST) },
+      uScum: { value: new Color(WATER_SCUM) },
       uFogColor: { value: new Color(level.fogColor) },
       uFogDensity: { value: level.fogDensity },
     },
@@ -576,11 +588,22 @@ function buildWater(
     ].join('\n'),
     fragmentShader: [
       'uniform float uTime;',
+      'uniform float uWet;',
       'uniform vec3 uDeep;',
       'uniform vec3 uPale;',
       'uniform vec3 uCrest;',
+      'uniform vec3 uScum;',
       'uniform vec3 uFogColor;',
       'uniform float uFogDensity;',
+      'float waterHash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }',
+      'float waterNoise(vec2 p) {',
+      '  vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);',
+      '  float a = waterHash(i);',
+      '  float b = waterHash(i + vec2(1.0, 0.0));',
+      '  float c = waterHash(i + vec2(0.0, 1.0));',
+      '  float d = waterHash(i + vec2(1.0, 1.0));',
+      '  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);',
+      '}',
       'varying vec2 vWorld;',
       'varying vec3 vViewPos;',
       'varying float vMarsh;',
@@ -599,6 +622,35 @@ function buildWater(
       '  col = mix(col, uPale, crest * 0.35);',
       '  col = mix(col, uCrest, smoothstep(0.90, 0.99, band) * 0.45);',
       '  col = mix(col, uDeep * 1.15, trough * 0.4);',
+      '  // Algae mats: two scales of world-space noise drifting very slowly.',
+      '  // This is what separates a swamp from a clean pond; without it the',
+      '  // water is one flat teal sheet with animated lines on top.',
+      '  float scumN = waterNoise(p * 0.11 + vec2(3.1, 7.7) + uTime * 0.006);',
+      '  scumN = scumN * 0.65 + 0.35 * waterNoise(p * 0.42 + vec2(11.7, 2.3));',
+      '  float scum = smoothstep(0.47, 0.72, scumN);',
+      '  col = mix(col, uScum, scum * 0.42);',
+      '  // Duckweed specks: fade past ~30m, otherwise they shimmer sub-pixel.',
+      '  float speckFade = 1.0 - smoothstep(18.0, 34.0, length(vViewPos));',
+      '  float speck = step(0.975, waterHash(floor(p * 26.0))) * speckFade;',
+      '  col = mix(col, uScum * 1.35, speck * 0.55);',
+      '  // Shore band: wetness just above the discard threshold reads as a pale',
+      '  // muddy rim, so the water does not end in a hard alpha edge.',
+      '  float shore = smoothstep(0.02, 0.08, vMarsh) * (1.0 - smoothstep(0.10, 0.26, vMarsh));',
+      '  col = mix(col, uPale * 0.9, shore * 0.35);',
+      '  // Rain rings: expanding rings per ~0.6m cell, gated to heavy weather so',
+      '  // a dead-calm match keeps a flat sheet. Each cell gets its own phase.',
+      '  float rainAmt = smoothstep(0.45, 0.80, uWet);',
+      '  if (rainAmt > 0.001) {',
+      '    vec2 rp = p * 1.6;',
+      '    vec2 rc = floor(rp);',
+      '    vec2 rf = fract(rp) - 0.5;',
+      '    float rh = waterHash(rc + 7.1);',
+      '    float phase = fract(uTime * 0.55 + rh);',
+      '    float radius = phase * 0.48;',
+      '    float ring = 1.0 - smoothstep(0.015, 0.05, abs(length(rf) - radius));',
+      '    float ringMask = ring * step(0.55, rh) * (1.0 - phase);',
+      '    col = mix(col, uCrest, ringMask * rainAmt * 0.55);',
+      '  }',
       '  float alpha = smoothstep(0.02, 0.30, vMarsh) * 0.62;',
       '  // 自己算 FogExp2：纯 ShaderMaterial 不接 scene.fog，不补这一步的话近处的',
       '  // 水被雾压暗、远处反而亮，一眼看穿。',
@@ -621,7 +673,7 @@ function buildWater(
   // 透明队列里画得最早 → 层次是"雾墙 → 水 → 其他透明物"。
   mesh.renderOrder = -5
   root.add(mesh)
-  return { time }
+  return { time, wet }
 }
 
 // ------------------------------------------------------------------ 芦苇
@@ -866,6 +918,8 @@ function buildDeadTrees(
   const trunkMatrix = new Matrix4()
   // 分叉的落点要在父枝的矩阵上算，所以留一个复用的向量，别在循环里 new。
   const forkAt = new Vector3()
+  // 同一棵树的树干与所有枝条共用一个色差，否则枝会像从别的树上借来的。
+  const treeTint = new Color()
   let branchIndex = 0
   for (let i = 0; i < trees.length; i++) {
     const tree = trees[i]!
@@ -875,6 +929,8 @@ function buildDeadTrees(
     dummy.updateMatrix()
     trunkMatrix.copy(dummy.matrix)
     trunks.setMatrixAt(i, trunkMatrix)
+    handTint(i, 0.14, 0.06, treeTint)
+    trunks.setColorAt(i, treeTint)
     // 墨线外壳共享同一份实例矩阵，描边于是严丝合缝地包住树干。
     hulls.setMatrixAt(i, trunkMatrix)
 
@@ -890,7 +946,9 @@ function buildDeadTrees(
       dummy.rotation.set(Math.cos(swing) * tilt, swing, Math.sin(swing) * tilt)
       dummy.scale.set(tree.radius * 0.9, length, tree.radius * 0.9)
       dummy.updateMatrix()
-      branches.setMatrixAt(branchIndex++, dummy.matrix)
+      const branchAt = branchIndex++
+      branches.setMatrixAt(branchAt, dummy.matrix)
+      branches.setColorAt(branchAt, treeTint)
 
       // 分叉：四根直枝的剪影是"四根插在地上的棍子"，一根枝上再岔一根才读成树。
       // 只长在第 1、3 根上，并且更细更短 —— 每根枝都对称地岔一下就成了模型标本。
@@ -903,13 +961,17 @@ function buildDeadTrees(
       dummy.rotation.set(Math.cos(forkSwing) * forkTilt, forkSwing, Math.sin(forkSwing) * forkTilt)
       dummy.scale.set(tree.radius * 0.5, length * 0.42, tree.radius * 0.5)
       dummy.updateMatrix()
-      branches.setMatrixAt(branchIndex++, dummy.matrix)
+      const forkBranch = branchIndex++
+      branches.setMatrixAt(forkBranch, dummy.matrix)
+      branches.setColorAt(forkBranch, treeTint)
     }
   }
   trunks.instanceMatrix.needsUpdate = true
   hulls.instanceMatrix.needsUpdate = true
+  if (trunks.instanceColor) trunks.instanceColor.needsUpdate = true
   branches.count = branchIndex
   branches.instanceMatrix.needsUpdate = true
+  if (branches.instanceColor) branches.instanceColor.needsUpdate = true
   root.add(trunks, hulls, branches)
   return trees
 }
@@ -1093,6 +1155,8 @@ function buildFence(
   bag.add(posts)
   for (let i = 0; i < postCount; i++) posts.setMatrixAt(i, postMatrices[i]!)
   posts.instanceMatrix.needsUpdate = true
+  // 同一段栅栏的桩与横杆也各自有新旧色差：整排同色会读成一道塑料围栏。
+  tintInstances(posts, postCount, 0.10, 0.04)
   root.add(posts)
 
   if (railCount > 0) {
@@ -1100,6 +1164,7 @@ function buildFence(
     bag.add(rails)
     for (let i = 0; i < railCount; i++) rails.setMatrixAt(i, railMatrices[i]!)
     rails.instanceMatrix.needsUpdate = true
+    tintInstances(rails, railCount, 0.10, 0.04)
     root.add(rails)
   }
 }
@@ -1731,6 +1796,8 @@ function buildSearchSpots(root: Group, level: LevelDef, bag: GpuBag, gradientMap
     }
     mesh.instanceMatrix.needsUpdate = true
     hull.instanceMatrix.needsUpdate = true
+    // 箱子/麻袋/尸体各有一点自己的旧色，不然一排搜刮点像复制粘贴。
+    tintInstances(mesh, members.length, 0.12, 0.05)
     root.add(mesh)
     root.add(hull)
   }
@@ -1878,6 +1945,8 @@ function placeInstances(
   }
   mesh.instanceMatrix.needsUpdate = true
   if (hulls) hulls.instanceMatrix.needsUpdate = true
+  // 墓碑/马车/长椅这些大件各给一点旧色：形状已经随机，颜色不能再整齐。
+  tintInstances(mesh, spots.length, 0.12, 0.05)
   root.add(mesh)
   if (hulls) root.add(hulls)
 }
@@ -1945,6 +2014,7 @@ function buildRails(
     sleepers.setMatrixAt(i, dummy.matrix)
   }
   sleepers.instanceMatrix.needsUpdate = true
+  tintInstances(sleepers, count, 0.10, 0.04)
   group.add(sleepers)
   root.add(group)
 }

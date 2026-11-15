@@ -38,6 +38,9 @@ pnpm --filter @dk/client dev
 操作：`WASD` 移动 · `Shift` 疾跑 · `Ctrl` 蹲 · `空格` 跳 ·
 `左键` 开火 · `右键` 瞄准 · `R` 换弹 · `Esc` 释放鼠标
 
+**QA / 验收**：固定 seed、画质档、机位、冻结帧、无音频、基准巡游，以及
+`window.__stats()` 等诊断全局，见 [docs/QA与验收.md](docs/QA与验收.md)。
+
 ## 目录结构
 
 ```

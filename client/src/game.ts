@@ -41,6 +41,7 @@ import {
   switchScale,
   buildLevelWorld,
   attachmentOf,
+  clampAttachment,
   CONTRACTS,
   setDoorOpen,
   clamp,
@@ -76,11 +77,12 @@ import { createMapOverlay, type MapOverlay } from './map.ts'
 import { InputController, SLOT_CYCLE_BACK, SLOT_CYCLE_FORWARD } from './input.ts'
 import { Net, type CloseInfo } from './net.ts'
 import { Renderer } from './render.ts'
-import { impactSurfaceOf, surfaceAt } from './surfaces.ts'
+import { impactSurfaceOf, surfaceAt, surfaceNormalAt } from './surfaces.ts'
 import type { MarkerClue, ObjectiveView } from './markers.ts'
 import type { ImpactKind } from './vfx.ts'
 import type { MonsterView } from './monsters.ts'
 import { loadSavedSettings, type GraphicsQuality, type MenuSettings } from './settings.ts'
+import { applyQaSettings, diag, qa, summarizeFrames, type QaCamera } from './qa.ts'
 
 /** 空数组常量：每帧给罗盘传"没有撤离点"时不分配新数组。 */
 const NO_POINTS: { x: number; z: number }[] = []
@@ -132,6 +134,23 @@ function motionScaleOf(setting: MenuSettings['cameraMotion']): number {
 const RESULT_DELAY_MS = 2400
 /** 空仓"咔"的最短间隔（ms）。 */
 const DRY_FIRE_GAP_MS = 320
+
+/** QA 基准：预热帧数（跳过着色器编译/纹理上传）与采样帧数（约 10 秒）。 */
+const BENCH_WARMUP = 90
+const BENCH_FRAMES = 600
+
+/**
+ * 天气 → 场景湿度。只影响表面着色，不参与任何判定。
+ *
+ * 死寂最干（地面泛白、木纹清楚），骤雨最湿（朝上的面压暗、高光收紧），
+ * 浓雾介于两者之间。玩家不会读这个数，但会立刻感觉"这一局和上一局不一样"。
+ */
+const WETNESS_BY_MODIFIER: Record<string, number> = {
+  calm: 0.35,
+  fog: 0.8,
+  storm: 1,
+  swarm: 0.45,
+}
 
 /** 可搜容器的中文名。服务端只给类型码，措辞留在客户端。 */
 const SEARCH_LABEL: Record<string, string> = {
@@ -210,6 +229,11 @@ export interface GameOptions {
   onStatus: (text: string) => void
   /** 连接关闭。带 code/transient，靠它决定重连还是回大厅。 */
   onClose: (info: CloseInfo) => void
+  /**
+   * 握手成功、已经拿到 playerId。重连成功时用它把"连续重连次数"清零：
+   * 否则一场 15 分钟里断三次网，第四次就再也连不回来了。
+   */
+  onConnected?: () => void
   onHud: (hud: HudState) => void
   /**
    * 一局结束、横幅播完之后才调：先让"撤离成功 / 狩猎失败"四个字落进眼里，
@@ -338,6 +362,10 @@ export class Game {
   private fps = 0
   private lastHudAt = 0
   private localCursor = 0
+  /** QA 基准：逐帧毫秒采样与巡游角度。只在 ?bench=1 时使用。 */
+  private readonly benchSamples: number[] = []
+  private benchAngle = 0
+  private benchDone = false
 
   /**
    * 每帧各阶段耗时的移动平均（毫秒）。
@@ -391,7 +419,7 @@ export class Game {
    * 而 main.ts 已经要管 DOM、主界面、进出场了，再让它当设置的二传手，
    * 任何一次"忘记透传"都会让滑条看起来没反应。
    */
-  private settings: MenuSettings = loadSavedSettings()
+  private settings: MenuSettings = applyQaSettings(loadSavedSettings())
   /** 当前实际画质档（auto 会被解析成具体档；运行中只在持续掉帧时降档）。 */
   private qualityTier: 'performance' | 'balanced' | 'quality' = 'balanced'
   /** 连续多少帧明显超标；满 60 帧才动分辨率/画质，避免被单次尖峰带着抖。 */
@@ -418,7 +446,15 @@ export class Game {
   private wallBlock = 0
   private readonly wallDir = { x: 0, y: 0, z: 0 }
 
+  /**
+   * 本局主武器配件。当前旧系统已收起（见 attachments.ts 的
+   * ATTACHMENTS_ENABLED），clamp 后恒为 0；留着这个字段是为了重做时
+   * 只改 clamp 的实现，而不用把散在四条链路里的读取点再找一遍。
+   */
+  private readonly attachment: number
+
   constructor(private readonly options: GameOptions) {
+    this.attachment = clampAttachment(options.attachment ?? 0)
     this.kernel = new Kernel<ClientContext>({
       hz: 60,
       // 上限不是一个"性能参数"，而是协议参数：一包最多 8 条输入，
@@ -435,7 +471,7 @@ export class Game {
     this.renderer = new Renderer(options.container, options.level)
     // 配件外观在渲染器建好后立刻生效：它只影响枪模上的镜筒/消音器，
     // 数值效果在服务端与 updateCamera 里各自处理。
-    this.renderer.setWeaponAttachment(options.attachment ?? 0)
+    this.renderer.setWeaponAttachment(this.attachment)
     // 反馈层挂 body 而不是 #app：镜筒 #scope 是 fixed 层（z-index 5），
     // #app 会形成自己的层叠上下文，挂在里面的命中标记/击杀播报会被镜筒
     // 一起吃掉。body 直属 + z-index 8 让它稳定压在镜筒之上。
@@ -449,6 +485,12 @@ export class Game {
     // 第一帧前按 GPU/设置定型：核显/软件渲染直接从性能档起步，
     // 避免"先卡十秒再自动降档"。
     this.applyGraphicsQuality(this.settings.graphics)
+    // QA 覆盖排在 applyGraphicsQuality 之后：画质档会重设泛光与接触阴影，
+    // 早一步设置 postEnabled 会被档位覆盖，?post=0 就时灵时不灵。
+    if (!qa.post) this.renderer.setPostEnabled(false)
+    if (qa.wet !== null) this.renderer.setWetness(qa.wet)
+    this.renderer.setFixedCamera(qa.cam)
+    this.renderer.setViewmodelVisible(qa.viewmodel)
     this.audio.setVolume(this.settings.volume)
     // 目标 HUD 单独一层（hud.css 里 position:fixed、z-index:7），挂 body
     // 而不是 #app：它必须能盖在镜筒遮罩上，开镜时计时/线索/撤离进度仍然可读。
@@ -510,6 +552,9 @@ export class Game {
    * 而且不会报错 —— 这是 WebAudio 最典型的"什么都没坏但就是没声音"。
    */
   async unlockAudio(): Promise<void> {
+    // ?noaudio=1：连上下文都不建。无声环境的基准/截图里，AudioContext 的
+    // resume 是少数还会拖住启动链的异步操作，跳过它就少一个变量。
+    if (qa.noaudio) return
     await this.audio.unlock()
     this.audio.startAmbience()
   }
@@ -564,13 +609,14 @@ export class Game {
       this.options.traits,
       this.options.contract ?? 0,
       this.options.extras ?? 0,
-      this.options.attachment ?? 0,
+      this.attachment,
       this.options.squad ?? 0,
       {
       onWelcome: (info) => {
         this.myId = info.playerId
         this.clockOffset = info.serverTime - performance.now()
         this.clockSynced = true
+        this.options.onConnected?.()
         this.character = new Character(this.world!, info.spawn)
         // 出生后先 step 一次，让新碰撞体进入本地物理世界。
         this.world!.step()
@@ -606,10 +652,17 @@ export class Game {
     })
   }
 
-  dispose(): void {
+  /**
+   * 拆掉这一把游戏实例。
+   *
+   * @param leave false = 只为重连腾地方：socket 只关传输层，告诉服务端
+   *   "保留角色，我马上用新连接回来"。发 1000 的话服务端会立刻删角色，
+   *   重连就变成重开一局。
+   */
+  dispose(leave = true): void {
     this.running = false
     cancelAnimationFrame(this.raf)
-    this.net.close()
+    this.net.close(leave)
     this.input.dispose()
     this.feedback.dispose()
     this.objectiveHud?.dispose()
@@ -636,9 +689,55 @@ export class Game {
     return this.qualityTier === 'performance' ? '性能' : this.qualityTier === 'balanced' ? '均衡' : '高清'
   }
 
+  /**
+   * QA 探针：一帧里所有"能定位性能/状态"的读数。
+   *
+   * 没有它就只能靠 fps 猜：fps 里混着服务端 tick、物理步进、DOM 写入和
+   * 浏览器合成，看不出钱花在哪。draw call / 三角形 / 纹理 / 程序数是
+   * 唯一能直接回答"是几何太多还是着色太贵"的一组数。
+   */
+  diagnostics(): Record<string, unknown> {
+    const render = this.renderer.stats()
+    return {
+      fps: Math.round(this.fps * 10) / 10,
+      // 有真实 fps 时以它为准：adaptResolution 在 QA 固定档下会提前返回，
+      // frameMs 会停在初值，拿它判断"跑多快"会得出错误结论。
+      frameMs: Math.round((this.fps > 0 ? 1000 / this.fps : this.frameMs) * 100) / 100,
+      tick: this.lastSnapshot?.tick ?? 0,
+      ping: this.estimatePing(),
+      quality: this.qualityTier,
+      gpu: this.renderer.gpuLabel(),
+      scale: Math.round(this.renderer.getScale() * 100) / 100,
+      steps: this.lastKernelSteps,
+      pending: this.pending.length,
+      kernelErrors: this.kernel.errors.length,
+      calls: render.calls,
+      triangles: render.triangles,
+      lines: render.lines,
+      points: render.points,
+      programs: render.programs,
+      geometries: render.geometries,
+      textures: render.textures,
+      width: this.viewWidth,
+      height: this.viewHeight,
+      ads: this.input.ads,
+      benchDone: this.benchDone,
+    }
+  }
+
   /** M 键：打开/关闭猎场地图。地图打开时游戏继续跑，玩家仍然暴露在危险里。 */
   toggleMap(): void {
     this.mapOverlay?.toggle()
+  }
+
+  /** QA：`?show=` / `?bench=` 在拿到关卡后覆盖世界相机。传 null 恢复第一人称。 */
+  setFixedCamera(camera: QaCamera | null): void {
+    this.renderer.setFixedCamera(camera)
+  }
+
+  /** QA：`?show=mats|fx|weapon` 的子系统展示。 */
+  setShowcase(mode: 'mats' | 'fx' | 'weapon' | null, overrideCamera = true): void {
+    this.renderer.setShowcase(mode, overrideCamera)
   }
 
   /** 主界面改设置时调用，四条链路各自生效，不需要重开一局。 */
@@ -692,11 +791,17 @@ export class Game {
 
     // dt 上限 100ms：切标签页回来时 dt 可能是好几秒。内核的 FixedClock
     // 再做一次夹紧与丢弃积压，这里是第一道闸。
-    const rawDt = Math.min((now - this.lastFrameAt) / 1000, 0.1)
+    // QA 固定步（?dt=）：无头浏览器的 rAF 可能被节流到 1Hz，真实 dt 完全
+    // 不可复现；钉住之后同一 URL 每次跑出的模拟步数一致。?dt=0 冻结模拟。
+    const realDt = Math.min((now - this.lastFrameAt) / 1000, 0.1)
+    const rawDt = qa.fixedDt !== null ? qa.fixedDt : realDt
     this.lastFrameAt = now
     this.frameNow = now
+    this.updateBench(realDt)
 
-    this.fpsAccum += rawDt
+    // fps 永远用真实帧时长：?dt=0 冻结模拟时，画面仍然在按 rAF 重绘，
+    // 报 0fps 会让"基准/截图到底跑没跑"变成误判。
+    this.fpsAccum += realDt
     this.fpsFrames++
     if (this.fpsAccum >= 0.5) {
       this.fps = this.fpsFrames / this.fpsAccum
@@ -727,6 +832,45 @@ export class Game {
     // 自适应分辨率用渲染帧时长决策，而不是固定步数：它要解决的是 GPU
     // 花在画布上的时间，和模拟跑了几步无关。
     this.adaptResolution(rawDt)
+
+    // 诊断打点放在最后：这一帧该画的都画完了，__ready 才有意义。
+    diag.markFrame()
+  }
+
+  /**
+   * QA 基准巡游：绕玩家转一圈，丢掉预热帧后按帧时长统计 avg/median/p99。
+   *
+   * 为什么用"绕人转"而不是固定机位：固定机位看不到背面/侧面新增的几何，
+   * 一次基准会把优化过的场景拍成没优化过。绕满 360° 才覆盖到全部 draw call。
+   * 预热 90 帧是因为前两秒包含着色器编译与纹理上传，那不是稳态性能。
+   */
+  private updateBench(realDt: number): void {
+    if (!qa.bench || this.benchDone) return
+    const target = {
+      x: this.renderFeet.x,
+      y: this.renderFeet.y + 1.4,
+      z: this.renderFeet.z,
+    }
+    this.benchAngle += realDt * 0.9
+    const radius = 7
+    this.renderer.setFixedCamera({
+      x: target.x + Math.cos(this.benchAngle) * radius,
+      y: target.y + 1.6,
+      z: target.z + Math.sin(this.benchAngle) * radius,
+      tx: target.x,
+      ty: target.y,
+      tz: target.z,
+    })
+
+    if (diag.frames < BENCH_WARMUP) return
+    this.benchSamples.push(realDt * 1000)
+    if (this.benchSamples.length < BENCH_FRAMES) return
+
+    this.benchDone = true
+    const result = summarizeFrames(this.benchSamples, this.renderer.gpuLabel())
+    ;(globalThis as Record<string, unknown>).__bench = result
+    ;(globalThis as Record<string, unknown>).__benchDone = true
+    console.info('[bench]', result)
   }
 
   /**
@@ -742,6 +886,9 @@ export class Game {
    */
   private adaptResolution(dt: number): void {
     if (dt <= 0) return
+    // QA 固定步/固定分辨率（?dt / ?scale）时不自适应：基准要测"这个档位
+    // 到底跑多少帧"，中途降档会让 p99 变成一个混合了两种画质的数。
+    if (qa.fixedDt !== null || qa.renderScale !== null) return
     const budget = 1000 / 60
     this.frameMs += (dt * 1000 - this.frameMs) * 0.1
 
@@ -1486,6 +1633,27 @@ export class Game {
       classify: () => null,
     })
     if (!hit.hit) return
+
+    const eye = this.character?.eye
+    const distance = eye ? dist(eye, hit.point) : 0
+    const kind = this.surfaceAt(hit.point)
+
+    // 粒子是"这一下"，所有能看清的距离都画；贴花与点光只在近处有意义。
+    // 60m 外的粒子在夜雾里本来就只有一两个像素，省下来的是池子容量。
+    if (distance < 60) {
+      // 复用 spawnImpact 的方向缓冲，避免每发子弹分配一个向量。协议里的
+      // dir 应当已是单位向量，这里仍归一化一次，防止手改包把粒子甩成一片。
+      const len = Math.hypot(dir.x, dir.y, dir.z) || 1
+      this.impactDir.x = dir.x / len
+      this.impactDir.y = dir.y / len
+      this.impactDir.z = dir.z / len
+      this.renderer.effects.impact(hit.point, this.impactDir, kind)
+    }
+    if (distance < 45) {
+      const normal = surfaceNormalAt(this.options.level, hit.point)
+      this.renderer.addDecal(hit.point, normal, kind)
+    }
+    if (distance < 25) this.renderer.impactFlash(hit.point, kind)
     this.audio.impact(hit.point)
   }
 
@@ -1549,7 +1717,7 @@ export class Game {
       spec?.kind === 'sniper' ? 1.45 : spec?.kind === 'shotgun' ? 1.5 : spec?.kind === 'revolver' ? 0.8 : 1
     if (spec?.kind === 'revolver') this.options.onTraitFx?.(Trait.Ambidextrous)
     if (this.input.ads) this.options.onTraitFx?.(Trait.IronGrip)
-    this.renderer.onLocalShot(kick * attachmentOf(this.options.attachment ?? 0).recoilScale)
+    this.renderer.onLocalShot(kick * attachmentOf(this.attachment).recoilScale)
     // 左轮吐轮：每发转 60°，棘轮声必须跟着枪机走，而不是跟着键盘。
     if (spec?.kind === 'revolver') this.audio.cylinderRatchet(false)
     // 最后一发：枪机空仓的机构声。它和"扣空扳机"的 dryFire 是两件事。
@@ -1575,7 +1743,7 @@ export class Game {
     this.audio.shot(
       meNow?.weaponId ?? 1,
       0,
-      (WEAPONS[meNow?.weaponId ?? 1]?.loudness ?? 1) * attachmentOf(this.options.attachment ?? 0).soundScale,
+      (WEAPONS[meNow?.weaponId ?? 1]?.loudness ?? 1) * attachmentOf(this.attachment).soundScale,
     )
   }
 
@@ -1674,6 +1842,10 @@ export class Game {
       const modifier = getModifier(objective.modifier)
       this.renderer.setModifier(modifier.fogScale, modifier.fogTint)
       this.renderer.setRain(modifier.key === 'storm')
+      // ?wet= 是显式覆盖：A/B 截图要固定湿度，不能被这一局的天气改掉。
+      if (qa.wet === null) {
+        this.renderer.setWetness(WETNESS_BY_MODIFIER[modifier.key] ?? 0.55)
+      }
     }
 
     // 线索文献：新点亮的那一位对应一段故事；三条集齐再解开一张"解语"。
@@ -1801,6 +1973,24 @@ export class Game {
       selfDowned:
         ((this.lastSnapshot?.players.find((p) => p.id === this.myId)?.flags ?? 0) & StateFlags.Downed) !== 0,
       revivePct: (this.loot?.revivePct ?? 0) / 100,
+      // 队友列表：同一 team 的其他人。快照里没有昵称，先用 id 编号；
+      // 距离用本地脚底算，每帧都是最新的。
+      teammates: (() => {
+        const meNow = this.lastSnapshot?.players.find((p) => p.id === this.myId)
+        const team = meNow?.team ?? 0
+        if (team <= 0 || team >= 1000) return []
+        const feet = this.character?.feet
+        return (this.lastSnapshot?.players ?? [])
+          .filter((p) => p.id !== this.myId && p.team === team)
+          .map((p) => ({
+            id: p.id,
+            name: '猎人 #' + p.id,
+            health: p.health,
+            downed: (p.flags & StateFlags.Downed) !== 0,
+            alive: (p.flags & StateFlags.Alive) !== 0,
+            distance: feet ? Math.hypot(p.x - feet.x, p.z - feet.z) : 0,
+          }))
+      })(),
       outcome: packet?.outcome ?? 'none',
       // 三槽属于"目标 HUD"而不是"我的读数"：它们是常驻的三格栏位图示，
       // 和线索/撤离一样刷新频率低，走同一份缓存比对。
@@ -2170,7 +2360,7 @@ export class Game {
       this.heldSlot,
       this.switchProgress(),
       this.meleeProgress(),
-      (WEAPONS[this.heldWeapon]?.adsZoom ?? 1) * attachmentOf(this.options.attachment ?? 0).zoomScale,
+      (WEAPONS[this.heldWeapon]?.adsZoom ?? 1) * attachmentOf(this.attachment).zoomScale,
       this.wallBlock,
     )
     // 指南针/撤离方位必须每帧跟着 yaw 走，不能等 1Hz 的目标包。

@@ -222,11 +222,20 @@ interface MonsterEntity {
 /** 状态字符串 → 线上 1 字节码。放在模块级：每个世界都建一份表纯属浪费。 */
 const STATE_CODES: Record<MonsterState, number> = {
   idle: MonsterStateCode.Idle,
+  investigate: MonsterStateCode.Investigate,
   chase: MonsterStateCode.Chase,
   attack: MonsterStateCode.Attack,
+  search: MonsterStateCode.Search,
   special: MonsterStateCode.Special,
   dead: MonsterStateCode.Dead,
 }
+
+/** 同时允许出手的怪物数。手册建议 2–3：超过 3 只集火，玩家没有操作空间。 */
+const MAX_ATTACKERS = 3
+/** 攻击令牌租期（毫秒）：一次出手后，这段时间内它仍占用一个名额。 */
+const ATTACK_TOKEN_MS = 1250
+/** 同伴警报半径（米）：一只怪锁敌后，附近的同伴去同一个方向看看。 */
+const RALLY_RADIUS = 18
 
 const KIND_CODES: Record<MonsterKind, number> = {
   grunt: MonsterKindCode.Grunt,
@@ -481,12 +490,21 @@ export class World {
     tick: number
     dtMs: number
     visible?: (player: MonsterSenses) => boolean
+    canAttack: boolean
   } = {
     players: this.senses,
     tick: 0,
     dtMs: TICK_MS,
     visible: (player: MonsterSenses) => this.gunnerSees(player),
+    canAttack: true,
   }
+  /**
+   * 攻击令牌：怪物 id → 到期 tick。
+   *
+   * 只统计"真的出手了"的怪（AI 返回 hit/shot），不按状态计数 —— 一只在
+   * 冷却里站着的怪不应该占名额。令牌到期后自动释放，下一次出手重新申请。
+   */
+  private readonly attackTokens = new Map<number, number>()
   /** 当前正在决策的枪手的眼睛位置（由 stepMonsters 填，见 aiInput）。 */
   private sightX = 0
   private sightY = 0
@@ -823,6 +841,10 @@ export class World {
       this.senses.push({ id: player.id, x: feet.x, z: feet.z, alive: true })
     }
     this.aiInput.tick = this.tick
+    // 先释放到期令牌：不清理的话，一场里死过几只怪之后名额会被永久占满。
+    for (const [id, expiry] of this.attackTokens) {
+      if (expiry <= this.tick) this.attackTokens.delete(id)
+    }
 
     let moved = false
     for (const entity of this.monsters) {
@@ -838,7 +860,27 @@ export class World {
       this.sightY = data.y + spec.height * MONSTER_EYE_RATIO
       this.sightZ = data.z
 
+      // 攻击令牌：已经占着名额的怪继续打；否则只有前 3 只可以出手。
+      // 被拒绝的怪保持 attack 状态、不消耗冷却，下一 tick 再申请。
+      this.aiInput.canAttack =
+        this.attackTokens.has(data.id) || this.attackTokens.size < MAX_ATTACKERS
+
       const result = stepMonster(data, this.aiInput, this.rng)
+
+      // 真的打出伤害/子弹才占名额。到期自动释放，固定 1.25s 的出手窗口。
+      if (result.hit !== null || result.shot !== null) {
+        this.attackTokens.set(data.id, this.tick + Math.ceil(ATTACK_TOKEN_MS / TICK_MS))
+      }
+
+      // 首只锁敌的怪把附近同伴引向同一个位置：不是全图报警，只有 18m 内、
+      // 且还没锁定目标的怪会转成 investigate。
+      if (result.aggroed && data.targetId !== 0) {
+        const rallyTarget = this.players.get(data.targetId)
+        if (rallyTarget && rallyTarget.alive) {
+          const feet = rallyTarget.character.feet
+          this.alertMonsters(feet.x, feet.z, RALLY_RADIUS)
+        }
+      }
 
       // 大型 Boss 的绕障：把 AI 的"直线奔目标"临时旋转 90°，贴着墙滑出去。
       // 只在上一轮连续撞墙后才启动，正常追击时完全不干预。
@@ -894,6 +936,27 @@ export class World {
     }
 
     if (moved) this.physics.propagateModifiedBodyPositionsToColliders()
+  }
+
+  /**
+   * 把 (x,z) 处的动静告诉附近还没锁定目标的怪。
+   *
+   * 不覆盖已锁定目标的怪：正在追人的怪不该被一声枪响叫走。也不叫醒尸体。
+   * 噪声只写位置与 tick，由共享 AI 决定转 investigate 还是继续巡逻。
+   */
+  private alertMonsters(x: number, z: number, radius: number): void {
+    if (radius <= 0) return
+    const r2 = radius * radius
+    for (const entity of this.monsters) {
+      const data = entity.data
+      if (data.state === 'dead' || data.targetId !== 0) continue
+      const dx = data.x - x
+      const dz = data.z - z
+      if (dx * dx + dz * dz > r2) continue
+      data.noiseX = x
+      data.noiseZ = z
+      data.noiseTick = this.tick
+    }
   }
 
   /** 枪手的眼睛/枪口位置。见 MONSTER_EYE_RATIO。 */
@@ -1256,6 +1319,8 @@ export class World {
   }
 
   private killMonster(entity: MonsterEntity, killerId: number): void {
+    // 尸体不再占攻击名额；不删的话名额要等 1.25s 才释放。
+    this.attackTokens.delete(entity.data.id)
     const isBoss = isBossKind(entity.data.kind)
     // 所有怪都不复活（包括 Boss）：本局的巢穴必须能被清空。respawnTick 恒为 0，
     // stepMonsters 会一直跳过尸体；尸体本身仍保留在场景里给玩家搜刮/辨认。
@@ -1402,33 +1467,88 @@ export class World {
 
   // ------------------------------------------------------------ 玩家进出
 
+  /**
+   * 把一条新连接接到已有角色上（断线重连 / 半开连接接管）。
+   *
+   * 两种情况都会走到这里：
+   *  - 断线保留期内同一账号回来（`detachedAt > 0`）；
+   *  - 旧 socket 还没被网络层关掉，新连接已经带着同一账号进来。旧实现只在
+   *    第一种情况接管，第二种会新建一个角色，旧角色则留在世界里继续接收
+   *    快照 —— 玩家看到的就是"本体在原地、控制者灵魂出窍"的幽灵人。
+   *
+   * 无论是哪一种，**会话级的输入状态都必须从零开始**：新客户端的 seq 从 1
+   * 计数，而旧会话可能已经几千。ackSeq 不清零的话，新会话的每一个输入都会
+   * 被 receiveInput 当成"重发的旧包"丢掉 —— 客户端预测仍然能走（灵魂出窍），
+   * 但服务端的身体不动、打不中、别人也看不到你在哪。
+   */
+  private resumePlayer(existing: Player, socket: WebSocket, nickname: string): void {
+    const stale = existing.socket
+    existing.socket = socket
+    existing.detachedAt = 0
+    existing.nickname = nickname
+    // 旧队列里压着旧 seq 的包，必须先清空；否则它们会先被消费、把 ackSeq
+    // 推高，新会话的 1..N 又会被丢掉。
+    existing.queue.length = 0
+    existing.ackSeq = 0
+    existing.ackedTick = 0
+    existing.lastInput = { ...existing.lastInput, forward: 0, right: 0, buttons: 0 }
+    existing.interact = false
+    existing.prevInteract = false
+    existing.heal = false
+    existing.ads = false
+    existing.heavyHeld = false
+    // 正在进行的救援/搜刮是"按住"语义的进度：连接都断了，进度不该保留。
+    existing.reviveTargetId = 0
+    existing.reviveMs = 0
+    existing.searchMs = 0
+    existing.searchSpotId = -1
+    existing.searchAnchor = null
+    existing.healMs = 0
+    existing.healAnchor = null
+    // 断线期间被怪/别人打死：直接按复活处理，否则新客户端能动、服务端是死的。
+    if (!existing.alive) this.respawn(existing)
+    // 战利品/目标状态都是"只在变化时下发"的。新连接必须强制收到一份完整
+    // 状态，否则重连后背包是空的、计时/线索还停在重连前的旧值。
+    existing.lastLoot = null
+    this.lastObjective = null
+    this.emptySince = 0
+    // 旧连接若还开着（半开连接、或者同一账号的另一个标签页），主动掐掉。
+    // 它的 close 回调会带着旧 socket 走到 detach/remove，那里的 socket 守卫
+    // 会把它识别成过期连接，不会误删刚接管的角色。
+    if (stale !== socket && stale.readyState === 1) {
+      try {
+        stale.close(4002, '该角色已在新的连接中继续游戏')
+      } catch {
+        // 关一个已经半死的 socket 失败，不影响接管本身。
+      }
+    }
+  }
+
+  /**
+   * 这条连接是否仍是该角色的当前会话。
+   *
+   * 重连接管后，旧连接可能还有几个包在路上。它们绝不能进入同一个输入队列：
+   * 旧 seq 会把 ackSeq 推高，新会话的输入随后全部被当成重复包丢掉。
+   */
+  ownsPlayer(playerId: number, socket: WebSocket): boolean {
+    return this.players.get(playerId)?.socket === socket
+  }
+
   addPlayer(
     socket: WebSocket,
     nickname: string,
     userId = '',
   ): { id: number; spawn: Vec3; resumed: boolean } | null {
-    // 断线保留期内，同一个账号回来就接管原角色：位置、血量、弹药、战利品、
-    // 赏金全部还在。这是 15 分钟一局里"掉线不等于这趟白打"的最低保障。
+    // 同一账号回来就接管原角色：位置、血量、弹药、战利品、赏金全部还在。
+    // 这是 15 分钟一局里"掉线不等于这趟白打"的最低保障。
+    //
+    // 注意这里**不再要求 detachedAt > 0**：半开连接（客户端已经重连，但服务端
+    // 还没收到旧 socket 的 FIN）也必须按接管处理，否则会多出一个永远不消失的
+    // 旧角色。`resumePlayer` 会负责把旧 socket 踢掉。
     if (userId !== '') {
       for (const existing of this.players.values()) {
-        if (existing.userId !== userId || existing.detachedAt === 0) continue
-        existing.socket = socket
-        existing.detachedAt = 0
-        existing.nickname = nickname
-        existing.queue.length = 0
-        existing.lastInput = {
-          ...existing.lastInput,
-          forward: 0,
-          right: 0,
-          buttons: 0,
-        }
-        existing.interact = false
-        existing.heal = false
-        existing.ads = false
-        // 新连接要从零接收一次完整战利品/绷带/进度状态；旧的 lastLoot 缓存
-        // 会让 publishLoot 认为"没变化"，客户端重连后一直显示空背包。
-        existing.lastLoot = null
-        this.emptySince = 0
+        if (existing.userId !== userId) continue
+        this.resumePlayer(existing, socket, nickname)
         return { id: existing.id, spawn: existing.character.feet, resumed: true }
       }
     }
@@ -1499,9 +1619,11 @@ export class World {
     return { id: player.id, spawn, resumed: false }
   }
 
-  removePlayer(playerId: number): void {
+  removePlayer(playerId: number, socket?: WebSocket): void {
     const player = this.players.get(playerId)
     if (!player) return
+    // 同上：只有当前这条连接才有权删角色。
+    if (socket !== undefined && player.socket !== socket) return
     this.byCollider.delete(player.character.collider.handle)
     this.physics.removeCharacterController(player.character.controller)
     this.physics.removeRigidBody(player.character.body)
@@ -1519,9 +1641,11 @@ export class World {
    * 继续跑、继续开枪。角色仍留在物理世界里，可能被怪/别人打死 —— 这是合理的，
    * 掉线不是无敌。
    */
-  detachPlayer(playerId: number): void {
+  detachPlayer(playerId: number, socket?: WebSocket): void {
     const player = this.players.get(playerId)
     if (!player) return
+    // 旧连接迟到的 close 不能把已经重连成功的新会话标记成掉线。
+    if (socket !== undefined && player.socket !== socket) return
     player.detachedAt = Date.now()
     player.queue.length = 0
     player.lastInput = { ...player.lastInput, forward: 0, right: 0, buttons: 0 }
@@ -1565,7 +1689,12 @@ export class World {
     const player = this.players.get(playerId)
     if (!player) return
     if (player.loadout.lastFireTick > 0) {
-      this.sendText(player, '已经开过枪 · 配装锁定')
+      // 断线重连后客户端会原样重发配装包。和当前配装一致时静默接受，
+      // 不要每次重连都弹一句"已经开过枪 · 配装锁定"。
+      const unchanged =
+        weaponId === player.loadout.primaryId &&
+        clampAttachment(attachment) === player.loadout.attachment
+      if (!unchanged) this.sendText(player, '已经开过枪 · 配装锁定')
       return
     }
     // 天赋先落：即使武器没变（大厅里只改天赋），这一句也必须生效。
@@ -2568,6 +2697,13 @@ export class World {
       weaponId: spec.id,
       attachment: player.loadout.attachment,
     })
+
+    // 枪声也是怪物的听觉线索：附近还没锁定目标的怪会转成 investigate。
+    // 刀不参与 —— 挥刀不该把 12m 外的怪引过来。半径按武器响度给，
+    // 消音器由 loadout 的 soundScale 在客户端表现，服务端暂不额外缩半径。
+    if (spec.kind !== 'knife') {
+      this.alertMonsters(eye.x, eye.z, Math.min(48, 10 + (spec.loudness ?? 1) * 14))
+    }
 
     for (const hit of hits) {
       this.applyHit(

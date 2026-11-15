@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"pnpm -F @dk/server dev\" \"pnpm -F @dk/client dev\"",
     "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "qa:diff": "node tools/qa-diff.mjs",
+    "qa:smoke": "node tools/qa-smoke.mjs",
     "typecheck": "pnpm -F @dk/shared typecheck && pnpm -F @dk/server typecheck && pnpm -F @dk/client typecheck",
     "start": "pnpm -F @dk/server start"
   },

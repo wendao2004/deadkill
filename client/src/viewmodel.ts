@@ -49,7 +49,15 @@ import {
 import type { Material, Texture } from 'three'
 import { ATTACHMENT_SCOPE, ATTACHMENT_SUPPRESSOR, wrapAngle } from '@dk/shared'
 import { mergeAll, ring, tubeZ } from './weapon-kit.ts'
-import { Spring } from './feel.ts'
+import { Spring, impulseForPeak } from './feel.ts'
+import {
+  LEVER_RELOAD,
+  REVOLVER_RELOAD,
+  SHOTGUN_RELOAD,
+  sampleReloadTimeline,
+  type ReloadPose,
+  type ReloadTimeline,
+} from './reload-timeline.ts'
 import {
   SIGHT_REAR_Z,
   SIGHT_Y,
@@ -313,6 +321,24 @@ const RELOAD_JITTER_X = 0.0035
 const RELOAD_JITTER_Y = 0.0025
 const RELOAD_JITTER_ROLL = 0.009
 
+/**
+ * 姿态叠加的命名常量。
+ *
+ * 这几个数字以前直接写在一百多行的 px/py/rx 长表达式里：调"贴墙压枪"
+ * 要在一屏代码里找，而且改完不知道还有没有第二处。集中成表之后，
+ * 每一项都能单独解释、单独调，也不会被后续的加法顺手改掉。
+ */
+const POSE_TUNE = {
+  /** 贴墙时枪身下压与枪口低头。 */
+  wallX: 0.03,
+  wallY: -0.11,
+  wallPitch: -0.4,
+  /** 线性抬枪（state.recoil）每一单位贡献的俯仰。弹簧峰值另算。 */
+  recoilPitch: 0.19,
+  /** 抬头/低头时枪身的跟随比例（比相机小，枪不是焊在眼睛上）。 */
+  lookPitch: 0.06,
+}
+
 // ---------------------------------------------------------------- 疾跑
 
 /** 疾跑摆动频率（Hz）。人跑动时上半身的固有节律大约就在 1.1Hz 附近。 */
@@ -348,12 +374,11 @@ const SLIDE_YAW = 0.05
 const LAND_DIP = 0.06
 const LAND_DECAY = 0.18
 
-/** 呼吸摆动的基础幅度（与旧 render.ts 一致，保证腰射手感不变）。 */
-const SWAY_X = 0.004
-const SWAY_Y = 0.003
-/** 走动起伏：频率与幅度都和旧 updateCamera 的对枪位补偿一致。 */
+/** 走动起伏：频率与旧 updateCamera 的对枪位补偿一致。 */
 const BOB_FREQ = 10.5
-const BOB_AMP = 0.018
+
+/** 空击锤列表：没有击锤的武器共用，避免 update 里每帧造数组。 */
+const EMPTY_HAMMERS: readonly Mesh[] = []
 
 // ---------------------------------------------------------------- 切枪
 
@@ -536,6 +561,11 @@ interface WeaponRig {
     yaw?: number
     roll?: number
   }
+  /**
+   * 枪机/击锤/转轮的换弹关键帧。没有就用旧的正弦包络（保持兼容）；
+   * 有的话它负责"零件在第几成进度到哪"，reloadK 仍负责整枪姿态。
+   */
+  readonly reloadTimeline?: ReloadTimeline
   /** 换弹/后坐驱动的局部零件；没有就不动。 */
   readonly parts?: {
     hammer?: Mesh
@@ -571,20 +601,40 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   const recPitch = new Spring(9, 0.42)
   const recYaw = new Spring(9, 0.42)
   const recRoll = new Spring(9, 0.42)
+
+  /**
+   * 每发后坐的**设计峰值**（米 / 弧度），再由 impulseForPeak 反解冲量。
+   *
+   * 旧实现直接写 impulse(0.018)，注释声称"约 2~3px"，实际峰值只有 0.17mm：
+   * 9Hz/ζ0.42 的位移 ≈ v0/ω × 0.6，差了一个数量级。以峰值为单位调参，
+   * 改 freq/damping 时不会悄悄把后坐改没。
+   */
+  const RECOIL_PEAK = {
+    back: 0.0055,
+    up: 0.0018,
+    pitch: 0.012,
+    yaw: 0.0022,
+    roll: 0.0032,
+  }
   /** 递增相位给横摆一点"每发不一样"，但不用 Math.random（可复现）。 */
   let kickPhase = 0.37
+  /** 换弹时间轴的输出缓冲：每帧复用，采样器不分配。 */
+  const reloadPose: ReloadPose = { lever: 0, hammer: 0, cylinder: 0 }
+  /** 挥砍随机的序号：用确定性哈希代替 Math.random，截图/回放才对得上。 */
+  let meleeSeq = 0
   const kickWeapon = (scale: number, ads: number): void => {
     // 开镜时枪更"锁"在肩上：幅度压到 54%。
     const s = Math.max(0, scale) * (1 - Math.min(1, Math.max(0, ads)) * 0.46)
     kickPhase += 0.61803398875
     const jitter = Math.sin(kickPhase * 12.9898) * 43758.5453
     const j = (jitter - Math.floor(jitter)) * 2 - 1
-    // 单位是米/弧度；0.018m 的推背在 0.3m 的枪模上约合屏幕 2~3px。
-    recBack.impulse(0.018 * s)
-    recUp.impulse(0.006 * s)
-    recPitch.impulse(0.02 * s)
-    recYaw.impulse(j * 0.009 * s)
-    recRoll.impulse(j * 0.012 * s)
+    // 峰值 → 冲量：back 5.5mm 在 0.76m 的枪位上约 2px，是"撞肩"能看见
+    // 但不至于把枪甩出画面的量；pitch 0.7° 与线性抬枪叠加成总后坐。
+    recBack.impulse(impulseForPeak(RECOIL_PEAK.back * s, recBack.freq, recBack.damping))
+    recUp.impulse(impulseForPeak(RECOIL_PEAK.up * s, recUp.freq, recUp.damping))
+    recPitch.impulse(impulseForPeak(RECOIL_PEAK.pitch * s, recPitch.freq, recPitch.damping))
+    recYaw.impulse(impulseForPeak(j * RECOIL_PEAK.yaw * s, recYaw.freq, recYaw.damping))
+    recRoll.impulse(impulseForPeak(j * RECOIL_PEAK.roll * s, recRoll.freq, recRoll.damping))
   }
 
   /**
@@ -843,6 +893,11 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   const rigs = new Map<number, WeaponRig>()
 
   const register = (id: number, rig: WeaponRig): void => {
+    // 把"单锤"归一成数组一次：update 里曾经每帧 `hammer ? [hammer] : []`，
+    // 在 144fps 下就是每秒 144 个小数组，和文件头的零分配契约冲突。
+    if (rig.parts !== undefined && rig.parts.hammers === undefined && rig.parts.hammer !== undefined) {
+      ;(rig.parts as { hammers?: Mesh[] }).hammers = [rig.parts.hammer]
+    }
     rigs.set(id, rig)
   }
 
@@ -894,7 +949,14 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   )
   builtModels.push(rifle)
   inkModel(rifle.group)
-  register(1, rifleRig(rifle, { muzzleZ: -0.31 - 0.62 - 0.01, reloadK: { roll: 1.15, pitch: 1.0 } }))
+  register(
+    1,
+    rifleRig(rifle, {
+      muzzleZ: -0.31 - 0.62 - 0.01,
+      reloadK: { roll: 1.15, pitch: 1.0 },
+      reloadTimeline: LEVER_RELOAD,
+    }),
+  )
   attachAccessories(1, true)
 
   // 消音卡宾：枪管与护木都短一截，消音器从枪口再伸出 19cm。
@@ -905,7 +967,15 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   builtModels.push(carbine)
   inkModel(carbine.group)
   // 卡宾：把枪拉近换弹匣，不整把压下去。
-  register(6, rifleRig(carbine, { hipZ: RIFLE_HIP_Z + 0.02, muzzleZ: -0.31 - 0.56 - 0.20, reloadK: { x: -0.35, y: -0.45, z: 1.5, pitch: 0.65, yaw: -0.55, roll: -0.7 } }))
+  register(
+    6,
+    rifleRig(carbine, {
+      hipZ: RIFLE_HIP_Z + 0.02,
+      muzzleZ: -0.31 - 0.56 - 0.2,
+      reloadK: { x: -0.35, y: -0.45, z: 1.5, pitch: 0.65, yaw: -0.55, roll: -0.7 },
+      reloadTimeline: LEVER_RELOAD,
+    }),
+  )
   attachAccessories(6, true)
 
   // 神射手：最长枪管 + 光学镜；整把枪往前推 4cm、往右让 1cm，长枪身别顶脸。
@@ -928,6 +998,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       muzzleZ: -0.31 - 0.74 - 0.01,
       // 神射手：动作更慢更稳，枪身往前送。
       reloadK: { z: 0.9, pitch: 1.2, roll: 0.6, x: -0.2 },
+      reloadTimeline: LEVER_RELOAD,
     }),
   )
   // 神射手自带光学镜，只补消音器外观。
@@ -961,6 +1032,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     parts: { hammers: shotgun.hammers },
     // 双管：折管换弹 —— 枪口大幅下压，枪身侧过来。
     reloadK: { pitch: 1.35, roll: 0.35, y: -0.55, z: 0.5 },
+    reloadTimeline: SHOTGUN_RELOAD,
   })
 
   // 柯尔特 1878 短管：同一套零件的第二份实例，位置再压低 8mm（重心更低）。
@@ -991,6 +1063,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     glowMat: null,
     parts: { hammers: shotgun2.hammers },
     reloadK: { pitch: 1.3, roll: 0.45, y: -0.6, z: 0.45 },
+    reloadTimeline: SHOTGUN_RELOAD,
   })
 
   const revolver = buildRevolver(mats)
@@ -1021,6 +1094,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     parts: { cylinder: revolver.cylinder, hammer: revolver.hammer },
     // 转轮：把弹巢甩向画面左侧，枪口仍朝前 —— 换弹时看得见转轮。
     reloadK: { x: -0.55, roll: -1.35, yaw: 0.55, pitch: 0.7, z: 0.3 },
+    reloadTimeline: REVOLVER_RELOAD,
   })
 
   const knife = buildKnife(mats)
@@ -1085,6 +1159,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     g.visible = false
     g.position.set(0, 0, 0)
     g.rotation.set(0, 0, 0)
+    g.scale.setScalar(1)
     outgoing = null
   }
 
@@ -1111,6 +1186,11 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     next.group.position.set(0, 0, 0)
     next.group.rotation.set(0, 0, 0)
     next.group.visible = true
+    // 根节点的 scale 会同时作用在"正在甩出去的旧枪"上：从刀（0.9）切到
+    // 步枪（0.68）时旧枪会瞬间缩小一圈。给旧枪补一个反向缩放，让它的
+    // 世界尺寸保持自己的 scale，直到被摘下。
+    if (outgoing !== null) outgoing.group.scale.setScalar(outgoing.scale / next.scale)
+    next.group.scale.setScalar(1)
     root.scale.setScalar(next.scale)
     if (next.group.parent !== root) root.add(next.group)
   }
@@ -1174,6 +1254,16 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     // 切枪期间换弹姿态必须归零：两个动画同时存在会互相抵消，看起来像枪在抽搐。
     const reload = reloadBlend * settled
 
+    // 换弹时间轴：杠杆/击锤/转轮走关键帧，整枪姿态仍由 reloadK 负责。
+    // 不在换弹时清零，避免上一发的零件角度粘在手上。
+    if (state.reloading && rig.reloadTimeline !== undefined) {
+      sampleReloadTimeline(rig.reloadTimeline, phase, reloadPose)
+    } else {
+      reloadPose.lever = 0
+      reloadPose.hammer = 0
+      reloadPose.cylinder = 0
+    }
+
     // ---- 局部机械：击锤/转轮跟着换弹与后坐动起来。
     // 以前这些零件只在构造时写死一个角度，整把枪像一块焊死的木板；现在
     // 由纯标量驱动，不引入 AnimationMixer，也不破坏确定性。
@@ -1184,17 +1274,22 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
         ? Math.sin((1 - leverTimer / LEVER_CYCLE) * Math.PI)
         : 0
     if (rig.parts) {
-      if (rig.parts.lever) rig.parts.lever.rotation.x = leverPulse * 0.62
+      if (rig.parts.lever) rig.parts.lever.rotation.x = leverPulse * 0.62 + reloadPose.lever
       const cycle = state.reloading ? Math.sin(phase * Math.PI) : 0
+      // 有时间轴就吃关键帧；没配时间轴的武器退回旧的正弦包络。
+      const hammerReload =
+        state.reloading && rig.reloadTimeline !== undefined ? reloadPose.hammer : -cycle * 0.55
       const kick = state.recoil * 0.35
-      const hammers = rig.parts.hammers ?? (rig.parts.hammer ? [rig.parts.hammer] : [])
+      const hammers = rig.parts.hammers ?? EMPTY_HAMMERS
       for (const hammer of hammers) {
         const base = (hammer.userData.baseX as number | undefined) ?? 0
-        hammer.rotation.x = base - cycle * 0.55 - kick - leverPulse * 0.55
+        hammer.rotation.x = base + hammerReload - kick - leverPulse * 0.55
       }
       if (rig.parts.cylinder) {
         if (state.reloading) {
-          const a = phase * Math.PI * 2
+          // 时间轴给的是累计角度（终点 2π，视觉上回到同一格），
+          // 换弹结束后 cylinderTarget 继续从它叠加射击的 +60°。
+          const a = rig.reloadTimeline !== undefined ? reloadPose.cylinder : phase * Math.PI * 2
           cylinderAngle = a
           cylinderTarget = a
           rig.parts.cylinder.rotation.z = a
@@ -1282,8 +1377,11 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     const heavy = rig.isMelee && state.meleeHeavy === true
     if (melee > 0 && !meleeWasActive) {
       flourishTimer = 0
-      meleeArc = Math.random() < 0.5 ? -1 : 1
-      meleeTilt = 0.85 + Math.random() * 0.3
+      // 确定性哈希代替 Math.random：连续挥砍仍然左右交替、幅度不同，
+      // 但同一段输入重放/截图得到同一组姿态。
+      meleeSeq++
+      meleeArc = hashNoise(meleeSeq * 3.17) < 0 ? -1 : 1
+      meleeTilt = 0.85 + (hashNoise(meleeSeq * 5.71) * 0.5 + 0.5) * 0.3
     }
     meleeWasActive = melee > 0
     const arc = meleeArc
@@ -1364,7 +1462,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     const px =
       rig.hipX +
       (rig.adsX - rig.hipX) * ads +
-      wall * 0.03 +
+      wall * POSE_TUNE.wallX +
       swayX +
       bobX +
       swaySprintX +
@@ -1375,8 +1473,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       SWITCH_SIDE * slotK * side
     const py =
       rig.hipY +
-      (rig.adsY - rig.hipY) * ads -
-      wall * 0.11 +
+      (rig.adsY - rig.hipY) * ads +
+      wall * POSE_TUNE.wallY +
       swayY +
       bobY +
       recUpOff +
@@ -1435,10 +1533,10 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     // 连线才是水平的），再加后坐力、低头下垂、疾跑、换弹、手抖、切枪、挥砍滚转。
     const rx =
       rig.pitch * motion +
-      rig.adsPitch * ads -
-      wall * 0.4 +
-      state.recoil * 0.22 * settled +
-      state.pitch * 0.06 * motion +
+      rig.adsPitch * ads +
+      wall * POSE_TUNE.wallPitch +
+      state.recoil * POSE_TUNE.recoilPitch * settled +
+      state.pitch * POSE_TUNE.lookPitch * motion +
       bobPitch +
       swayRotX +
       recPitchOff +

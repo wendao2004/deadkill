@@ -105,6 +105,8 @@ function handleConnection(
 ): void {
   const query = request.query as Record<string, string | undefined>
   const matchId = sanitizeMatchId(query.match ?? 'default')
+  // 匿名开发模式的"每个标签页一个身份"。生产环境走 authenticate，用不到它。
+  const clientId = sanitizeClientId(query.cid)
 
   let playerId = 0
   let world: ReturnType<WorldRegistry['get']> | null = null
@@ -118,14 +120,36 @@ function handleConnection(
   }, 1000)
   refill.unref?.()
 
+  // 心跳：浏览器会自动回 pong。没有它，拔网线/休眠/NAT 超时之后的半开连接会
+  // 一直算"在线"—— 角色留在世界里、玩家列表里却没有人控制，就是幽灵人。
+  // 连续两个周期没回 pong 就 terminate；close 回调会把角色转入断线保留，
+  // 等同一个账号重连接管（见 World.resumePlayer）。
+  const HEARTBEAT_MS = 15_000
+  let pongSeen = true
+  const heartbeat = setInterval(() => {
+    if (socket.readyState !== 1) return
+    if (!pongSeen) {
+      socket.terminate()
+      return
+    }
+    pongSeen = false
+    try {
+      socket.ping()
+    } catch {
+      socket.terminate()
+    }
+  }, HEARTBEAT_MS)
+  heartbeat.unref?.()
+
   const cleanup = (detach: boolean) => {
     if (closed) return
     closed = true
     clearInterval(refill)
+    clearInterval(heartbeat)
     if (world && playerId) {
-      // 正常退出（客户端 close(1000)）立刻移除；网络断开先保留 20 秒等重连。
-      if (detach) world.detachPlayer(playerId)
-      else world.removePlayer(playerId)
+      // 正常退出（客户端 close(1000)）立刻移除；网络断开先保留 60 秒等重连。
+      if (detach) world.detachPlayer(playerId, socket)
+      else world.removePlayer(playerId, socket)
     }
     world = null
     playerId = 0
@@ -144,6 +168,9 @@ function handleConnection(
     cleanup(code !== 1000 && code < 4000)
   })
   socket.on('error', () => cleanup(true))
+  socket.on('pong', () => {
+    pongSeen = true
+  })
 
   // 握手阶段的超时：连上来了却不发 Hello（例如误用浏览器直接打开这个地址），
   // 不能让它一直占着一个连接和一份内存。
@@ -171,6 +198,10 @@ function handleConnection(
       return
     }
     if (buffer.byteLength < 1) return
+    // 重连接管之后，旧连接可能还有几个包在路上。它们不能进入同一个输入队列：
+    // 旧 seq 会把 ackSeq 推高，新会话的 1..N 随后全被当成重复包丢掉，
+    // 表现就是"人回来了、身体却不听使唤"。
+    if (!world.ownsPlayer(playerId, socket)) return
     const kind = new DataView(buffer).getUint8(0)
 
     // 切枪是低频离散指令，和每帧的输入包分开走：混进 InputPacket 就得为
@@ -231,7 +262,9 @@ function handleConnection(
       }
     } else if (ctx.allowAnonymous) {
       identity = {
-        userId: `anon:${request.ip}`,
+        // 优先用客户端带来的标签页 id：同一台机器开两个标签页时不会互相
+        // 接管；旧客户端没有 cid 时退回 IP，行为与以前一致。
+        userId: `anon:${clientId !== '' ? clientId : request.ip}`,
         nickname: hello.nickname.trim().slice(0, 16) || '猎人',
       }
     } else {
@@ -248,6 +281,13 @@ function handleConnection(
     const joined = target.addPlayer(socket, identity.nickname, identity.userId)
     if (!joined) {
       socket.close(4009, '房间已满')
+      return
+    }
+    // 两个连接几乎同时带着同一账号进来时，后一个已经在 resumePlayer 里接管，
+    // 先到的这一条不能再继续注册 —— 否则两个连接会共用同一个 playerId，
+    // 旧连接迟到的输入会和新会话混在一起（就是幽灵人的另一半）。
+    if (!target.ownsPlayer(joined.id, socket)) {
+      socket.close(4002, '该角色已在新的连接中继续游戏')
       return
     }
     clearTimeout(handshakeTimer)
@@ -299,6 +339,12 @@ function toArrayBuffer(data: unknown): ArrayBuffer | null {
 function sanitizeMatchId(raw: string): string {
   const cleaned = raw.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32)
   return cleaned || 'default'
+}
+
+/** 匿名标签页 id：同样只保留安全字符。空串表示客户端没给（旧客户端）。 */
+function sanitizeClientId(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  return raw.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 64)
 }
 
 export type { PlayerInput }

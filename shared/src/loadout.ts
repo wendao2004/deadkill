@@ -10,7 +10,7 @@
  * 一个 LoadoutState，测试也可以直接构造一个来验证规则。
  */
 
-import { attachmentOf, ATTACHMENT_NONE } from './attachments.ts'
+import { attachmentOf, clampAttachment, ATTACHMENT_NONE } from './attachments.ts'
 import {
   DEFAULT_WEAPON_ID,
   DEFAULT_SLOT_ORDER,
@@ -40,9 +40,11 @@ export interface LoadoutState {
 
 /** 一套全新的配装（出生、重生都用它）。 */
 export function createLoadout(primaryId: number = DEFAULT_WEAPON_ID, attachment = ATTACHMENT_NONE): LoadoutState {
+  // 经过 clampAttachment：配件系统收起时它会一律回落成"不装"，
+  // 旧存档里的 1..4 不会绕过总开关继续生效。
   const state: LoadoutState = {
     primaryId,
-    attachment,
+    attachment: clampAttachment(attachment),
     currentSlot: 0,
     ammoBySlot: filledAmmo(primaryId),
     reserveBySlot: filledReserve(primaryId),
@@ -54,10 +56,10 @@ export function createLoadout(primaryId: number = DEFAULT_WEAPON_ID, attachment 
     lastFireTick: -1e9,
   }
   // 加长弹仓：开局就把弹匣和备弹一起按新容量填满。
-  if (attachmentOf(attachment).magazineBonus > 0) {
+  if (attachmentOf(state.attachment).magazineBonus > 0) {
     for (let slot = 0; slot < state.ammoBySlot.length; slot++) {
       const spec = WEAPONS[slotWeaponId(state, slot)]!
-      const bonus = slot === 0 ? attachmentOf(attachment).magazineBonus : 0
+      const bonus = slot === 0 ? attachmentOf(state.attachment).magazineBonus : 0
       if (bonus > 0) {
         state.ammoBySlot[slot] = spec.magazine + bonus
         state.reserveBySlot[slot] = (state.reserveBySlot[slot] ?? 0) + bonus

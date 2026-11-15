@@ -719,3 +719,126 @@ test('末班车长：半血只召唤一次，贴脸会后撤而不是站着对�
   assert.equal(summonCount, 1, '召唤次数应为 1，实际 ' + summonCount)
   assert.deepEqual(summonResult, { kind: 'hound', count: 2 })
 })
+
+// ---------------------------------------------------------------- 感知与令牌
+
+test('屠夫冲锋：95 点伤害必须在 special 窗口内结算（回归：曾被冷却挡在窗口外）', () => {
+  const spec = MONSTER_SPECS.boss
+  assert.ok(spec.charge)
+  const monster = monsterAtPosition('boss', HOME, 1)
+  const rng = mulberry32(21)
+  const player = standingStill(7, 0, 12)
+  const chargeHits: { tick: number; state: string; damage: number }[] = []
+
+  for (let tick = 1; tick <= 500; tick++) {
+    const result = stepMonster(monster, { players: [player], tick, dtMs: TICK_MS }, rng)
+    if (result.hit && result.hit.damage === spec.charge.damage) {
+      chargeHits.push({ tick, state: monster.state, damage: result.hit.damage })
+    }
+    integrate(monster)
+  }
+
+  assert.ok(chargeHits.length >= 1, '冲锋一次都没撞到')
+  for (const hit of chargeHits) {
+    assert.equal(hit.state, 'special', '冲锋伤害必须落在 special 状态里，实际 ' + hit.state)
+  }
+})
+
+test('攻击令牌：canAttack=false 时不出伤害，也不消耗冷却', () => {
+  const monster = monsterAtPosition('grunt', HOME, 1)
+  const rng = mulberry32(5)
+  const player = standingStill(7, 0, 1.0)
+  let blockedHits = 0
+
+  for (let tick = 1; tick <= 120; tick++) {
+    const result = stepMonster(
+      monster,
+      { players: [player], tick, dtMs: TICK_MS, canAttack: false },
+      rng,
+    )
+    if (result.hit) blockedHits++
+    integrate(monster)
+  }
+  assert.equal(blockedHits, 0, '没有令牌仍然咬到了人')
+  assert.equal(monster.nextAttackTick, 0, '被拒绝的攻击不该消耗冷却')
+  assert.equal(monster.state, 'attack', '被拒绝时应保持攻击姿态等待令牌')
+
+  let allowedHit = false
+  for (let tick = 121; tick <= 240 && !allowedHit; tick++) {
+    const result = stepMonster(
+      monster,
+      { players: [player], tick, dtMs: TICK_MS, canAttack: true },
+      rng,
+    )
+    if (result.hit) allowedHit = true
+    integrate(monster)
+  }
+  assert.ok(allowedHit, '拿到令牌后仍然不出手')
+  assert.ok(monster.nextAttackTick > 0, '出手后必须进入冷却')
+})
+
+test('跟丢目标后转 investigate，走向最后目击点，到达后转 search', () => {
+  const monster = monsterAtPosition('grunt', HOME, 1)
+  const rng = mulberry32(13)
+  const player = standingStill(7, 0, 6)
+  let sawInvestigate = false
+  let sawSearch = false
+  let lastKnownAtLose = { x: NaN, z: NaN }
+
+  for (let tick = 1; tick <= 420; tick++) {
+    // 前 40 tick 看得见，之后躲进掩体。
+    const canSee = tick <= 40
+    stepMonster(monster, { players: [player], tick, dtMs: TICK_MS, visible: () => canSee }, rng)
+    if (monster.state === 'investigate' && !sawInvestigate) {
+      sawInvestigate = true
+      lastKnownAtLose = { x: monster.lastKnownX ?? NaN, z: monster.lastKnownZ ?? NaN }
+    }
+    if (monster.state === 'search') sawSearch = true
+    integrate(monster)
+  }
+
+  assert.ok(sawInvestigate, '跟丢后没有进入调查')
+  assert.ok(Number.isFinite(lastKnownAtLose.x), '调查时没有最后目击点')
+  assert.ok(sawSearch, '到达最后目击点后没有进入搜索')
+})
+
+test('听到枪声（noise）后转 investigate 并走向声源', () => {
+  const monster = monsterAtPosition('grunt', HOME, 1)
+  const rng = mulberry32(17)
+  monster.noiseX = 8
+  monster.noiseZ = 0
+  monster.noiseTick = 1
+
+  const result = stepMonster(monster, { players: [], tick: 1, dtMs: TICK_MS }, rng)
+  assert.equal(monster.state, 'investigate')
+  assert.ok(monster.vx > 0, '没有朝声源方向移动：vx=' + monster.vx)
+  assert.equal(monster.noiseTick, undefined, '噪声应被消费，不能每 tick 重复触发')
+  assert.equal(result.hit, null)
+})
+
+test('视线采样按 120ms 节流：远处目标不会每 tick 打一条 LOS', () => {
+  const monster = monsterAtPosition('grunt', HOME, 1)
+  const rng = mulberry32(19)
+  const player = standingStill(7, 0, 12)
+  let calls = 0
+
+  for (let tick = 1; tick <= 20; tick++) {
+    stepMonster(
+      monster,
+      {
+        players: [player],
+        tick,
+        dtMs: TICK_MS,
+        visible: () => {
+          calls++
+          return true
+        },
+      },
+      rng,
+    )
+    integrate(monster)
+  }
+
+  assert.ok(calls > 0, '一次视线都没采样')
+  assert.ok(calls <= 4, '20 tick 内采样了 ' + calls + ' 次，节流没有生效')
+})

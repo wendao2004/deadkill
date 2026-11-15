@@ -12,6 +12,7 @@ import {
   MAX_TRAITS,
   Trait,
   getLevel,
+  lairOf,
   normalizeTraitLevels,
   packSelection,
   traitList,
@@ -22,6 +23,7 @@ import { AudioKit } from './audio.ts'
 import { Game, type HudState, type MatchResult } from './game.ts'
 import { createPauseOverlay, type PauseOverlay } from './pause.ts'
 import { type MenuSettings } from './settings.ts'
+import { diag, installDiagnostics, qa, setStatsProvider } from './qa.ts'
 import { createTraitIcon } from './traits.ts'
 import { pickLevelId } from './level-choice.ts'
 import {
@@ -51,6 +53,10 @@ function need<T extends HTMLElement>(id: string): T {
   return el as T
 }
 
+// 诊断全局必须装在任何可能抛错的东西之前：模块初始化阶段的异常也要进
+// __errors，否则"打不开"在无头环境里只会表现为一个空白页面。
+installDiagnostics()
+
 const app = need('app')
 const menuRoot = need('menu')
 const hpText = need('hp')
@@ -64,6 +70,15 @@ const traitsBox = need('traits')
 const bandageText = need('bandages')
 
 let game: Game | null = null
+/** 诊断入口：无头截图/基准脚本只认 window.__stats() 这一个出口。 */
+setStatsProvider(() =>
+  game === null ? { state: inGame ? 'loading' : 'menu' } : { state: 'playing', ...game.diagnostics() },
+)
+// __G 只用于诊断（手册 §3.5），不要把它当状态存储。
+Object.defineProperty(globalThis, '__G', {
+  configurable: true,
+  get: () => ({ game, inGame, qa }),
+})
 let menu: Menu | null = null
 let prompt: InteractPrompt | null = null
 let settlement: Settlement | null = null
@@ -406,9 +421,10 @@ function exitToMenu(status = ''): void {
  * 连接意外断开时的重连。
  *
  * 为什么值得做：一局十几分钟，掉一秒网、服务端抖一下就回大厅，等于把前面
- * 搜到的东西全判了死刑。重连是完整地重开一局（服务端不保证恢复原身位），
+ * 搜到的东西全判了死刑。服务端按 userId 保留断线角色 60 秒，新连接会接管
+ * 原角色（位置、血量、弹药、战利品、赏金都在），客户端只重建本地世界。
  * 所以只对**异常断开**做（CloseInfo.transient = 关闭码 < 4000），
- * 被服务端主动拒绝的（版本不对、房间满、消息过频）重连一百次也没用。
+ * 被服务端主动拒绝的（版本不对、房间满、消息过频、账号在别处登录）重连也没用。
  */
 function scheduleReconnect(config: MenuConfig): void {
   if (reconnectAttempts >= MAX_RECONNECT) {
@@ -416,7 +432,9 @@ function scheduleReconnect(config: MenuConfig): void {
     return
   }
   reconnectAttempts++
-  game?.dispose()
+  // false：只关传输层，不要发 1000。发 1000 等于告诉服务端"我主动退了"，
+  // 角色会被立刻删除，重连回来就换了一个新人（位置、背包、赏金全丢）。
+  game?.dispose(false)
   game = null
   prompt?.dispose()
   prompt = null
@@ -488,6 +506,11 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
     squad: config.squad ?? 0,
     onTraitFx: flashTrait,
     onStatus: setStatus,
+    onConnected: () => {
+      // 已经成功握上手，说明这一次重连是真的成功了。连续计数必须清零，
+      // 否则一场里断三次网之后，第四次哪怕是好的网络也会直接放弃。
+      if (mine === sessionId) reconnectAttempts = 0
+    },
     onClose: (info) => {
       if (mine !== sessionId) return
       if (info.transient) {
@@ -531,6 +554,8 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
     },
   })
   game = started
+  // ?show= 只改机位，不改关卡内容；放在 start() 之前，第一帧就是展示构图。
+  if (qa.show !== null) applyShowcase(started, level)
   // 本地开发探针：无头浏览器测试需要拿到渲染器/角色来做 Boss 模型与动作的
   // 定点截图。只在 localhost 暴露，NAS 上的正式构建不会挂这个引用。
   if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
@@ -566,8 +591,12 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
     // 表现为"进了游戏但全黑，HUD 也消失"。收场动作必须排在可能挂起的 await 之前。
     menu?.setVisible(false)
     inGame = true
-    armBeforeUnload()
-    maybeShowControls()
+    // QA 自动进场不要"离开页面"确认框：无头浏览器会卡在 dialog 上，
+    // 截图脚本永远等不到 __ready 之后的下一次导航。操作卡同理，会挡住构图。
+    if (!qa.autostart) {
+      armBeforeUnload()
+      maybeShowControls()
+    }
     // HUD 不要"啪"一下全亮：0.52s 淡入，读起来是从黑场里浮出来而不是页面刷新。
     // 1.4s 后摘掉：这个 class 只服务入场那一次，留着会让后续挂载重播淡入。
     document.body.classList.add('dk-entering')
@@ -594,6 +623,43 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
 }
 
 /**
+ * `?show=lair|clue|spawn`：把 QA 机位摆到地图上的一个语义点。
+ *
+ * 只做一件事：在目标点斜上方 7/5/7 米处放一台相机。不新建场景、不加灯 ——
+ * 展示的必须是**真实关卡**，否则它证明不了"玩家看到的就是这样"。
+ */
+function applyShowcase(target: Game, level: LevelDef): void {
+  // 子系统展示自带机位；只有玩家显式给了 ?cam= 时才让位。
+  if (qa.show === 'mats' || qa.show === 'fx' || qa.show === 'weapon') {
+    target.setShowcase(qa.show, qa.cam === null)
+    return
+  }
+  let point: { x: number; y: number; z: number } | null = null
+  if (qa.show === 'lair') {
+    const lair = lairOf(level)
+    point = { x: lair.x, y: level.groundY, z: lair.z }
+  } else if (qa.show === 'clue') {
+    const clue = level.clues?.[0]
+    if (clue !== undefined) point = { x: clue.x, y: level.groundY, z: clue.z }
+  } else if (qa.show === 'spawn') {
+    const spawn = level.spawns[0]
+    if (spawn !== undefined) point = { x: spawn.x, y: spawn.y, z: spawn.z }
+  }
+  if (point === null) {
+    console.warn(`[qa] 未知或该关卡不存在的 show=${String(qa.show)}`)
+    return
+  }
+  target.setFixedCamera({
+    x: point.x + 7,
+    y: point.y + 5,
+    z: point.z + 7,
+    tx: point.x,
+    ty: point.y + 1.2,
+    tz: point.z,
+  })
+}
+
+/**
  * 主界面的音频实例。
  *
  * 和 Game 里那套**故意分开**：Game.dispose() 会 close 掉自己的上下文，而玩家退回
@@ -617,6 +683,9 @@ function applyCrosshair(settings: MenuSettings): void {
   style.setProperty('--dk-xhair-opacity', String(settings.crosshairOpacity))
 }
 applyCrosshair(loadSavedSettings())
+// QA 干净画面：隐藏 HUD / 颗粒 / 暗角 / 准星 / 镜筒。只动装饰层，
+// 不改渲染设置 —— "画面里没有 UI"和"画面画得不一样"是两个变量。
+if (!qa.hud) document.body.classList.add('dk-qa-clean')
 
 // 主界面没有 HUD 可以读音频状态，探针只能从这里问一句。游戏本身不用它。
 ;(globalThis as Record<string, unknown>).__dkMenuAudio = () => menuAudio.debugStats()
@@ -624,6 +693,9 @@ applyCrosshair(loadSavedSettings())
 /** 首次用户手势：解锁主界面音频，并起一层沼泽底噪。幂等。 */
 function armMenuAudio(): void {
   if (menuAudioArmed) return
+  // ?noaudio=1：大厅也不碰 AudioContext。无声环境里它是唯一还会在启动
+  // 链上挂一个 pending promise 的东西。
+  if (qa.noaudio) return
   menuAudioArmed = true
   void menuAudio.unlock().then(() => {
     // 手势到手时玩家可能已经点进游戏了：局内那层由 Game 自己起，别在这里叠。
@@ -672,6 +744,24 @@ menu = createMenu(menuRoot, {
 menu.mount()
 menu.setVisible(true)
 setStatus('')
+
+// QA 自动进场。刻意复用同一个 enter()：测的必须是真实启动链（物理 WASM、
+// WebSocket 握手、着色器预热），而不是一条为了截图另开的捷径。
+if (qa.autostart) {
+  const saved = loadSavedConfig()
+  void enter({
+    ...saved,
+    // 缺省值只在这里补一次：matchId 固定成 'qa' 才能让两次启动进同一房间，
+    // 截图里出现的远端玩家/怪物数量也因此可复现。
+    nickname: saved.nickname ?? 'QA',
+    matchId: saved.matchId ?? 'qa',
+    primaryId: saved.primaryId ?? DEFAULT_WEAPON_ID,
+    traits: saved.traits ?? 0,
+  }).catch((error) => {
+    console.error('[qa] 自动进场失败', error)
+    exitToMenu(`启动失败：${error instanceof Error ? error.message : String(error)}`)
+  })
+}
 
 
 function resize(): void {

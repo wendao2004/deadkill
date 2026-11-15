@@ -33,6 +33,7 @@ import {
 } from 'three'
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'
 import { terrainHeightAt, type LevelDef } from '@dk/shared'
+import { tintInstances } from './procedural-tint.ts'
 
 export type NatureKind = 'deadTree' | 'grass' | 'rock' | 'branch' | 'stump' | 'bush' | 'plant'
 
@@ -245,6 +246,13 @@ function addInstances(
       mesh.setMatrixAt(i, scratch)
     }
     mesh.instanceMatrix.needsUpdate = true
+    // 同一批 GLB 树/石头也各有新旧色差；用实例序号哈希，不消耗布局 rng。
+    tintInstances(
+      mesh,
+      placements.length,
+      kind === 'grass' || kind === 'plant' ? 0.14 : 0.10,
+      kind === 'grass' || kind === 'plant' ? 0.06 : 0.04,
+    )
     parent.add(mesh)
   }
 }

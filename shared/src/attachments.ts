@@ -90,10 +90,26 @@ export const ATTACHMENTS: readonly AttachmentSpec[] = [
   },
 ]
 
+/**
+ * 配件系统总开关。
+ *
+ * 现在先把旧的一件式配件整块收起来，准备重做成塔科夫式的多槽位系统
+ * （规划见 `docs/武器配件系统-塔科夫式.md`）。关掉时：
+ *  - `clampAttachment` 一律返回"不装"，服务端不会再算弹匣/声音/后坐加成；
+ *  - `attachmentOf` 一律返回 0 号规格，客户端的倍率/音量/后坐全部回到 1；
+ *  - 菜单不再画配件选择器，枪模上的镜筒/消音器外观也不显示。
+ *
+ * 协议字段（Loadout 里的 attachment）和 localStorage 键原样保留：重做时
+ * 不用再动二进制协议，也不会把玩家已有的解锁记录抹掉。
+ */
+export const ATTACHMENTS_ENABLED = false
+
 export function attachmentOf(id: number): AttachmentSpec {
+  if (!ATTACHMENTS_ENABLED) return ATTACHMENTS[0]!
   return ATTACHMENTS[id] ?? ATTACHMENTS[0]!
 }
 
 export function clampAttachment(id: number): number {
+  if (!ATTACHMENTS_ENABLED) return ATTACHMENT_NONE
   return Number.isFinite(id) && id >= 0 && id < ATTACHMENTS.length ? Math.floor(id) : ATTACHMENT_NONE
 }

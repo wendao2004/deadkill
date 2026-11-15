@@ -79,6 +79,31 @@ export interface CloseInfo {
  * 开发和生产的 URL 只有 origin 不同，协议、路径、端口推导规则一致。
  * 写死 ws://127.0.0.1:8787 的代码搬进部署必炸。
  */
+/**
+ * 本标签页的稳定连接身份。
+ *
+ * 开发模式没有账号，服务端只能按 IP 认人 —— 同一台机器开两个标签页互射时，
+ * 两个连接会拿到同一个 userId，重连接管逻辑会把对方踢掉。用 sessionStorage
+ * 给每个标签页一个随机 id：刷新/重连不变，新标签页必然不同。
+ * 生产环境由宿主鉴权提供 userId，这个值不会被用到。
+ */
+function tabClientId(): string {
+  try {
+    let id = sessionStorage.getItem('dk.clientId')
+    if (id === null || id === '') {
+      id =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : Math.random().toString(36).slice(2) + Date.now().toString(36)
+      sessionStorage.setItem('dk.clientId', id)
+    }
+    return id
+  } catch {
+    // 隐私模式/禁用存储：退回空串，服务端会继续按 IP 认人（本地单开也能用）。
+    return ''
+  }
+}
+
 function wsUrl(matchId: string): string {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
   // 产物用相对路径（vite.config.ts 的 base: './'），所以页面被挂在哪个子路径
@@ -86,7 +111,12 @@ function wsUrl(matchId: string): string {
   // '/dead-kill/' → '/dead-kill/ws/game'。不用 BASE_URL —— 它是 './'，
   // 换成路径只会得到一个点。
   const base = location.pathname.replace(/[^/]*$/, '').replace(/\/$/, '')
-  const params = new URLSearchParams({ match: matchId, v: String(PROTOCOL_VERSION) })
+  const params = new URLSearchParams({
+    match: matchId,
+    v: String(PROTOCOL_VERSION),
+    // 仅对匿名开发模式有意义（见 tabClientId）。
+    cid: tabClientId(),
+  })
   return `${scheme}://${location.host}${base}/ws/game?${params}`
 }
 
@@ -234,11 +264,21 @@ export class Net {
     socket.send(encodeSwitchSlot(slot))
   }
 
-  close(): void {
+  /**
+   * 关掉连接。
+   *
+   * @param leave true = 玩家主动离开，发 1000，服务端立刻移除角色；
+   *   false = 我们正准备用新连接重连，只关传输层、**不发 1000**。不带关闭
+   *   码的 close 会以 1005 到达服务端（< 4000），服务端据此把角色转入断线
+   *   保留，等新连接接管。发 1000 的话角色会被当场删除，重连就换了一个新
+   *   角色，位置与战利品全丢。
+   */
+  close(leave = true): void {
     this.closed = true
-    // 1000 = 主动离开：服务端立刻移除角色。网络断开是 1006，服务端会保留 20 秒
-    // 等客户端重连回同一角色；这里绝不能也发 1006，否则每次回大厅都留一个幽灵。
-    this.socket?.close(1000, 'client leave')
+    const socket = this.socket
     this.socket = null
+    if (!socket) return
+    if (leave) socket.close(1000, 'client leave')
+    else socket.close()
   }
 }

@@ -396,7 +396,37 @@ export const REPOSITION_SPEED_FACTOR = 0.7
  */
 const MELEE_PANIC_RANGE = 2.2
 
-export type MonsterState = 'idle' | 'chase' | 'attack' | 'special' | 'dead'
+export type MonsterState =
+  | 'idle'
+  | 'investigate'
+  | 'chase'
+  | 'attack'
+  | 'search'
+  | 'special'
+  | 'dead'
+
+/** 目标离开视线多久后转入调查（毫秒）。手册给的窗口是"跟丢 4s"，这里取 2.5s。 */
+export const LOSE_TARGET_MS = 2500
+/** 调查 + 搜索的总时长（毫秒）。手册建议 8s。 */
+export const MONSTER_SEARCH_MS = 8000
+/**
+ * 感知采样间隔（毫秒）。
+ *
+ * 每 tick 每怪对每个候选打一条 LOS 射线，怪一多就是几十条 60Hz 射线。
+ * 120ms（7 tick）落在手册的 110–190ms 区间内；按怪物 id 错开采样，
+ * 把射线摊到不同 tick 上。
+ */
+export const PERCEPTION_INTERVAL_MS = 120
+/** 调查阶段的行进速度比例（它已经知道你在附近，但不确定具体位置）。 */
+const INVESTIGATE_SPEED_FACTOR = 0.78
+/** 到达最后目击点多近开始原地搜索（米）。 */
+const SEARCH_ARRIVE_RADIUS = 2.0
+/** 搜索时绕着最后目击点缓慢转圈的半径（米）与角速度（弧度/秒）。 */
+const SEARCH_ORBIT_RADIUS = 2.4
+const SEARCH_ORBIT_RATE = 0.55
+const SEARCH_SPEED_FACTOR = 0.32
+/** 噪声记忆时长（毫秒）：一声枪响只把它引来一次，不会永久追着枪声跑。 */
+const NOISE_MEMORY_MS = 3500
 
 export interface Monster {
   id: number
@@ -419,6 +449,22 @@ export interface Monster {
   targetId: number
   /** 从发现到现在的累计时间，用于让怪物"先愣一下"而不是贴脸即打。 */
   aggroMs: number
+  /** 最后一次确认看见目标的位置；跟丢后去这里调查。 */
+  lastKnownX?: number
+  lastKnownZ?: number
+  /** 最后一次确认看见目标的 tick。 */
+  lastKnownTick?: number
+  /** 这段记忆属于哪个目标，避免旧位置串到新目标。 */
+  lastKnownTargetId?: number
+  /** 调查/搜索的截止 tick。 */
+  searchUntilTick?: number
+  /** 听到的噪声（枪声/同伴警报）位置与 tick；服务端写入，AI 消费后清掉。 */
+  noiseX?: number
+  noiseZ?: number
+  noiseTick?: number
+  /** 上一次视线采样的结果与 tick（感知节流缓存）。 */
+  losVisible?: boolean
+  losTick?: number
   /** Boss 特殊技进行到第几 tick（0 = 不在特殊技中）。 */
   specialUntilTick?: number
   /** 特殊技的"生效点"：冲锋开始 / 脉冲落地。 */
@@ -506,6 +552,13 @@ export function stepMonster(
      * 物理世界。
      */
     visible?: (player: MonsterSenses) => boolean
+    /**
+     * 这一 tick 是否允许发起普通攻击。缺省 true。
+     *
+     * 服务端用它实现"同时最多 3 只怪出手"的攻击令牌：被拒绝的怪保持
+     * attack 状态但不出伤害、不消耗冷却，下一 tick 再试。
+     */
+    canAttack?: boolean
   },
   rng: () => number,
 ): MonsterStepResult {
@@ -513,6 +566,10 @@ export function stepMonster(
   const players = senses.players
   const tick = senses.tick
   const dtMs = senses.dtMs
+  // 攻击令牌：由服务端按"同时最多 N 只出手"计算。被拒绝时保持攻击状态、
+  // 不消耗冷却，下一 tick 再试 —— 玩家看到的是怪物在等同伴打完，而不是
+  // 一群怪同时扑上来。
+  const canAttack = senses.canAttack ?? true
 
   // 死亡放在最前面短路：尸体不决策、不移动、不咬人。
   if (monster.state === 'dead' || monster.health <= 0) {
@@ -566,14 +623,19 @@ export function stepMonster(
   let bestDist = Infinity
   let bestX = 0
   let bestZ = 0
+  // 调查/搜索中的怪只认"看得见的人"：否则刚转入调查就会被索敌循环
+  // 重新锁回墙后的玩家，调查状态形同虚设。
+  const wasSearching = monster.state === 'investigate' || monster.state === 'search'
   for (let i = 0; i < players.length; i++) {
     const p = players[i]
     if (!p.alive) continue
-    // 远程怪开火前必须看得见人；近战怪照旧（它们循声扑过来，隔墙也合理）。
-    // 近战的"看不见"只影响最后的咬击，不影响索敌/追击。
-    if (ranged !== undefined && see !== null && !canSee(p)) continue
+    // 先算距离再打射线：射程外的玩家不值得一条 LOS。这是每 tick 最热的
+    // 循环，顺序反过来会让 30m 外的玩家也各吃一条 Rapier 射线。
     const d = Math.hypot(p.x - monster.x, p.z - monster.z)
     if (d > spec.aggroRange) continue
+    // 远程怪开火前必须看得见人；近战怪照旧（它们循声扑过来，隔墙也合理）。
+    // 近战的"看不见"只影响最后的咬击，不影响索敌/追击。
+    if ((ranged !== undefined || wasSearching) && see !== null && !canSee(p)) continue
     if (d < bestDist) {
       bestDist = d
       bestId = p.id
@@ -613,7 +675,17 @@ export function stepMonster(
     monster.aggroMs = 0
   } else {
     // 换人（而不是跟丢）也重置愣神计时：对新受害者它同样是"刚发现"。
-    if (targetId !== monster.targetId) monster.aggroMs = 0
+    if (targetId !== monster.targetId) {
+      monster.aggroMs = 0
+      // 新目标先记下当前位置：即使这一 tick 没看见，也知道该去哪里找。
+      monster.lastKnownX = targetX
+      monster.lastKnownZ = targetZ
+      monster.lastKnownTick = tick
+      monster.lastKnownTargetId = targetId
+      // 新目标的视线缓存必须失效：上一只目标留下的 true 会让它"隔墙看见"。
+      monster.losVisible = false
+      monster.losTick = -1
+    }
     monster.targetId = targetId
     monster.aggroMs += dtMs
   }
@@ -621,15 +693,47 @@ export function stepMonster(
   // 目标此刻看得见吗？远近都算：远程怪没视线不开枪，近战怪没视线不咬人。
   // 锁定的目标**掉出视线也不立刻放弃**（上面选目标那一段不看视线），
   // 它会走到你最后露头的位置再重新找 —— 蹲在石头后面能拖时间，但拖不掉它。
+  const perceptionTicks = Math.max(1, Math.round(PERCEPTION_INTERVAL_MS / TICK_MS))
+  const loseTicks = Math.ceil(LOSE_TARGET_MS / TICK_MS)
+  const searchTicks = Math.ceil(MONSTER_SEARCH_MS / TICK_MS)
+  const noiseTicks = Math.ceil(NOISE_MEMORY_MS / TICK_MS)
+
   let targetVisible = false
-  // 近战怪只在"已经够得着"时才打这条射线：每 tick 给每只远处的近战怪
-  // 也打一条视线，会在怪多的房间里白烧物理查询。
-  if (targetId !== 0 && (ranged !== undefined || targetDist <= spec.attackRange)) {
-    for (let i = 0; i < players.length; i++) {
-      const p = players[i]
-      if (p.id !== targetId) continue
-      targetVisible = p.alive && canSee(p)
-      break
+  if (targetId !== 0) {
+    // 感知节流：按怪物 id 错开采样，避免每 tick 每怪都打一条 LOS；
+    // 但近身目标每 tick 复核，贴脸了却"看不见"会显得 AI 瞎了。
+    const due = (tick + (monster.id % perceptionTicks)) % perceptionTicks === 0
+    if (due || targetDist <= spec.attackRange) {
+      for (let i = 0; i < players.length; i++) {
+        const p = players[i]
+        if (p.id !== targetId) continue
+        targetVisible = p.alive && canSee(p)
+        monster.losVisible = targetVisible
+        monster.losTick = tick
+        break
+      }
+    } else {
+      targetVisible = monster.losVisible === true
+    }
+
+    if (targetVisible) {
+      // 只有真的看见时才更新记忆；没看见的 tick 不能把位置"刷新"成
+      // 玩家此刻的位置，否则最后目击点永远等于当前位置，调查就失去了意义。
+      monster.lastKnownX = targetX
+      monster.lastKnownZ = targetZ
+      monster.lastKnownTick = tick
+      monster.lastKnownTargetId = targetId
+    } else {
+      const last = monster.lastKnownTick ?? tick
+      if (tick - last > loseTicks) {
+        // 跟丢：放弃目标，转去最后目击点调查。这里不直接清空记忆，
+        // 调查分支要用它决定去哪。
+        monster.targetId = 0
+        monster.aggroMs = 0
+        monster.losVisible = false
+        monster.state = 'investigate'
+        monster.searchUntilTick = tick + searchTicks
+      }
     }
   }
 
@@ -652,18 +756,78 @@ export function stepMonster(
     monster.state = 'idle'
     monster.targetId = 0
     monster.aggroMs = 0
+    monster.lastKnownX = undefined
+    monster.lastKnownZ = undefined
+    monster.lastKnownTargetId = 0
+    monster.searchUntilTick = undefined
+    monster.noiseTick = undefined
     goalX = monster.homeX
     goalZ = monster.homeZ
     goalSpeed = spec.speed
-  } else if (monster.targetId === 0) {
-    monster.state = 'idle'
-    if (returningHome) {
-      goalX = monster.homeX
-      goalZ = monster.homeZ
-      goalSpeed = spec.speed * RETURN_SPEED_FACTOR
+  } else if (monster.targetId === 0 && (monster.state === 'investigate' || monster.state === 'search')) {
+    // ------------------------------------------------------------ 调查/搜索
+    // 先去最后目击点；到了以后绕着它缓慢转圈，给玩家"它在找我"的读条。
+    // 新噪声（更近的一枪、同伴警报）可以把调查点更新到更近的位置。
+    const noiseFresh =
+      monster.noiseTick !== undefined && monster.noiseTick > 0 && tick - monster.noiseTick <= noiseTicks
+    if (noiseFresh) {
+      monster.lastKnownX = monster.noiseX
+      monster.lastKnownZ = monster.noiseZ
+      monster.searchUntilTick = Math.max(monster.searchUntilTick ?? 0, tick + searchTicks)
+    }
+    monster.noiseTick = undefined
+    const until = monster.searchUntilTick ?? 0
+    const lx = monster.lastKnownX ?? monster.homeX
+    const lz = monster.lastKnownZ ?? monster.homeZ
+    if (tick >= until) {
+      // 搜够了：忘掉这件事，回巢。下一 tick 的 returningHome 会接管。
+      monster.noiseTick = undefined
+      monster.state = 'idle'
+      monster.lastKnownX = undefined
+      monster.lastKnownZ = undefined
+      monster.lastKnownTargetId = 0
+      monster.searchUntilTick = undefined
     } else {
-      // 到家的怪不能是雕像：用 rng 做一点缓慢游荡（全文件只有这里用 rng）。
-      wander = true
+      const d = Math.hypot(lx - monster.x, lz - monster.z)
+      if (d > SEARCH_ARRIVE_RADIUS) {
+        monster.state = 'investigate'
+        goalX = lx
+        goalZ = lz
+        goalSpeed = spec.speed * INVESTIGATE_SPEED_FACTOR
+      } else {
+        monster.state = 'search'
+        const angle = ((tick * TICK_MS) / 1000) * SEARCH_ORBIT_RATE + monster.id
+        goalX = lx + Math.cos(angle) * SEARCH_ORBIT_RADIUS
+        goalZ = lz + Math.sin(angle) * SEARCH_ORBIT_RADIUS
+        goalSpeed = spec.speed * SEARCH_SPEED_FACTOR
+      }
+    }
+  } else if (monster.targetId === 0) {
+    // ------------------------------------------------------------ 无目标
+    const noiseFresh =
+      monster.noiseTick !== undefined && monster.noiseTick > 0 && tick - monster.noiseTick <= noiseTicks
+    if (noiseFresh && !returningHome && monster.noiseX !== undefined && monster.noiseZ !== undefined) {
+      // 听到枪声/同伴警报：去声源看看。它不知道人在哪，只知道"那边有动静"。
+      monster.state = 'investigate'
+      monster.lastKnownX = monster.noiseX
+      monster.lastKnownZ = monster.noiseZ
+      monster.lastKnownTargetId = 0
+      monster.lastKnownTick = tick
+      monster.searchUntilTick = tick + searchTicks
+      monster.noiseTick = undefined
+      goalX = monster.noiseX
+      goalZ = monster.noiseZ
+      goalSpeed = spec.speed * INVESTIGATE_SPEED_FACTOR
+    } else {
+      monster.state = 'idle'
+      if (returningHome) {
+        goalX = monster.homeX
+        goalZ = monster.homeZ
+        goalSpeed = spec.speed * RETURN_SPEED_FACTOR
+      } else {
+        // 到家的怪不能是雕像：用 rng 做一点缓慢游荡（游荡分支才用 rng）。
+        wander = true
+      }
     }
   } else {
     // 召唤只结算一次：车长半血吹哨，两只猎犬从它身边站起来。
@@ -699,11 +863,10 @@ export function stepMonster(
           const dirZ = monster.specialDirZ ?? 0
           goalX = monster.x + dirX * 50
           goalZ = monster.z + dirZ * 50
-          if (
-            monster.specialFired !== true &&
-            targetDist <= spec.attackRange + 0.6 &&
-            tick >= monster.nextAttackTick
-          ) {
+          // 只看 specialFired，不再看 nextAttackTick：后者在起手时被设到
+          // 冲锋结束之后再 +350ms，而这段代码只在 specialUntilTick 之前运行，
+          // 于是冲锋永远够不到自己的命中窗口（Boss 冲锋 0 伤害的根因）。
+          if (monster.specialFired !== true && targetDist <= spec.attackRange + 0.6) {
             monster.specialFired = true
             attacked = true
             hit = { playerId: monster.targetId, damage: spec.charge.damage }
@@ -803,7 +966,7 @@ export function stepMonster(
           monster.state = 'attack'
           goalSpeed = 0
           const aimMs = Math.max(AGGRO_WINDUP_MS, ranged.aimMs)
-          if (monster.aggroMs >= aimMs && tick >= monster.nextAttackTick) {
+          if (canAttack && monster.aggroMs >= aimMs && tick >= monster.nextAttackTick) {
             attacked = true
             // 贴到脸上还开枪很难看，也打不中（胶囊在枪口内），改用啃的。
             if (targetDist <= MELEE_PANIC_RANGE) {
@@ -834,7 +997,7 @@ export function stepMonster(
           // 两道闸门：愣神窗口（针对"刚发现你"）与冷却（针对"已经打过一次"）。
           // 伤害就落在这一 tick 上，不做延迟结算的"前摇帧"：前摇已经由
           // AGGRO_WINDUP_MS 表达了，再加一层只会让命中判定和动画对不上。
-          if (monster.aggroMs >= AGGRO_WINDUP_MS && tick >= monster.nextAttackTick) {
+          if (canAttack && monster.aggroMs >= AGGRO_WINDUP_MS && tick >= monster.nextAttackTick) {
             attacked = true
             hit = { playerId: monster.targetId, damage: spec.attackDamage }
             monster.nextAttackTick = tick + cooldownTicks(spec)

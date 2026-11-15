@@ -74,7 +74,14 @@ import {
 // 1080p 下掉到 31fps。按材质合并成一份几何体后降到 ~15 个。
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 
-import { applyComicInk, setInkDetail, setInkKeyDirection, type ComicSurface } from './ink.ts'
+import {
+  applyComicInk,
+  setInkDetail,
+  setInkGroundY,
+  setInkKeyDirection,
+  setInkWetness,
+  type ComicSurface,
+} from './ink.ts'
 import { createOutlineMaterial, setOutlineBoil, setOutlineResolution } from './outline.ts'
 import { PostFX } from './postfx.ts'
 import { probeGpu, type GpuInfo } from './gpu.ts'
@@ -82,14 +89,16 @@ import { animateHunter, createHunterMaterials, createHunterModel, type HunterMat
 import { createHunterTextures, type HunterTextures } from './baked-textures.ts'
 import { createSurfaceMaps, loadSurfaceTextures, type SurfaceFamily, type SurfaceMaps } from './pbr-textures.ts'
 import { loadNatureAssets as loadNatureModels, scatterNature } from './nature-assets.ts'
-import { decorateVillage, loadVillageAssets } from './village-assets.ts'
+import { decorateVillage, loadVillageAssets, VILLAGE_COLORS } from './village-assets.ts'
 import { loadGeneratedAssets, type GeneratedAssets } from './generated-assets.ts'
 import { decorateGenerated } from './forest-scene.ts'
 import type { GraphicsQuality } from './settings.ts'
+import { qa, type QaCamera } from './qa.ts'
 import { buildProps, type Props } from './props.ts'
 import { createMonsterRenderer, type MonsterRenderer, type MonsterView } from './monsters.ts'
 import { createObjectiveMarkers, type ObjectiveMarkers, type ObjectiveView } from './markers.ts'
 import { createVfx, type ImpactKind, type Vfx } from './vfx.ts'
+import { createDecals, type Decals } from './decals.ts'
 import { createAtmosphere, type Atmosphere } from './atmosphere.ts'
 import { createEnvironmentProbe, type EnvironmentProbe } from './environment.ts'
 import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './shadows.ts'
@@ -143,7 +152,8 @@ const MATERIALS: Record<string, { color: number; surface: ComicSurface; specular
   wood: { color: 0x8d7154, surface: 'wood', specular: 0.04, rim: 0.03 },
   stone: { color: 0x5a6169, surface: 'stone', specular: 0.05, rim: 0.035 },
   mud: { color: 0x746349, surface: 'mud', specular: 0.025, rim: 0.02 },
-  metal: { color: 0x7f8a95, surface: 'metal', specular: 0.38, rim: 0.1 },
+  // 金属压暗一档：0x7f8a95 在夜间暖光下会洗成近白，读不出"铁"而像石膏。
+  metal: { color: 0x66707a, surface: 'metal', specular: 0.30, rim: 0.1 },
   foliage: { color: 0x5f7248, surface: 'foliage', specular: 0, rim: 0.02 },
 }
 
@@ -166,6 +176,10 @@ const GROUND_PALETTE: Record<string, { color: number; tint: number; tintAmount: 
 
 /** 曳光弹存活时间（秒）。短于感知阈值会看不见，长了像激光。 */
 const TRACER_LIFE = 0.09
+
+/** 命中光脉冲时长（秒）与峰值强度。两帧左右，只负责"那一下"。 */
+const IMPACT_FLASH_SECONDS = 0.075
+const IMPACT_FLASH_INTENSITY = 8
 
 /**
  * 描边基准宽度，单位是 **CSS 像素**（不是 NDC）。
@@ -255,6 +269,41 @@ function makeGradientMap(): DataTexture {
 /** ComicSurface 里的 'default' 没有对应贴图，落回石族（中性、不偏色）。 */
 function surfaceFamily(surface: ComicSurface | undefined): SurfaceFamily {
   return surface === undefined || surface === 'default' ? 'stone' : surface
+}
+
+/**
+ * 每块盒刷的"手涂色差"（顶点色）。
+ *
+ * 关卡由几百个盒子拼成，如果同一材质全用同一个固有色，远看就是一块塑料板。
+ * 这里按位置哈希给约 ±7% 的明度与轻微冷暖偏移：读起来像画师一块一块上的色，
+ * 而不是贴图平铺。树冠再放大一档，叶子本来就该更有层次。
+ *
+ * 颜色是线性空间的乘数，围绕 1.0 波动；超过 ±15% 就会破坏 4 级色阶。
+ */
+function panelTint(
+  point: { x: number; y: number; z: number },
+  foliage = false,
+): [number, number, number] {
+  const h1 = Math.sin(point.x * 12.9898 + point.z * 78.233 + point.y * 37.719) * 43758.5453
+  const r1 = h1 - Math.floor(h1)
+  const h2 = Math.sin(point.x * 39.346 + point.z * 11.135 + point.y * 83.155) * 24634.6345
+  const r2 = h2 - Math.floor(h2)
+  const value = foliage ? 0.86 + r1 * 0.22 : 0.92 + r1 * 0.14
+  const warm = (r2 - 0.5) * (foliage ? 0.10 : 0.06)
+  return [value * (1 + warm), value, value * (1 - warm)]
+}
+
+/** 给整个几何体写入同一个顶点色。合批前调用，合批后每条盒刷保留自己的色调。 */
+function paintPanel(geo: BufferGeometry, tint: readonly [number, number, number]): void {
+  const position = geo.getAttribute('position')
+  if (!position) return
+  const colors = new Float32Array(position.count * 3)
+  for (let i = 0; i < position.count; i++) {
+    colors[i * 3] = tint[0]
+    colors[i * 3 + 1] = tint[1]
+    colors[i * 3 + 2] = tint[2]
+  }
+  geo.setAttribute('color', new BufferAttribute(colors, 3))
 }
 
 /**
@@ -494,6 +543,21 @@ export class Renderer {
   private readonly gpu: GpuInfo
   /** 当前画质档允许自动降到的分辨率下限。 */
   private minScale = 0.7
+  /**
+   * QA 固定机位。非 null 时每帧在渲染前覆盖世界相机 —— 截图必须与玩家的
+   * 走位、后坐、镜头晃动完全无关，否则同一 URL 两次启动拿不到同一张图。
+   */
+  private fixedCamera: QaCamera | null = null
+  /** QA：`?post=0` 时关掉画面风格层；画质自动降档也不能把它悄悄开回来。 */
+  private postEnabled = true
+  /** auto 解析后的实际档位；接触阴影/降档判断要用它，而不是靠 minScale 反推。 */
+  private resolvedQuality: Exclude<GraphicsQuality, 'auto'> = 'balanced'
+  /** QA 子系统展示：mats / fx / weapon；null = 正常游戏。 */
+  private showcase: 'mats' | 'fx' | 'weapon' | null = null
+  /** 特效展示的发射节奏与当前序号（每帧由 updateCamera 推进）。 */
+  private showcaseClock = 0
+  private showcaseIndex = 0
+  private showcaseOrigin = { x: 0, y: 0, z: 0 }
   private cssWidth = 1
   private cssHeight = 1
   private readonly levelGroup = new Group()
@@ -582,6 +646,12 @@ export class Renderer {
   private readonly markers: ObjectiveMarkers
   /** 命中/死亡/枪口的一次性粒子。单个 InstancedMesh，稳态零开销。 */
   private readonly vfx: Vfx
+  /** 弹孔/血点贴花池。与粒子分开：粒子按秒消失，贴花按分钟留下。 */
+  private readonly decals: Decals
+  /** 命中瞬间的一盏短 TTL 点光；与枪口光分开，否则连射时会互相盖掉。 */
+  private readonly impactLight: PointLight
+  /** 命中光的剩余时间（秒）。0 表示已熄灭。 */
+  private impactFlashTtl = 0
   /**
    * 共享描边材质。宽度与沸腾倍率都是 outline.ts 的模块级 uniform，
    * 所以这里只需要一份，不需要维护"所有描边材质"的清单。
@@ -625,6 +695,8 @@ export class Renderer {
   private punchPitch = 0
   private punchYaw = 0
   private punchRoll = 0
+  /** 命中横摆的确定性序号：Math.random 会让同一段回放/截图对不上。 */
+  private punchSeq = 0
 
   // ---- 相机手感（源码 player/camera.js 的移植）----
   /** 每一步落脚的垂直微冲量（5.4Hz 欠阻尼弹簧）。 */
@@ -663,6 +735,8 @@ export class Renderer {
 
   constructor(container: HTMLElement, level: LevelDef) {
     this.level = level
+    // 苔藓/湿气按"离地多高"分布：先告诉墨线层这张图的地面在哪。
+    setInkGroundY(level.groundY)
     this.gradientMap = makeGradientMap()
     this.disposables.push(this.gradientMap)
     this.surfaceMaps = createSurfaceMaps()
@@ -841,6 +915,7 @@ export class Renderer {
     this.markers = createObjectiveMarkers(level)
     this.scene.add(this.markers.root)
     this.vfx = createVfx(this.scene)
+    this.decals = createDecals(this.scene)
 
     // 武器动画只吃一组标量（开镜混合/后坐力/速度/疾跑/离地/换弹进度/俯仰），
     // 与场景渲染无关，所以整块搬到 viewmodel.ts；这里只给它一个"借用材质与
@@ -888,6 +963,11 @@ export class Renderer {
     // 只照枪本身，两者分开才能既看清枪、又有环境闪光。
     this.muzzleWorld = new PointLight(0xffd27a, 0, 12, 2)
     this.scene.add(this.muzzleWorld)
+    // 命中光：位置每枪重设，强度在 updateCamera 里按 TTL 衰减。距离压到 6m，
+    // 只照亮弹着点附近的一小块墙面，不做成第二个枪口闪光。
+    this.impactLight = new PointLight(0xffd27a, 0, 5, 2)
+    this.impactLight.castShadow = false
+    this.scene.add(this.impactLight)
   }
 
   get canvas(): HTMLCanvasElement {
@@ -927,6 +1007,200 @@ export class Renderer {
   /** 镜头晃动强度：1 完整 / 0.45 减弱 / 0 关闭。 */
   setMotionScale(scale: number): void {
     this.motionScale = Math.min(1, Math.max(0, scale))
+  }
+
+  /**
+   * QA 固定机位：每帧渲染前覆盖世界相机。传 null 恢复正常第一人称。
+   *
+   * 只覆盖**世界**相机，武器层不动。要在场景截图里彻底去掉枪，用
+   * `setViewmodelVisible(false)` —— 两件事分开，因为"固定机位 + 想拍枪的
+   * 特写"也是一个合法用法。
+   */
+  setFixedCamera(camera: QaCamera | null): void {
+    this.fixedCamera = camera
+  }
+
+  /** QA：隐藏第一人称武器层（viewScene 的 visible 连子物体一起跳过）。 */
+  setViewmodelVisible(visible: boolean): void {
+    this.viewScene.visible = visible
+  }
+
+  /**
+   * QA：整层开关画面风格（泛光/颗粒/暗角/色差/锐化/接触阴影）。
+   *
+   * 关掉的不是 HDR 管线本身 —— 场景仍然进浮点 RT、仍然做 AgX 与 FXAA，
+   * 否则"关后处理"会连色调映射一起关掉，对比出来的差异就不只是风格了。
+   */
+  setPostEnabled(enabled: boolean): void {
+    this.postEnabled = enabled
+    this.post.setSettings(
+      enabled
+        ? { bloom: 0.07, grain: 0.012, vignette: 0.28, chromatic: 0.0007, sharpness: 0.35 }
+        : { bloom: 0, grain: 0, vignette: 0, chromatic: 0, sharpness: 0 },
+    )
+    this.post.setContactShadow(enabled && this.resolvedQuality !== 'performance', enabled ? 0.38 : 0)
+  }
+
+  /**
+   * 场景湿度 0..1：朝上的表面压暗，垂直面挂流痕。
+   *
+   * 当前默认画风是手绘伪 3D（`realistic = false`），所以实现落在墨线 shader
+   * 的共享 uniform 上；由每局天气修饰驱动（骤雨最湿、死寂最干），
+   * QA 也可用 `?wet=` 固定，这样"同一机位、只改湿度"的 A/B 截图才有意义。
+   */
+  setWetness(value: number): void {
+    const wet = Math.min(1, Math.max(0, value))
+    setInkWetness(wet)
+    // 水面有独立 ShaderMaterial：雨圈也要跟着天气走。
+    this.props.setWetness(wet)
+  }
+
+  /**
+   * QA 子系统展示：只搭该系统需要的最小场景。
+   *
+   * - `mats`：五族材质的立方体阵列，按关卡同一套 PBR/三平面生成；
+   * - `fx`：一块泥地 + 循环发射的命中粒子/冲击波；
+   * - `weapon`：世界熄灭，只留第一人称武器层（棚拍灯照常）。
+   *
+   * 为什么放在 Renderer 而不是另写一个 showcase 页面：这些材质、粒子、
+   * 武器层都必须与游戏内**同一份实现**，另开一套就证明不了游戏里长这样。
+   */
+  setShowcase(mode: 'mats' | 'fx' | 'weapon' | null, overrideCamera = true): void {
+    this.showcase = mode
+    // 每次切回正常游戏都要把世界恢复；只有 weapon 需要关掉它。
+    this.scene.visible = mode !== 'weapon'
+    if (mode === 'mats') this.buildMaterialShowcase(overrideCamera)
+    else if (mode === 'fx') this.buildEffectShowcase(overrideCamera)
+  }
+
+  /** 五族材质阵列：位置取自出生点正上方，避开建筑与地形，保证每次构图一致。 */
+  private buildMaterialShowcase(overrideCamera: boolean): void {
+    const anchor = this.level.spawns[0] ?? { x: 0, y: this.level.groundY, z: 0 }
+    const baseY = anchor.y + 16
+    const keys = ['stone', 'wood', 'metal', 'mud', 'foliage'] as const
+    const geometry = new BoxGeometry(0.9, 0.9, 0.9)
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]!
+      const spec = MATERIALS[key]!
+      const tint = MATERIAL_TINT[key]!
+      const geo = geometry.clone()
+      // 与关卡墙同一套米制三平面 UV：球面 UV 会把砖缝/木纹拉成放射状，
+      // 那样展示的就不是游戏里看到的材质了。
+      applyBoxProjection(geo, this.surfaceMaps[surfaceFamily(spec.surface)].tileMeters)
+      const cubeX = anchor.x + (i - (keys.length - 1) / 2) * 1.25
+      geo.translate(cubeX, baseY, anchor.z)
+      // 展示也要带逐块色差，否则观众看不到关卡里"每块墙略有不同"的效果。
+      paintPanel(geo, panelTint({ x: cubeX, y: baseY, z: anchor.z }))
+      const material: Material = this.realistic
+        ? this.pbrSurfaceMaterial(spec.color, spec.surface, tint.tint, tint.amount, true)
+        : this.toonMaterial(spec.color, {
+            tint: tint.tint,
+            tintAmount: tint.amount,
+            surface: spec.surface,
+            specular: spec.specular,
+            rim: spec.rim,
+            vertexColors: true,
+          })
+      const mesh = new Mesh(geo, material)
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      this.scene.add(mesh)
+      this.disposables.push(geo)
+    }
+    geometry.dispose()
+
+    // 夜里的月光不足以读清粗糙度；给一盏与油灯同量级的补光，位置固定在
+    // 阵型右前方，保证同一 URL 的光比不变。
+    const key = new PointLight(0xffe1b0, 8, 18, 2)
+    key.position.set(anchor.x + 2.4, baseY + 1.8, anchor.z + 2.6)
+    this.scene.add(key)
+
+    if (overrideCamera) {
+      this.setFixedCamera({
+        x: anchor.x,
+        y: baseY + 1.35,
+        z: anchor.z + 3.4,
+        tx: anchor.x,
+        ty: baseY,
+        tz: anchor.z,
+      })
+    }
+  }
+
+  /** 特效展示：一块泥地当承接面，按固定节奏轮流打五种材质。 */
+  private buildEffectShowcase(overrideCamera: boolean): void {
+    const anchor = this.level.spawns[0] ?? { x: 0, y: this.level.groundY, z: 0 }
+    const baseY = anchor.y + 16
+    const spec = MATERIALS.mud!
+    const tint = MATERIAL_TINT.mud!
+    const padGeo = new BoxGeometry(6, 0.3, 6)
+    applyBoxProjection(padGeo, this.surfaceMaps.mud.tileMeters)
+    padGeo.translate(anchor.x, baseY, anchor.z)
+    const pad = new Mesh(
+      padGeo,
+      this.realistic
+        ? this.pbrSurfaceMaterial(spec.color, spec.surface, tint.tint, tint.amount)
+        : this.toonMaterial(spec.color, {
+            tint: tint.tint,
+            tintAmount: tint.amount,
+            surface: spec.surface,
+            specular: spec.specular,
+            rim: spec.rim,
+          }),
+    )
+    pad.receiveShadow = true
+    this.scene.add(pad)
+    this.disposables.push(padGeo)
+
+    const key = new PointLight(0xffe1b0, 9, 20, 2)
+    key.position.set(anchor.x, baseY + 3, anchor.z + 2.5)
+    this.scene.add(key)
+    this.showcaseOrigin = { x: anchor.x, y: baseY + 0.16, z: anchor.z }
+    this.showcaseClock = 0
+    this.showcaseIndex = 0
+
+    if (overrideCamera) {
+      this.setFixedCamera({
+        x: anchor.x,
+        y: baseY + 1.9,
+        z: anchor.z + 5.5,
+        tx: anchor.x,
+        ty: baseY + 0.5,
+        tz: anchor.z,
+      })
+    }
+  }
+
+  /** 特效展示的发射器：每 0.16 秒一次，绕圆环轮转材质，循环可复现。 */
+  private updateShowcase(dt: number): void {
+    if (this.showcase !== 'fx') return
+    this.showcaseClock += dt
+    // 0.16s 小于最短粒子寿命（0.25s），保证截图时总有一批在场；
+    // 间隔再大就会拍到"什么都没有"的空档。
+    if (this.showcaseClock < 0.16) return
+    this.showcaseClock = 0
+    const kinds: ImpactKind[] = ['stone', 'wood', 'metal', 'mud', 'flesh']
+    const kind = kinds[this.showcaseIndex % kinds.length]!
+    const angle = this.showcaseIndex * 1.1
+    const p = this.showcaseOrigin
+    const point = {
+      x: p.x + Math.cos(angle) * 1.2,
+      y: p.y,
+      z: p.z + Math.sin(angle) * 1.2,
+    }
+    const dirLen = Math.hypot(Math.cos(angle), 0.8, Math.sin(angle))
+    this.vfx.impact(
+      point,
+      { x: -Math.cos(angle) / dirLen, y: 0.8 / dirLen, z: -Math.sin(angle) / dirLen },
+      kind,
+    )
+    if (this.showcaseIndex % 4 === 0) this.vfx.burst(point, 1.4)
+    if (this.showcaseIndex % 12 === 0) this.vfx.shockwave(point, 2)
+    // 展示必须覆盖整条命中反馈链：粒子之外，贴花与光照脉冲也在同一拍发生，
+    // 否则 showcase 证明不了"游戏里打中墙是什么样"。
+    this.addDecal(point, { x: 0, y: 1, z: 0 }, kind)
+    this.impactFlash(point, kind)
+    this.showcaseIndex++
   }
 
   /**
@@ -987,6 +1261,7 @@ export class Renderer {
           ? 'balanced'
           : 'quality'
         : quality
+    this.resolvedQuality = resolved
 
     if (resolved === 'performance') {
       // 无 MSAA、无泛光、无 FXAA、无实时阴影、无程序化细节；世界 0.65 起、
@@ -996,19 +1271,22 @@ export class Renderer {
       setInkDetail(false)
       this.minScale = 0.5
     } else if (resolved === 'balanced') {
-      this.post.setQuality({ samples: 2, bloomLevels: 4, bloom: true, fxaa: true })
+      this.post.setQuality({ samples: 2, bloomLevels: 4, bloom: this.postEnabled, fxaa: true })
       this.atmo.setShadowQuality(1024)
       setInkDetail(true)
       this.minScale = 0.65
     } else {
-      this.post.setQuality({ samples: 4, bloomLevels: 5, bloom: true, fxaa: true })
+      this.post.setQuality({ samples: 4, bloomLevels: 5, bloom: this.postEnabled, fxaa: true })
       this.atmo.setShadowQuality(2048)
       setInkDetail(true)
       this.minScale = 0.75
     }
     // 接触阴影是写实档的固定项；performance 档是低端独显兜底，关掉省一次
     // 全屏 8 步射线。强度在 quality 档给足，balanced 收一点。
-    this.post.setContactShadow(resolved !== 'performance', resolved === 'quality' ? 0.42 : 0.32)
+    this.post.setContactShadow(
+      this.postEnabled && resolved !== 'performance',
+      resolved === 'quality' ? 0.42 : 0.32,
+    )
   }
 
   setSize(width: number, height: number): void {
@@ -1076,7 +1354,32 @@ export class Renderer {
    */
   async loadVillage(): Promise<void> {
     try {
-      const { assets, materials } = await loadVillageAssets()
+      const assets = await loadVillageAssets()
+      // 外壳统一走当前画风的材质：屋顶因此吃到"高处朝上木面 → 瓦片"的
+      // 函数图案，而不是一张与墨线场景打架的 PBR 贴图。
+      const materials = {
+        roof: this.surfaceMaterial(VILLAGE_COLORS.roof, {
+          hatch: 0.32,
+          surface: 'wood',
+          specular: 0.03,
+          rim: 0.04,
+        }),
+        wood: this.surfaceMaterial(VILLAGE_COLORS.wood, {
+          hatch: 0.3,
+          surface: 'wood',
+          specular: 0.03,
+        }),
+        stone: this.surfaceMaterial(VILLAGE_COLORS.stone, {
+          hatch: 0.3,
+          surface: 'stone',
+          specular: 0.04,
+        }),
+        metal: this.surfaceMaterial(VILLAGE_COLORS.metal, {
+          hatch: 0.22,
+          surface: 'metal',
+          specular: 0.2,
+        }),
+      }
       const group = new Group()
       group.name = 'village-shells'
       decorateVillage(group, this.level, assets, materials)
@@ -1512,12 +1815,15 @@ export class Renderer {
       emissive?: number
       /** 浏览器内烘焙好的细节贴图（角色布料/皮革）；世界材质不用。 */
       map?: Texture
+      /** 关卡盒刷的逐块手涂色差；几何必须带 color 属性。 */
+      vertexColors?: boolean
     } = {},
   ): MeshToonMaterial {
     const mat = new MeshToonMaterial({
       color,
       gradientMap: this.gradientMap,
       fog: opts.fog ?? true,
+      vertexColors: opts.vertexColors === true,
     })
     // three 对 `map: undefined` 会打警告；只在真有烘焙贴图时赋值。
     if (opts.map !== undefined) mat.map = opts.map
@@ -1560,6 +1866,8 @@ export class Renderer {
       rim?: number
       emissive?: number
       map?: Texture
+      /** 关卡盒刷的逐块手涂色差；几何必须带 color 属性。 */
+      vertexColors?: boolean
     } = {},
     view = false,
   ): Material {
@@ -1592,6 +1900,7 @@ export class Renderer {
       specular?: number
       emissive?: number
       map?: Texture
+      vertexColors?: boolean
     } = {},
   ): MeshStandardMaterial {
     const metal = opts.surface === 'metal'
@@ -1619,6 +1928,7 @@ export class Renderer {
       // 仍然读成灰板。环境本身来自天空球，不会把暗部洗白。
       envMapIntensity: painted ? 0.5 : metal ? 1.6 : 0.9,
       fog: opts.fog ?? true,
+      vertexColors: opts.vertexColors === true,
     })
     if (opts.map !== undefined) mat.map = opts.map
     if (opts.emissive !== undefined && opts.emissive > 0) {
@@ -1643,6 +1953,7 @@ export class Renderer {
     surface: ComicSurface | undefined,
     tint?: number,
     tintAmount = 0,
+    vertexColors = false,
   ): MeshStandardMaterial {
     const family = surfaceFamily(surface)
     const maps = this.surfaceMaps[family]
@@ -1662,6 +1973,7 @@ export class Renderer {
       normalScale: new Vector2(0.55, 0.55),
       envMapIntensity: family === 'metal' ? 1.3 : 0.8,
       fog: true,
+      vertexColors,
     })
     // 0 木 / 1 石 / 2 金属 / 3 泥 / 4 植被：程序化砖缝/木纹/锈迹在这里注入。
     const detailFamily =
@@ -1731,6 +2043,8 @@ export class Renderer {
       if (isCanopy(brush)) {
         const geo = canopyGeometry(brush)
         if (this.realistic) applyBoxProjection(geo, tile)
+        // 树冠的色差比墙更大：叶子本来就该一块深一块浅。
+        paintPanel(geo, panelTint(brush, true))
         canopyGeos.push(geo)
         continue
       }
@@ -1738,6 +2052,8 @@ export class Renderer {
       if (this.realistic) applyBoxProjection(geo, tile)
       if (brush.rotY) geo.rotateY(brush.rotY)
       geo.translate(brush.x, brush.y, brush.z)
+      // 合批前写入逐块色差，合批后每条盒刷仍保留自己的色调。
+      paintPanel(geo, panelTint(brush))
       list.push(geo)
     }
 
@@ -1748,13 +2064,14 @@ export class Renderer {
         const spec = MATERIALS.foliage ?? MATERIALS.wood!
         const tint = MATERIAL_TINT.foliage ?? MATERIAL_TINT.wood!
         const material: Material = this.realistic
-          ? this.pbrSurfaceMaterial(spec.color, spec.surface, tint.tint, tint.amount)
+          ? this.pbrSurfaceMaterial(spec.color, spec.surface, tint.tint, tint.amount, true)
           : this.toonMaterial(spec.color, {
               tint: tint.tint,
               tintAmount: tint.amount,
               surface: spec.surface,
               specular: spec.specular,
               rim: spec.rim,
+              vertexColors: true,
             })
         const mesh = new Mesh(merged, material)
         mesh.castShadow = true
@@ -2079,7 +2396,19 @@ export class Renderer {
     // 镜筒放大的是世界，不是手里这把枪：枪位按同一倍数推远，屏幕上大小不变。
     vm.viewScale = zoom
     vm.wallBlock = Math.min(1, Math.max(0, wallBlock))
+    // QA：?reload=0.5 强制停在换弹中段，配合 show=weapon&dt=0 拍时间轴关键帧。
+    if (qa.reload !== null) {
+      vm.reloading = true
+      vm.reloadProgress = qa.reload
+    }
     this.viewmodel.update(vm, dt)
+    if (this.showcase === 'weapon' && qa.reload === null) {
+      // QA 展示：把枪摆到画面中央、绕 y 转 30°，一眼看全机匣/瞄具/枪托。
+      // 必须写在 viewmodel.update 之后 —— 它每帧都会覆盖 root 的位姿。
+      // `?reload=` 时不覆盖：那一步要看的是换弹姿态本身，盖掉就等于没测。
+      this.viewmodel.root.position.set(0, -0.17, -0.62)
+      this.viewmodel.root.rotation.set(0.05, 0.52, -0.04)
+    }
 
     if (this.flash > 0) {
       this.flash = Math.max(0, this.flash - dt)
@@ -2095,8 +2424,19 @@ export class Renderer {
       this.muzzleWorld.intensity = 0
     }
 
+    // 命中光的衰减贴着枪口光的写法：强度按剩余寿命线性收，归零后不再写
+    // uniform。它只持续两帧左右，连续命中时每次都会把 TTL 顶回满值。
+    if (this.impactFlashTtl > 0) {
+      this.impactFlashTtl = Math.max(0, this.impactFlashTtl - dt)
+      this.impactLight.intensity = IMPACT_FLASH_INTENSITY * (this.impactFlashTtl / IMPACT_FLASH_SECONDS)
+    } else if (this.impactLight.intensity !== 0) {
+      this.impactLight.intensity = 0
+    }
+
     this.updateBoil(dt)
+    this.updateShowcase(dt)
     this.vfx.update(dt)
+    this.decals.update(dt)
 
     for (let i = this.tracers.length - 1; i >= 0; i--) {
       const tracer = this.tracers[i]!
@@ -2124,6 +2464,29 @@ export class Renderer {
   /** 命中/枪口粒子入口。方向只能由调用方给：服务端事件只带位置。 */
   get effects(): Vfx {
     return this.vfx
+  }
+
+  /**
+   * 墙面命中贴花。`normal` 来自 surfaces.ts 的关卡推断，不是弹道反方向 ——
+   * 打地板时后者会让贴花立起来。
+   */
+  addDecal(point: Vec3, normal: { x: number; y: number; z: number }, kind: ImpactKind): void {
+    this.decals.spawn(point, normal, kind)
+  }
+
+  /**
+   * 命中瞬间的点光。竞技档（performance）直接跳过：那一档为帧率关掉了
+   * 实时阴影与泛光，再加一盏逐片元点光的收益抵不上开销。
+   */
+  impactFlash(point: Vec3, kind: ImpactKind): void {
+    if (this.resolvedQuality === 'performance') return
+    // 金属是暖白火花，石头/泥是冷灰，木头是偏橙的炭火。
+    const color =
+      kind === 'metal' ? 0xffe2b0 : kind === 'stone' ? 0xc6d8e8 : kind === 'wood' ? 0xffb160 : 0x9fb8a0
+    this.impactLight.color.setHex(color)
+    this.impactLight.position.set(point.x, point.y + 0.06, point.z)
+    this.impactFlashTtl = IMPACT_FLASH_SECONDS
+    this.impactLight.intensity = IMPACT_FLASH_INTENSITY
   }
 
   /**
@@ -2212,7 +2575,12 @@ export class Renderer {
     )
     const adsScale = 1 - this.adsBlend * 0.55
     this.punchPitch += 0.011 * weight * adsScale * this.motionScale
-    this.punchYaw += (Math.random() - 0.5) * 0.007 * weight * adsScale * this.motionScale
+    // 横摆用确定性哈希：同一段命中序列重放时相机拳完全一致，
+    // 截图/对比工具不会因为一次随机横摆就判失败。
+    this.punchSeq++
+    const jitter = Math.sin(this.punchSeq * 12.9898) * 43758.5453
+    const j = (jitter - Math.floor(jitter)) * 2 - 1
+    this.punchYaw += j * 0.0035 * weight * adsScale * this.motionScale
     this.punchRoll += 0.005 * weight * adsScale * this.motionScale
   }
 
@@ -2401,6 +2769,14 @@ export class Renderer {
     const moon = this.atmo.moonDirection
     setInkKeyDirection(moon.x, moon.y, moon.z)
     this.updateDoors(this.frameDt)
+    // QA 固定机位必须落在 renderWorld 之前、所有 update 之后：玩家移动、
+    // 后坐、镜头晃动照常算完，最后一步才被这里盖掉。
+    if (this.fixedCamera !== null) {
+      const c = this.fixedCamera
+      this.camera.position.set(c.x, c.y, c.z)
+      this.camera.lookAt(c.tx, c.ty, c.tz)
+      this.camera.updateMatrixWorld()
+    }
     this.post.renderWorld(this.scene, this.camera)
     // 深度已经写完：把相机矩阵与朝月亮的方向交给接触阴影。放在武器层之前，
     // present 里就能直接用这一帧的深度，不需要额外 prepass。
@@ -2543,6 +2919,8 @@ export class Renderer {
     this.monsters.dispose()
     this.markers.dispose()
     this.vfx.dispose()
+    this.decals.dispose()
+    this.impactLight.removeFromParent()
     this.viewmodel.dispose()
     this.props.dispose()
     // 大气在 props 之后：它会把自己那盏复用的 FogExp2 还原，props 里若有

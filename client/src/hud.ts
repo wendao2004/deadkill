@@ -81,6 +81,8 @@ export interface ObjectiveModel {
   selfDowned?: boolean
   /** 队友正在救自己的进度 0..1 */
   revivePct?: number
+  /** 同队队友（不含自己） */
+  teammates?: { id: number; name: string; health: number; downed: boolean; alive: boolean; distance: number }[]
   outcome: 'none' | 'escaped' | 'dead'
 
   // ---- 以下全部可选：服务端还在加三槽武器，接线前不传就整块不动 ----
@@ -332,6 +334,17 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
   const downedSub = el('div', 'dko-downed-sub', '等待队友救援')
   downedBox.append(downedTitle, downedSub)
 
+  // 队友列表：右侧小面板，只在双人局出现。
+  const teamBox = el('div', 'dko-team')
+  const teamHead = el('div', 'dko-team-head', '队 友')
+  const teamRows = el('div', 'dko-team-rows')
+  teamBox.append(teamHead, teamRows)
+
+  // 救援别人时的进度条（自己倒地时用的是 downedBox）。
+  const reviveBox = el('div', 'dko-revive')
+  const reviveText = el('div', 'dko-revive-text', '')
+  reviveBox.append(reviveText)
+
   // 携带赏金后的撤离点方位：三行"名字 距离 箭头"，只在本人携带时出现。
   const bearingBox = el('div', 'dko-bearing')
   const bearingRows = [0, 1, 2].map(() => {
@@ -430,7 +443,7 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
     slotNums.push(num)
   }
 
-  host.append(cluesBox, clock, eventBox, contractBox, downedBox, compass, bearingBox, bannerEl, banishBox, extractBox, outcomeBox, slotsBox, curtain)
+  host.append(cluesBox, clock, eventBox, contractBox, downedBox, teamBox, reviveBox, compass, bearingBox, bannerEl, banishBox, extractBox, outcomeBox, slotsBox, curtain)
   root.append(host)
 
   // 死亡演出：去饱和层 + UI 层，都挂 body（见文件头的"为什么挂到 body"）
@@ -458,6 +471,7 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
   let eventSecCache = -1
   let downedCache: boolean | null = null
   let reviveCache = -1
+  let teammateCount = -1
   let criticalCache = false
   let banishCache = -1
   let extractOnCache = false
@@ -1021,6 +1035,41 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
     contractProg.textContent = done ? '完成 +$' + spec.reward : progress + '/' + spec.target
   }
 
+  interface TeamRow { row: HTMLElement; name: HTMLElement; bar: HTMLElement; status: HTMLElement }
+  const teamRowCache: TeamRow[] = []
+
+  function syncTeammates(list: NonNullable<ObjectiveModel['teammates']>): void {
+    if (list.length !== teammateCount) {
+      teammateCount = list.length
+      teamRows.textContent = ''
+      teamRowCache.length = 0
+      for (let i = 0; i < list.length; i++) {
+        const row = el('div', 'dko-team-row')
+        const name = el('span', 'dko-team-name', '')
+        const bar = el('span', 'dko-team-bar')
+        const fill = el('i', 'dko-team-fill')
+        bar.appendChild(fill)
+        const status = el('span', 'dko-team-status', '')
+        row.append(name, bar, status)
+        teamRows.appendChild(row)
+        teamRowCache.push({ row, name, bar, status })
+      }
+      teamBox.classList.toggle('is-on', list.length > 0)
+    }
+    for (let i = 0; i < list.length; i++) {
+      const mate = list[i]!
+      const view = teamRowCache[i]!
+      view.name.textContent = mate.name
+      const dead = !mate.alive
+      const downed = mate.downed && mate.alive
+      view.row.classList.toggle('is-dead', dead)
+      view.row.classList.toggle('is-downed', downed)
+      const pct = Math.max(0, Math.min(100, Math.round((mate.health / 150) * 100)))
+      view.bar.style.setProperty('--hp', pct + '%')
+      view.status.textContent = dead ? '死 亡' : downed ? '倒 地' : Math.round(mate.distance) + 'm'
+    }
+  }
+
   function update(model: ObjectiveModel): void {
     if (disposed) return
 
@@ -1093,6 +1142,8 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
       clock.classList.toggle('is-critical', critical)
     }
 
+    syncTeammates(model.teammates ?? [])
+
     // ---- 倒地 / 救援 ----
     const selfDowned = model.selfDowned === true
     if (downedCache !== selfDowned) {
@@ -1106,6 +1157,10 @@ export function createObjectiveHud(root: HTMLElement): ObjectiveHud {
         downedSub.textContent = revive > 0 ? '队 友 救 援 中 ' + revive + '%' : '等 待 队 友 救 援'
       }
     }
+
+    const reviving = !selfDowned && (model.revivePct ?? 0) > 0
+    reviveBox.classList.toggle('is-on', reviving)
+    if (reviving) reviveText.textContent = '救 援 中 ' + Math.round((model.revivePct ?? 0) * 100) + '%'
 
     // ---- 世界事件横幅 ----
     const event = model.event ?? 0

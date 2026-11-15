@@ -52,6 +52,14 @@
  * 方向放在 INK_SHARED 里由渲染器每帧指向月亮；强度默认 0，所以不开的材质
  * 像素一个都不变。
  *
+ * ## 为什么要湿度
+ *
+ * 沼泽永远在下雨，但只有真的下雨时"湿"才读得出来。同一套墨线着色里把
+ * 朝上的面压暗一档、垂直面加一道雨痕，玩家不需要水面反射也能立刻感觉到
+ * "这局是骤雨"。强度是共享 uniform：天气切换只改一个数，不重编译；
+ * 而且它乘在 outgoingLight 上，排线的亮度判断会跟着一起变，不会出现
+ * "表面湿了、排线还是干的"。
+ *
  * ## 为什么必须有 customProgramCacheKey
  *
  * three 的 program 缓存键只看材质类型与 defines / 光照分支 / 贴图槽，**不看
@@ -132,11 +140,38 @@ export const INK_SHARED: {
   keyDir: { value: number[] }
   /** 0 = 关闭世界空间程序化细节（性能档）；1 = 开。默认 1。 */
   detail: { value: number }
+  /** 场景湿度 0..1：朝上的面压暗、垂直面挂流痕。默认 0.55。 */
+  wet: { value: number }
+  /** 当前关卡地面高度：苔藓/湿气按"离地多高"分布。默认 0。 */
+  groundY: { value: number }
 } = {
   // 约等于 atmosphere.ts 的默认月亮方向（方位 149°、仰角 18°），
   // 只在渲染器尚未调用 setInkKeyDirection 时兜底；specular 默认 0，不影响画面。
   keyDir: { value: [0.489, 0.309, -0.815] },
   detail: { value: 1 },
+  wet: { value: 0.55 },
+  groundY: { value: 0 },
+}
+
+/**
+ * 关卡地面高度。苔藓按"离地多高"淡出，不能写死 0：采石场/车站的地面
+ * 不一定在 y=0，写死会让苔藓长在半空或整片消失。
+ */
+export function setInkGroundY(value: number): void {
+  INK_SHARED.groundY.value = Number.isFinite(value) ? value : 0
+}
+
+/**
+ * 雨湿程度 0..1。
+ *
+ * 当前默认画风是 toon/墨线（`realistic = false`），所以湿度只能落在
+ * 这一层；PBR 分支不再重复实现，避免出现两套只有一套生效的代码。
+ * 回合天气（死寂/浓雾/骤雨）与
+ * QA 的 `?wet=` 都通过它驱动；GLSL 里只在朝上的面压暗、垂直面加流痕，
+ * 不改光照模型，手绘色阶不会被洗成 PBR。
+ */
+export function setInkWetness(value: number): void {
+  INK_SHARED.wet.value = Math.min(1, Math.max(0, value))
 }
 
 /** 性能档：跳过三平面材质细节的噪声采样（描边/排线/污渍保留）。 */
@@ -194,6 +229,10 @@ type ComicUniforms = {
   uInkKeyDir: { value: number[] }
   /** 与 INK_SHARED.detail 是同一个对象。 */
   uComicDetail: { value: number }
+  /** 与 INK_SHARED.wet 是同一个对象。 */
+  uComicWet: { value: number }
+  /** 与 INK_SHARED.groundY 是同一个对象。 */
+  uComicGroundY: { value: number }
 }
 
 /**
@@ -203,7 +242,7 @@ type ComicUniforms = {
 const FRAGMENT_HOOK = '#include <opaque_fragment>'
 
 /** 程序缓存键：版本号带在里面，将来升级注入内容时换版本即可全量失效。 */
-const CACHE_KEY = 'comic-ink-v2'
+const CACHE_KEY = 'comic-ink-v7'
 
 /** 便宜的 2D→1D 整数哈希：不需要好看，只需要相邻格子不相关。 */
 const HASH_GLSL = [
@@ -250,7 +289,7 @@ const HASH_GLSL = [
  */
 const SURFACE_GLSL = [
   '// Stone: brick courses on walls, irregular flagstones on horizontal faces.',
-  'vec3 comicStoneSurface(vec2 p, float horizon) {',
+  'vec3 comicStoneSurface(vec2 p, float horizon, float height) {',
   '  vec3 tint = vec3(1.0);',
   '  if (horizon > 0.5) {',
   '    // Flagstones: one jittered grid (a Voronoi needs neighbour loops we do not want).',
@@ -263,6 +302,9 @@ const SURFACE_GLSL = [
   '    float gap = 1.0 - smoothstep(0.006, 0.022, d);',
   '    float stone = 0.93 + 0.14 * comicHash21(cell + 3.7);',
   '    tint *= stone * (1.0 - 0.28 * gap);',
+  '    // Grass/moss settles in the flagstone gaps: a hand-painted green seam,',
+  '    // not a green tint over the whole ground.',
+  '    tint = mix(tint, tint * vec3(0.74, 0.88, 0.60), gap * 0.45);',
   '  } else {',
   '    // Brick courses: 0.78m x 0.30m, every other row shifted half a brick.',
   '    float row = floor(p.y / 0.30);',
@@ -276,13 +318,36 @@ const SURFACE_GLSL = [
   '    float lip = smoothstep(0.26, 0.298, f.y);',
   '    tint *= brick * (1.0 - 0.30 * mortar);',
   '    tint += vec3(0.05) * lip * (1.0 - mortar);',
+  '    // Chipped corners: a few bricks lose their edge over the years. Hash per',
+  '    // brick, masked to the edge so it reads as erosion, not random noise.',
+  '    float chip = step(0.86, comicHash21(vec2(row, col) + 13.7));',
+  '    chip *= 1.0 - smoothstep(0.02, 0.075, d);',
+  '    tint *= 1.0 - 0.20 * chip;',
   '  }',
   '  // Low-frequency weathering: moss, rain, years of sun.',
   '  tint *= 0.90 + 0.20 * comicNoise2(p * 0.33 + vec2(4.7, 8.1));',
   '  return tint;',
   '}',
-  '// Wood: ~6.5x stretched grain, 0.42m board seams, sparse knots.',
-  'vec3 comicWoodSurface(vec2 p, float horizon) {',
+  '// Wood: roof shingles when up-facing and high; otherwise grain/board seams.',
+  'vec3 comicWoodSurface(vec2 p, float horizon, float height) {',
+  '  // Roof branch: up-facing wood 2.2-10m above ground. Rows are 0.34m tall,',
+  '  // 0.52m wide, half-offset per row. Lower edge catches moss and rain.',
+  '  if (horizon > 0.5 && height > 2.2 && height < 10.0) {',
+  '    float row = floor(p.y / 0.34);',
+  '    float sx = p.x / 0.52 + mod(row, 2.0) * 0.5;',
+  '    float col = floor(sx);',
+  '    vec2 f = vec2(fract(sx) * 0.52, fract(p.y / 0.34) * 0.34);',
+  '    float seamX = min(f.x, 0.52 - f.x);',
+  '    float seamY = min(f.y, 0.34 - f.y);',
+  '    float seam = 1.0 - smoothstep(0.006, 0.018, min(seamX, seamY));',
+  '    float shingle = 0.90 + 0.16 * comicHash21(vec2(row, col) + 2.3);',
+  '    vec3 tint = vec3(shingle * (1.0 - 0.30 * seam));',
+  '    float edgeMoss = (1.0 - smoothstep(0.0, 0.06, seamY))',
+  '      * smoothstep(0.50, 0.80, comicNoise2(p * 1.7 + vec2(9.1, 4.3)));',
+  '    tint *= mix(vec3(1.0), vec3(0.78, 0.88, 0.62), edgeMoss * 0.50);',
+  '    tint *= 0.90 + 0.20 * comicNoise2(p * 0.33 + vec2(4.7, 8.1));',
+  '    return tint;',
+  '  }',
   '  float across = p.x;',
   '  float along = p.y;',
   '  if (horizon > 0.5) {',
@@ -305,10 +370,30 @@ const SURFACE_GLSL = [
   '  float knot = (1.0 - smoothstep(0.03, 0.10, length(kf))) * step(0.72, comicHash21(kc + 2.3));',
   '  tint *= 1.0 - 0.22 * knot;',
   '  tint *= 1.0 - 0.26 * seam;',
+  '  // Saw marks: a fine diagonal grain that survives planing, plus the nails',
+  '  // that hold the board to the studs.',
+  '  float saw = comicNoise2(vec2(along * 12.0, across * 74.0));',
+  '  tint *= 0.96 + 0.08 * saw;',
+  '  float nailT = fract(along / 0.8 + comicHash21(vec2(plank, 9.1)) * 0.35);',
+  '  float nailD = length(vec2(seamD, (nailT - 0.5) * 0.8));',
+  '  float nail = 1.0 - smoothstep(0.012, 0.030, nailD);',
+  '  tint *= 1.0 - 0.34 * nail;',
   '  return tint;',
   '}',
-  '// Metal: brushed streaks, weak oxidation patches, edge pits.',
-  'vec3 comicMetalSurface(vec2 p, float horizon) {',
+  '// Metal: corrugated sheet when up-facing and high; otherwise brushed/rust.',
+  'vec3 comicMetalSurface(vec2 p, float horizon, float height) {',
+  '  // Corrugated sheet roofs: up-facing metal 2.2-10m above ground. Ribs are',
+  '  // ~0.18m apart, sheet overlaps every 2.4m, rust collects along the seams.',
+  '  if (horizon > 0.5 && height > 2.2 && height < 10.0) {',
+  '    float rib = sin(p.x * 34.9);',
+  '    float ribShade = 0.91 + 0.13 * (rib * 0.5 + 0.5);',
+  '    float seamD = min(fract(p.y / 2.4), 1.0 - fract(p.y / 2.4)) * 2.4;',
+  '    float seam = 1.0 - smoothstep(0.010, 0.040, seamD);',
+  '    float rust = smoothstep(0.55, 0.85, comicNoise2(vec2(p.x * 2.2, p.y * 0.6) + vec2(19.2, 4.4)));',
+  '    vec3 tint = vec3(ribShade * (1.0 - 0.26 * seam));',
+  '    tint = mix(tint, tint * vec3(1.12, 0.68, 0.42), 0.35 * rust * (0.4 + 0.6 * seam));',
+  '    return tint;',
+  '  }',
   '  float across = p.x;',
   '  float along = p.y;',
   '  if (horizon > 0.5) {',
@@ -325,10 +410,20 @@ const SURFACE_GLSL = [
   '  // Fine pitting along edges and recesses.',
   '  float pit = smoothstep(0.72, 0.95, comicHash21(floor(p * 26.0)));',
   '  tint *= 1.0 - 0.10 * pit;',
+  '  // Rivets: a regular 0.30m grid, not every cell (hand-drawn plates are',
+  '  // repaired and re-riveted unevenly).',
+  '  vec2 rq = p / 0.30;',
+  '  vec2 rc = floor(rq);',
+  '  vec2 rf = fract(rq) - 0.5;',
+  '  float rivet = (1.0 - smoothstep(0.07, 0.14, length(rf))) * step(0.55, comicHash21(rc + 2.7));',
+  '  tint *= 1.0 + 0.12 * rivet;',
+  '  // Paint chips: rare cells reveal darker bare metal underneath.',
+  '  float chip = step(0.94, comicHash21(floor(p / 0.13) + 7.3));',
+  '  tint = mix(tint, tint * vec3(0.58, 0.61, 0.66), 0.55 * chip);',
   '  return tint;',
   '}',
   '// Mud/ground: damp patches, pooled water, pebble speckle.',
-  'vec3 comicMudSurface(vec2 p, float horizon) {',
+  'vec3 comicMudSurface(vec2 p, float horizon, float height) {',
   '  // Damp patches: low frequency, darker and a touch cooler.',
   '  float damp = smoothstep(0.42, 0.78, comicNoise2(p * 0.55 + vec2(2.7, 11.4)));',
   '  vec3 tint = mix(vec3(1.0), vec3(0.82, 0.89, 1.00), 0.55 * damp);',
@@ -341,10 +436,16 @@ const SURFACE_GLSL = [
   '  float grit = comicHash21(floor(p * 46.0));',
   '  tint *= 1.0 - 0.12 * smoothstep(0.80, 0.94, grit);',
   '  tint += vec3(0.08) * step(0.96, comicHash21(floor(p * 23.0) + 7.7));',
+  '  // Dry cracks between the damp patches: one warped grid, masked by (1-damp),',
+  '  // so the mud reads as wet pools surrounded by dried plates.',
+  '  float warp = comicNoise2(p * 1.3 + vec2(5.1, 2.7));',
+  '  vec2 cf = abs(fract(p / 0.9 + warp * 0.12) - 0.5);',
+  '  float crack = (1.0 - smoothstep(0.0, 0.035, min(cf.x, cf.y))) * (1.0 - damp);',
+  '  tint *= 1.0 - 0.16 * crack;',
   '  return tint;',
   '}',
   '// Foliage: two scales of leaf clusters with a slight hue shift.',
-  'vec3 comicFoliageSurface(vec2 p, float horizon) {',
+  'vec3 comicFoliageSurface(vec2 p, float horizon, float height) {',
   '  float coarse = comicNoise2(p * 6.5);',
   '  float fine = comicNoise2(p * 19.0 + vec2(5.3, 9.7));',
   '  float leaf = coarse * 0.62 + fine * 0.38;',
@@ -352,6 +453,8 @@ const SURFACE_GLSL = [
   '  vec3 tint = mix(vec3(0.84), vec3(1.14), clump);',
   '  // Warm/cool leaf variation, kept under 10% so the 4 toon steps survive.',
   '  tint *= mix(vec3(1.0), vec3(0.90, 1.03, 0.84), clump * 0.35);',
+  '  // A warm top-light on the raised clumps: painted leaf volume, not a new hue.',
+  '  tint += vec3(0.06, 0.05, 0.025) * pow(clump, 3.0);',
   '  return tint;',
   '}',
 ].join('\n')
@@ -394,6 +497,8 @@ const UNIFORMS_GLSL = [
   'uniform float uComicRim;',
   'uniform vec3 uInkKeyDir;',
   'uniform float uComicDetail;',
+  'uniform float uComicWet;',
+  'uniform float uComicGroundY;',
 ].join('\n')
 
 /**
@@ -424,11 +529,14 @@ const INJECT_GLSL = [
   '      }',
   '      int comicId = int(uComicSurface + 0.5);',
   '      vec3 comicSurf = vec3(1.0);',
-  '      if (comicId == 1) comicSurf = comicStoneSurface(comicSurfP, comicHorizon);',
-  '      else if (comicId == 2) comicSurf = comicWoodSurface(comicSurfP, comicHorizon);',
-  '      else if (comicId == 3) comicSurf = comicMetalSurface(comicSurfP, comicHorizon);',
-  '      else if (comicId == 4) comicSurf = comicMudSurface(comicSurfP, comicHorizon);',
-  '      else if (comicId == 5) comicSurf = comicFoliageSurface(comicSurfP, comicHorizon);',
+  '      // Height above the level ground is what separates a roof from a floor;',
+  '      // the same wood/metal function switches to shingles/corrugation there.',
+  '      float comicHeight = vComicWorld.y - uComicGroundY;',
+  '      if (comicId == 1) comicSurf = comicStoneSurface(comicSurfP, comicHorizon, comicHeight);',
+  '      else if (comicId == 2) comicSurf = comicWoodSurface(comicSurfP, comicHorizon, comicHeight);',
+  '      else if (comicId == 3) comicSurf = comicMetalSurface(comicSurfP, comicHorizon, comicHeight);',
+  '      else if (comicId == 4) comicSurf = comicMudSurface(comicSurfP, comicHorizon, comicHeight);',
+  '      else if (comicId == 5) comicSurf = comicFoliageSurface(comicSurfP, comicHorizon, comicHeight);',
   '      // Albedo-level modulation only: the light response stays shared, so the',
   '      // 4 toon steps do not turn into per-pixel noise.',
   '      // Distance fade: the brick mortar and brushed metal are sub-pixel past',
@@ -437,6 +545,45 @@ const INJECT_GLSL = [
   '      // weathering (mottle below) at full strength; only the fine pattern fades.',
   '      float comicDetail = 1.0 - smoothstep(16.0, 52.0, distance(cameraPosition, vComicWorld));',
   '      outgoingLight *= mix(vec3(1.0), comicSurf, comicDetail);',
+  '      // Macro pigment drift: hand-painted panels never share one mix. Two',
+  '      // octaves: ~12m patches over ~55m regional drift. It kills the',
+  '      // "same box repeated" read without introducing texture tiling.',
+  '      float comicMacro = comicNoise2(vComicWorld.xz * 0.085 + vComicWorld.y * 0.04) * 0.65',
+  '        + comicNoise2(vComicWorld.xz * 0.018 + vComicWorld.y * 0.012 + vec2(3.7, 8.1)) * 0.35;',
+  '      outgoingLight *= mix(vec3(0.94, 0.97, 1.03), vec3(1.05, 1.02, 0.95), comicMacro);',
+  '      // Moss gathers near the ground, stronger on up-facing faces. Height is',
+  '      // relative to the level ground, not absolute Y.',
+  '      float comicLow = 1.0 - smoothstep(uComicGroundY + 0.15, uComicGroundY + 1.9, vComicWorld.y);',
+  '      float comicMossN = smoothstep(0.52, 0.82, comicNoise2(vComicWorld.xz * 2.3 + vec2(4.0, 9.0)));',
+  '      float comicMoss = comicLow * mix(0.35, 1.0, max(comicN.y, 0.0)) * comicMossN;',
+  '      outgoingLight *= mix(vec3(1.0), vec3(0.78, 0.90, 0.66), comicMoss * 0.38);',
+  '      // Ground cover: one low-frequency patch map splits the terrain into',
+  '      // grass and gravel drifts. Masked to up-facing surfaces near the ground',
+  '      // so walls and roofs keep their own material.',
+  '      float comicGroundMask = smoothstep(0.72, 0.92, comicN.y)',
+  '        * (1.0 - smoothstep(0.9, 2.4, comicHeight));',
+  '      float comicPatchN = comicNoise2(vComicWorld.xz * 0.16 + vec2(21.7, 13.1));',
+  '      float comicGrass = comicGroundMask * smoothstep(0.56, 0.74, comicPatchN);',
+  '      float comicGravel = comicGroundMask * (1.0 - smoothstep(0.30, 0.46, comicPatchN));',
+  '      outgoingLight = mix(outgoingLight, outgoingLight * vec3(0.82, 0.94, 0.68), comicGrass * 0.50);',
+  '      outgoingLight = mix(outgoingLight, outgoingLight * vec3(1.08, 1.06, 1.01), comicGravel * 0.30);',
+  '      // Standing water: after rain, up-facing surfaces hold dark cool sheets.',
+  '      // Painted as a low-frequency mask, not a reflection - the hand-drawn',
+  '      // style has no specular model, and a mirror highlight would break it.',
+  '      float comicWaterN = smoothstep(0.60, 0.80, comicNoise2(vComicWorld.xz * 0.22 + vec2(11.3, 5.7)));',
+  '      float comicWater = uComicWet * max(comicN.y, 0.0) * comicWaterN;',
+  '      outgoingLight = mix(outgoingLight, outgoingLight * vec3(0.60, 0.71, 0.82), comicWater * 0.45);',
+  '    }',
+  '    // Rain wetness: up-facing surfaces darken, vertical faces get runoff streaks.',
+  '    // Kept as a light multiply (not a separate material layer) so the 4 toon steps',
+  '    // and the drawn hatch still read. Uniform-driven: no recompile on weather change.',
+  '    if (uComicWet > 0.001) {',
+  '      float comicUp = clamp(comicN.y, 0.0, 1.0);',
+  '      float comicWet = uComicWet * smoothstep(0.15, 0.85, comicUp);',
+  '      float comicRunoff = comicNoise2(vec2((vComicWorld.x + vComicWorld.z) * 11.0, vComicWorld.y * 0.7));',
+  '      float comicWall = (1.0 - comicUp) * smoothstep(0.42, 0.85, comicRunoff);',
+  '      outgoingLight *= mix(1.0, 0.74, comicWet);',
+  '      outgoingLight *= mix(1.0, 0.87, comicWall * uComicWet * 0.6);',
   '    }',
   '    // Screen space: pixel units keep line width/density independent of distance.',
   '    // (GLSL comments stay ASCII on purpose: the shader source charset is not UTF-8 safe.)',
@@ -551,6 +698,8 @@ export function applyComicInk<T>(material: T, options?: ComicOptions): T {
     // 共享对象，不拷贝：setInkKeyDirection 改一次，所有材质下一帧都生效。
     uInkKeyDir: INK_SHARED.keyDir,
     uComicDetail: INK_SHARED.detail,
+    uComicWet: INK_SHARED.wet,
+    uComicGroundY: INK_SHARED.groundY,
   }
 
   // 引用同一批 uniform 对象：调用方之后拿到它改 .value，shader 里立刻生效。

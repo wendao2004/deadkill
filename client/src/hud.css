@@ -1605,3 +1605,90 @@ body:has(> .dko-death-ui.is-on) #crosshair {
   color: var(--bone, #d8cfba);
   opacity: 0.85;
 }
+
+/* 队友面板：右侧竖排，只在双人局出现。 */
+.dko-team {
+  position: absolute;
+  right: 22px;
+  top: 64px;
+  display: none;
+  min-width: 168px;
+  padding: 6px 10px 8px;
+  background: rgba(12, 11, 10, 0.52);
+  border-right: 2px solid rgba(217, 154, 74, 0.55);
+}
+
+.dko-team.is-on {
+  display: block;
+}
+
+.dko-team-head {
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--ash, #8d8578);
+  margin-bottom: 4px;
+}
+
+.dko-team-row {
+  display: grid;
+  grid-template-columns: 1fr 56px 34px;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--bone, #d8cfba);
+}
+
+.dko-team-bar {
+  display: block;
+  height: 4px;
+  background: rgba(12, 11, 10, 0.75);
+}
+
+.dko-team-fill {
+  display: block;
+  height: 100%;
+  width: var(--hp, 100%);
+  background: var(--bone, #d8cfba);
+  transition: width 160ms linear;
+}
+
+.dko-team-row.is-downed .dko-team-fill {
+  background: var(--blood, #7d2b22);
+}
+
+.dko-team-row.is-downed .dko-team-status {
+  color: var(--blood, #7d2b22);
+}
+
+.dko-team-row.is-dead {
+  opacity: 0.42;
+}
+
+.dko-team-status {
+  text-align: right;
+  color: var(--ash, #8d8578);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 救援别人时的进度条。 */
+.dko-revive {
+  position: absolute;
+  left: 50%;
+  bottom: 24%;
+  transform: translateX(-50%);
+  display: none;
+  padding: 4px 18px 6px;
+  background: rgba(12, 11, 10, 0.6);
+  border-left: 2px solid var(--amber, #d99a4a);
+}
+
+.dko-revive.is-on {
+  display: block;
+}
+
+.dko-revive-text {
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  color: var(--amber, #d99a4a);
+}

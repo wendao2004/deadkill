@@ -25,6 +25,7 @@ import {
   DEFAULT_WEAPON_ID,
   LEVEL_IDS,
   ATTACHMENTS,
+  ATTACHMENTS_ENABLED,
   CONTRACTS,
   clampAttachment,
   clampContract,
@@ -1342,7 +1343,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     side.appendChild(buildThreatPicker())
     side.appendChild(buildContractPicker())
     side.appendChild(buildExtrasPicker())
-    side.appendChild(buildAttachmentPicker())
+    // 旧的一件式配件先整块收起，等塔科夫式多槽位系统落地后再换回来
+    // （见 shared/src/attachments.ts 的 ATTACHMENTS_ENABLED）。
+    if (ATTACHMENTS_ENABLED) side.appendChild(buildAttachmentPicker())
     side.appendChild(buildIdentityFields())
 
     // 天赋摘要紧跟主武器那行：出击前最后一眼能同时确认"这把枪"和"这三条天赋"。

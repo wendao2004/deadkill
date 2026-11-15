@@ -62,12 +62,19 @@ export class Spring {
   value = 0
   velocity = 0
   target = 0
+  /**
+   * 显式字段 + 赋值，而不是构造函数参数属性。
+   *
+   * Node 的 `--experimental-strip-types` 是 strip-only：参数属性（`public freq`）
+   * 需要真正的 TS 编译器，测试会直接报 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX。
+   * 这个类现在有单测（tests/feel.test.ts），所以必须保持可被 strip 解析。
+   */
+  freq: number
+  damping: number
 
-  constructor(
-    public freq = 8,
-    public damping = 0.7,
-    value = 0,
-  ) {
+  constructor(freq = 8, damping = 0.7, value = 0) {
+    this.freq = freq
+    this.damping = damping
     this.value = value
   }
 
@@ -110,6 +117,41 @@ export class Spring {
     }
     return this.value
   }
+}
+
+/**
+ * 给定"想要的峰值位移"，反解出 Spring.impulse 需要的初速度。
+ *
+ * 直接写 impulse 的问题是没人知道 0.018 对应多少毫米 —— 旧代码注释说
+ * "约 2~3px"，实际峰值只有 0.17mm（欠阻尼 9Hz 下位移 ≈ v0/ω × 衰减），
+ * 于是五条后坐弹簧形同虚设。
+ *
+ * 这里不写解析式，而是用 Spring **同一套半隐式欧拉 + 1/360 子步**跑一次
+ * 单位冲量，量出真实峰值再反解。原因：显式积分器本身有数值阻尼，
+ * 解析解与代码实际跑出来的峰值差 ~9%（实测 5.5mm 只到 5.0mm）。
+ * 调参要的是"代码里真的到 5.5mm"，不是"公式里是 5.5mm"。
+ *
+ * 每次开火每条轴调用一次（216 步），对每发子弹的耗时可以忽略；
+ * 不在每帧路径上。
+ */
+export function impulseForPeak(peak: number, freq: number, damping: number): number {
+  if (peak === 0) return 0
+  const w = TAU * freq
+  const k = w * w
+  const c = 2 * Math.min(0.999, Math.max(0, damping)) * w
+  const h = MAX_SUB_DT
+  const steps = Math.ceil(0.6 / h)
+  let x = 0
+  let v = 1
+  let max = 0
+  for (let i = 0; i < steps; i++) {
+    const a = -k * x - c * v
+    v += a * h
+    x += v * h
+    const abs = Math.abs(x)
+    if (abs > max) max = abs
+  }
+  return peak / Math.max(1e-9, max)
 }
 
 /** 源码 tuning.js 的 CAMERA 表（只保留本项目用到的部分）。 */

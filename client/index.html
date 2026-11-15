@@ -410,6 +410,21 @@
       */
       #menu.is-hidden { display: none; }
 
+      /*
+        QA 干净画面（?hud=0 或无 HUD 的 ?show=）：只摘装饰层，不改渲染设置。
+        #dead 也一起藏 —— 截图里出现"你已阵亡"通常说明等待条件写错了。
+      */
+      body.dk-qa-clean #hud,
+      body.dk-qa-clean #grain,
+      body.dk-qa-clean #vignette,
+      body.dk-qa-clean #crosshair,
+      body.dk-qa-clean #scope,
+      body.dk-qa-clean #dead,
+      /* 目标 HUD 与覆盖层由 JS 挂到 body，不在 #hud 里，必须单列。 */
+      body.dk-qa-clean .dko,
+      body.dk-qa-clean .dko-map,
+      body.dk-qa-clean .dkov-host { display: none !important; }
+
       /* 晕动症玩家：颗粒漂移与呼吸脉冲是装饰，关掉后不影响任何玩法信息。 */
       @media (prefers-reduced-motion: reduce) {
         #grain, #crosshair, #hp.low { animation: none; }

@@ -10,16 +10,7 @@
  * - 屋顶坡度只改剪影，不改"能不能站"。
  */
 
-import {
-  Box3,
-  Group,
-  LoadingManager,
-  Mesh,
-  MeshStandardMaterial,
-  RepeatWrapping,
-  SRGBColorSpace,
-  TextureLoader,
-} from 'three'
+import { Box3, Group, LoadingManager, Mesh, type Material } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { LevelDef } from '@dk/shared'
 
@@ -30,12 +21,27 @@ interface VillageModel {
 
 export type VillageAssets = Record<string, VillageModel>
 
-interface Materials {
-  roof: MeshStandardMaterial
-  wood: MeshStandardMaterial
-  stone: MeshStandardMaterial
-  metal: MeshStandardMaterial
+/**
+ * 建筑外壳用的四种材质。由渲染器注入（墨线/toon 或写实 PBR），
+ * 本模块只管"哪块模型用哪一种"，不自己造材质。
+ */
+export interface VillageMaterials {
+  roof: Material
+  wood: Material
+  stone: Material
+  metal: Material
 }
+
+/**
+ * 外壳四色。当前默认画风走 toon/墨线，颜色按手绘色块挑：
+ * 屋瓦偏冷灰褐，木头深棕，石头冷灰，金属蓝灰。
+ */
+export const VILLAGE_COLORS = {
+  roof: 0x6f6a60,
+  wood: 0x4c3928,
+  stone: 0x6a675f,
+  metal: 0x4a4d50,
+} as const
 
 const PIECES = [
   'Roof_RoundTiles_4x6',
@@ -53,8 +59,9 @@ const PIECES = [
 const WHITE_PNG =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z2S8AAAAASUVORK5CYII='
 
-export async function loadVillageAssets(): Promise<{ assets: VillageAssets; materials: Materials }> {
+export async function loadVillageAssets(): Promise<VillageAssets> {
   const manager = new LoadingManager()
+  // glTF 自带贴图全部用白图替代：当前画风是程序化手绘，不加载 authored 贴图。
   manager.setURLModifier((url) => (/\.(png|jpg|jpeg)$/i.test(url) ? WHITE_PNG : url))
   const loader = new GLTFLoader(manager)
   const entries = await Promise.all(
@@ -73,32 +80,10 @@ export async function loadVillageAssets(): Promise<{ assets: VillageAssets; mate
   )
   const assets: VillageAssets = {}
   for (const [name, model] of entries) if (model) assets[name] = model
-
-  const textureBase = new URL('./models/village/textures/', document.baseURI)
-  const textureLoader = new TextureLoader()
-  const roofAlbedo = await textureLoader.loadAsync(new URL('roof_albedo.jpg', textureBase).href)
-  const roofNormal = await textureLoader.loadAsync(new URL('roof_normal.png', textureBase).href)
-  const roofRough = await textureLoader.loadAsync(new URL('roof_roughness.jpg', textureBase).href)
-  roofAlbedo.colorSpace = SRGBColorSpace
-  roofAlbedo.wrapS = roofAlbedo.wrapT = RepeatWrapping
-  roofNormal.wrapS = roofNormal.wrapT = RepeatWrapping
-  roofRough.wrapS = roofRough.wrapT = RepeatWrapping
-
-  const roof = new MeshStandardMaterial({
-    map: roofAlbedo,
-    normalMap: roofNormal,
-    roughnessMap: roofRough,
-    roughness: 1,
-    metalness: 0,
-    color: 0x8f8a80,
-  })
-  const wood = new MeshStandardMaterial({ color: 0x4c3928, roughness: 0.86, metalness: 0 })
-  const stone = new MeshStandardMaterial({ color: 0x6a675f, roughness: 0.92, metalness: 0 })
-  const metal = new MeshStandardMaterial({ color: 0x4a4d50, roughness: 0.55, metalness: 0.55 })
-  return { assets, materials: { roof, wood, stone, metal } }
+  return assets
 }
 
-function materialFor(name: string, materials: Materials): MeshStandardMaterial {
+function materialFor(name: string, materials: VillageMaterials): Material {
   if (/Roof/i.test(name)) return materials.roof
   if (/Chimney|Support/i.test(name)) return materials.stone
   if (/Balcony|Door|Window|Wagon|Crate/i.test(name)) return materials.wood
@@ -120,7 +105,7 @@ interface Placement {
 function place(
   parent: Group,
   model: VillageModel | undefined,
-  material: MeshStandardMaterial,
+  material: Material,
   p: Placement,
 ): void {
   if (!model) return
@@ -259,7 +244,7 @@ export function decorateVillage(
   parent: Group,
   level: LevelDef,
   assets: VillageAssets,
-  materials: Materials,
+  materials: VillageMaterials,
 ): void {
   const shells = SHELLS[level.id]
   if (!shells) return

@@ -34,6 +34,15 @@ export interface KernelOptions extends FixedClockOptions {
 export class Kernel<C extends KernelContext> {
   readonly clock: FixedClock
   readonly registry = new SystemRegistry<C>()
+  /**
+   * 单系统错误记录。
+   *
+   * 一个表现系统抛错（比如某个粒子池拿到 null 贴图）不该让本帧剩下的系统
+   * 全部不跑 —— 敌人的位置、HUD 的读数、声音都还在等着更新。所以每个
+   * (系统, 阶段) 单独 try/catch，同一处只报一次，其余照常推进。
+   */
+  readonly errors: { system: string; phase: string; error: unknown }[] = []
+  private readonly reported = new Set<string>()
   private initialized = false
   private disposed = false
 
@@ -76,14 +85,42 @@ export class Kernel<C extends KernelContext> {
     const steps = this.clock.advance(rawDt)
     const fixed = this.registry.with('fixedUpdate')
     for (let i = 0; i < steps; i++) {
-      for (const entry of fixed) entry.system.fixedUpdate?.(ctx.time.fixed, ctx)
+      for (const entry of fixed) {
+        if (entry.system.fixedUpdate === undefined) continue
+        this.guard(entry.id, 'fixedUpdate', () => entry.system.fixedUpdate!(ctx.time.fixed, ctx))
+      }
     }
-    for (const entry of this.registry.with('update')) entry.system.update?.(ctx.time.dt, ctx)
+    for (const entry of this.registry.with('update')) {
+      if (entry.system.update === undefined) continue
+      this.guard(entry.id, 'update', () => entry.system.update!(ctx.time.dt, ctx))
+    }
     for (const entry of this.registry.with('lateUpdate')) {
-      entry.system.lateUpdate?.(ctx.time.dt, ctx)
+      if (entry.system.lateUpdate === undefined) continue
+      this.guard(entry.id, 'lateUpdate', () => entry.system.lateUpdate!(ctx.time.dt, ctx))
     }
-    for (const entry of this.registry.with('render')) entry.system.render?.(ctx)
+    for (const entry of this.registry.with('render')) {
+      if (entry.system.render === undefined) continue
+      this.guard(entry.id, 'render', () => entry.system.render!(ctx))
+    }
     return steps
+  }
+
+  /**
+   * 错误隔离：同一 (系统, 阶段) 只记录/打印一次。
+   *
+   * 每帧刷同一条栈的代价很高（console 在 DevTools 打开时会同步序列化参数），
+   * 足以把一个 30fps 的场景拖到 10fps —— 观察者效应会让"哪里坏了"更难查。
+   */
+  private guard(id: string, phase: string, run: () => void): void {
+    try {
+      run()
+    } catch (error) {
+      const key = `${id}:${phase}`
+      if (this.reported.has(key)) return
+      this.reported.add(key)
+      this.errors.push({ system: id, phase, error })
+      console.error(`[kernel] ${id}.${phase} 抛错（已隔离，后续帧继续尝试）`, error)
+    }
   }
 
   resize(width: number, height: number, ctx: C): void {

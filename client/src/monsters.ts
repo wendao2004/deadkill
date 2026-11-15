@@ -113,6 +113,10 @@ const STATE_CHASE = 1
 const STATE_ATTACK = 2
 const STATE_DEAD = 3
 const STATE_SPECIAL = 4
+/** 调查：去最后目击点/声源查看。暂时复用 chase 的步态。 */
+const STATE_INVESTIGATE = 5
+/** 搜索：到达后绕圈找。暂时复用 idle 的呼吸。 */
+const STATE_SEARCH = 6
 
 /**
  * 每种怪的外观参数。
@@ -572,9 +576,15 @@ class MonsterLayer implements MonsterRenderer {
     rig.tz = view.z
     rig.hasTarget = true
 
+    // 调查/搜索暂时没有专属动画：两者都复用追击步态。调查是全速走，
+    // 搜索是绕着最后目击点慢走 —— chase 步态按实测速度缩放摆臂，慢走
+    // 自然就慢下来，不会出现"站着滑行"。未知状态码仍然落到 idle 分支，
+    // 不能让新状态在客户端变成一具僵硬的雕像。
+    const visualState =
+      view.state === STATE_INVESTIGATE || view.state === STATE_SEARCH ? STATE_CHASE : view.state
     const prevState = rig.state
-    rig.state = view.state
-    rig.stateAge = prevState === view.state ? rig.stateAge + dt : 0
+    rig.state = visualState
+    rig.stateAge = prevState === visualState ? rig.stateAge + dt : 0
     rig.health = view.health
 
     // 从尸体变回活物（复活/重生）：把淡出状态还原，否则新身体是透明的。
