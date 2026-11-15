@@ -55,7 +55,7 @@ pnpm --filter @dk/client dev     # 5173（/ws 与 /api 已代理到 8787）
 | `window.__ready` | 至少两帧真正渲染完成 |
 | `window.__fatal` | 启动/致命错误的首条文本；正常为 `null` |
 | `window.__errors` | 捕获的 `console.error`、未捕获异常与被拒绝的 Promise（最多 100 条） |
-| `window.__stats()` | 一帧读数：fps、tick、ping、画质、scale、GPU、draw calls、三角形、纹理、程序数、内核错误数、参数原文 |
+| `window.__stats()` | 一帧读数：fps、tick、ping、画质、scale、GPU、draw calls、三角形、纹理、程序数、内核错误数、参数原文；`resolution` 子对象含平滑帧时间、升降次数、画质降档次数、是否处于回升封锁 |
 | `window.__shotReady` | 截图模式稳定帧数已到 |
 | `window.__bench` | 基准结果 `{ frames, avg, median, p99, min, max, gpu }` |
 | `window.__benchDone` | 基准已完成 |
@@ -63,6 +63,11 @@ pnpm --filter @dk/client dev     # 5173（/ws 与 /api 已代理到 8787）
 | `window.__diag` / `window.__qa` | 原始诊断状态与解析后的参数 |
 
 内核会给每个 `(系统, 阶段)` 单独 try/catch（`shared/src/kernel/kernel.ts` 的 `guard()`）：某个表现系统抛错时，同一处只记录一次，本帧其余系统照常推进，错误数进 `__stats().kernelErrors`。
+
+**动态分辨率读数**：`__stats().resolution` 给出 `smoothedMs / upscales / downscales /
+qualityDrops / blocked`。治理器规则：连续 1 秒超标降 0.1；到本档下限仍超标且是
+自动画质才降档；连续 5 秒低于 75% 帧预算且过 10 秒冷却才升 0.05；升后 30 秒内
+又掉则封锁 60 秒。`?scale=` 或 `?dt=` 会关闭自适应，基准时务必使用其中之一。
 
 ---
 
@@ -156,6 +161,7 @@ node tools/qa-smoke.mjs --url http://127.0.0.1:5173/
 - 场景湿度 `?wet=`（天气驱动的墨线层压暗/流痕，QA 可固定）；
 - 命中贴花（弹孔按材质分池）+ 命中光照脉冲，`show=fx` 同时覆盖两者；
 - 后坐弹簧峰值反解（5.5mm / 0.7°，有单测）与换弹关键帧时间轴（`?reload=` 可验收）；
+- 动态分辨率回升滞回（纯状态机 + 8 条单测；`__stats().resolution` 可读升降与封锁状态）；
 - 截图对比工具（`pnpm qa:diff`，带通过阈值与退出码）；
 - 全路径冒烟（`pnpm qa:smoke`，覆盖主界面→入场→暂停→恢复→回大厅→再入场）。
 
@@ -163,8 +169,7 @@ node tools/qa-smoke.mjs --url http://127.0.0.1:5173/
 
 1. **`show=enemies`**：怪物模型/动画由服务端快照驱动，还没有伪造 `MonsterView` 的最小 harness。
 2. **死亡/结算路径**：服务端判定，客户端没有合法入口强制死亡，目前只靠人工。
-3. **动态分辨率回升滞回**：目前仍然只降不升（见 `game.ts` 的 `adaptResolution` 注释，这是刻意的取舍）。
-4. **`show=lair` 的机位**：固定偏移 `+7/+5/+7` 可能贴进建筑，后续应改为沿地图开阔方向取景。
+3. **`show=lair` 的机位**：固定偏移 `+7/+5/+7` 可能贴进建筑，后续应改为沿地图开阔方向取景。
 
 ---
 

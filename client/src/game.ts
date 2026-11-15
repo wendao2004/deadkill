@@ -83,6 +83,11 @@ import type { ImpactKind } from './vfx.ts'
 import type { MonsterView } from './monsters.ts'
 import { loadSavedSettings, type GraphicsQuality, type MenuSettings } from './settings.ts'
 import { applyQaSettings, diag, qa, summarizeFrames, type QaCamera } from './qa.ts'
+import {
+  createResolutionState,
+  stepResolution,
+  type ResolutionState,
+} from './resolution-governor.ts'
 
 /** 空数组常量：每帧给罗盘传"没有撤离点"时不分配新数组。 */
 const NO_POINTS: { x: number; z: number }[] = []
@@ -376,9 +381,8 @@ export class Game {
   private costSim = 0
   private costNet = 0
   private costDraw = 0
-  /** 帧时间移动平均（毫秒）与降分辨率后的冷却帧数，见 adaptResolution。 */
-  private frameMs = 16.7
-  private scaleCooldown = 0
+  /** 动态分辨率状态机；见 resolution-governor.ts。 */
+  private resolution: ResolutionState = createResolutionState()
   private viewWidth = 1
   private viewHeight = 1
 
@@ -422,8 +426,6 @@ export class Game {
   private settings: MenuSettings = applyQaSettings(loadSavedSettings())
   /** 当前实际画质档（auto 会被解析成具体档；运行中只在持续掉帧时降档）。 */
   private qualityTier: 'performance' | 'balanced' | 'quality' = 'balanced'
-  /** 连续多少帧明显超标；满 60 帧才动分辨率/画质，避免被单次尖峰带着抖。 */
-  private lowFrameFrames = 0
   /**
    * 本地角色最近两个固定步的脚底位置/眼高，用于渲染插值。
    *
@@ -700,14 +702,21 @@ export class Game {
     const render = this.renderer.stats()
     return {
       fps: Math.round(this.fps * 10) / 10,
-      // 有真实 fps 时以它为准：adaptResolution 在 QA 固定档下会提前返回，
-      // frameMs 会停在初值，拿它判断"跑多快"会得出错误结论。
-      frameMs: Math.round((this.fps > 0 ? 1000 / this.fps : this.frameMs) * 100) / 100,
+      // 有真实 fps 时以它为准：QA 固定档下治理器不推进，smoothedMs 会停在
+      // 初值，拿它判断"跑多快"会得出错误结论。
+      frameMs: Math.round((this.fps > 0 ? 1000 / this.fps : this.resolution.smoothedMs) * 100) / 100,
       tick: this.lastSnapshot?.tick ?? 0,
       ping: this.estimatePing(),
       quality: this.qualityTier,
       gpu: this.renderer.gpuLabel(),
       scale: Math.round(this.renderer.getScale() * 100) / 100,
+      resolution: {
+        smoothedMs: Math.round(this.resolution.smoothedMs * 100) / 100,
+        upscales: this.resolution.upscales,
+        downscales: this.resolution.downscales,
+        qualityDrops: this.resolution.qualityDrops,
+        blocked: this.kernel.clock.time.frame < this.resolution.upBlockedUntil,
+      },
       steps: this.lastKernelSteps,
       pending: this.pending.length,
       kernelErrors: this.kernel.errors.length,
@@ -756,6 +765,9 @@ export class Game {
     if (settings.renderScale !== prevRenderScale) {
       this.renderer.setRenderScale(this.settings.renderScale)
       this.renderer.setSize(this.viewWidth, this.viewHeight)
+      // 显式改分辨率是玩家的决定：重置治理器，让新上限立刻参与决策，
+      // 而不是被上一次降档留下的冷却拖住。
+      this.resolution = createResolutionState(this.kernel.clock.time.frame)
     }
     this.audio.setVolume(this.settings.volume)
   }
@@ -776,7 +788,8 @@ export class Game {
       this.qualityTier = mode
     }
     this.renderer.setQuality(this.qualityTier)
-    this.lowFrameFrames = 0
+    // 换档后重新预热：刚重建的 RT/阴影图不能当作稳态帧时间。
+    this.resolution = createResolutionState(this.kernel.clock.time.frame)
     const cap = this.qualityTier === 'performance' ? 0.65 : this.qualityTier === 'balanced' ? 0.85 : 1
     this.renderer.setRenderScale(Math.min(this.settings.renderScale, cap))
   }
@@ -874,53 +887,53 @@ export class Game {
   }
 
   /**
-   * 自适应分辨率：**只降不升**。
+   * 自适应分辨率：慢降、稳升，带反抖动封锁。
    *
-   * 早期版本在阈值两侧自动升/降，结果每一次改分辨率都要重建 HDR 目标与
-   * 泛光金字塔：帧率一好就升、升完又掉、再降 —— 玩家看到的是每隔几秒
-   * 一次的顿挫，比稳定在低一点的分辨率更难受。
+   * 降：连续 1 秒（60 帧）明显超标才降 0.1；到本档下限仍超标且是自动画质，
+   * 再降一档画质。升：连续 5 秒低于 75% 预算、且过了 10 秒冷却，才升 0.05。
    *
-   * 现在：连续 1 秒（60 帧）明显超标才降；降到当前画质档的下限后，仍然
-   * 超标才降一档画质。升清晰度是玩家的显式操作（设置里的画质/分辨率上限），
-   * 不做自动回弹。启动后 2 秒内不参与自适应，避开 shader 编译/首帧分配。
+   * 为什么升得这么慢：每次改 scale 都要重建 HDR 目标与泛光金字塔，60fps 下
+   * 是一次可见顿挫。"一好就升、一升又掉"会让玩家每隔几秒卡一下，比稳定在
+   * 低一点的分辨率更难受。如果升完 10 秒内又掉回来，治理器会封锁 60 秒，
+   * 承认这台机器撑不住那个 scale。
+   *
+   * 玩家设置的分辨率是**上限**：自动回升永远不会超过它，也不会超过当前
+   * 画质档的 cap。QA 固定 `?dt` / `?scale` 时整段跳过。
    */
   private adaptResolution(dt: number): void {
     if (dt <= 0) return
     // QA 固定步/固定分辨率（?dt / ?scale）时不自适应：基准要测"这个档位
-    // 到底跑多少帧"，中途降档会让 p99 变成一个混合了两种画质的数。
+    // 到底跑多少帧"，中途改档会让 p99 变成一个混合了两种画质的数。
     if (qa.fixedDt !== null || qa.renderScale !== null) return
-    const budget = 1000 / 60
-    this.frameMs += (dt * 1000 - this.frameMs) * 0.1
 
-    // 启动阶段：首帧 shader 编译、纹理上传、RT 分配都可能让 frameMs 飙高，
-    // 这不是稳态性能，不该触发降档。
-    if (this.kernel.clock.time.frame < 120) {
-      this.lowFrameFrames = 0
-      return
+    const cap = this.qualityTier === 'performance' ? 0.65 : this.qualityTier === 'balanced' ? 0.85 : 1
+    const action = stepResolution(this.resolution, {
+      frameMs: dt * 1000,
+      frame: this.kernel.clock.time.frame,
+      scale: this.renderer.getScale(),
+      minScale: this.renderer.getMinScale(),
+      maxScale: Math.min(this.settings.renderScale, cap),
+      autoQuality: this.settings.graphics === 'auto',
+      tier: this.qualityTier,
+    })
+
+    if (action.scale !== null) {
+      this.renderer.setRenderScale(action.scale)
+      this.renderer.setSize(this.viewWidth, this.viewHeight)
     }
 
-    if (this.frameMs > budget * 1.45) this.lowFrameFrames++
-    else this.lowFrameFrames = 0
-
-    if (this.lowFrameFrames < 60) return
-    if (--this.scaleCooldown > 0) return
-
-    const scale = this.renderer.getScale()
-    const minScale = this.renderer.getMinScale()
-    const auto = this.settings.graphics === 'auto'
-
-    if (scale > minScale + 1e-6) {
-      // 先降世界分辨率。步长 0.1，且改完至少等 2.5 秒再评估下一次。
-      this.renderer.setRenderScale(Math.max(minScale, scale - 0.1))
-      this.renderer.setSize(this.viewWidth, this.viewHeight)
-      this.scaleCooldown = 150
-      this.lowFrameFrames = 0
-    } else if (auto && this.qualityTier !== 'performance') {
-      // 分辨率已经到本档下限，还是超标：降一档画质（会重建 RT/阴影图）。
+    if (action.qualityDown) {
+      const prev = this.resolution
       this.qualityTier = this.qualityTier === 'quality' ? 'balanced' : 'performance'
       this.renderer.setQuality(this.qualityTier)
-      this.scaleCooldown = 300
-      this.lowFrameFrames = 0
+      // 换档后要重新预热，但累计计数与反抖动封锁必须跨档保留。
+      const next = createResolutionState(this.kernel.clock.time.frame)
+      next.upscales = prev.upscales
+      next.downscales = prev.downscales
+      next.qualityDrops = prev.qualityDrops
+      next.upBlockedUntil = prev.upBlockedUntil
+      next.lastUpscaleFrame = prev.lastUpscaleFrame
+      this.resolution = next
     }
   }
 
