@@ -29,6 +29,7 @@ pnpm --filter @dk/client dev     # 5173（/ws 与 /api 已代理到 8787）
 | `map` | 关卡 id | 固定关卡；不传时按会话记忆/随机 |
 | `noaudio` | `1` | 不创建、不解锁 `AudioContext`（大厅与局内都不碰） |
 | `post` | `0` | 关闭泛光/颗粒/暗角/色差/锐化/接触阴影；HDR、AgX、FXAA 保留 |
+| `postfail` | `1` | 强制绕过整条后处理链，验证前向直出回退；`__stats().renderPath === 'direct'` |
 | `autostart` | `1` | 跳过主界面，复用真实 `enter()` 启动链 |
 | `dt` | 毫秒 | 固定每帧时长。`dt=0` **冻结模拟只重绘**；`dt=16.67` 钉住 60Hz |
 | `cam` | `x,y,z,tx,ty,tz` | 固定世界相机（位置 + 注视点），每帧在渲染前覆盖 |
@@ -55,7 +56,7 @@ pnpm --filter @dk/client dev     # 5173（/ws 与 /api 已代理到 8787）
 | `window.__ready` | 至少两帧真正渲染完成 |
 | `window.__fatal` | 启动/致命错误的首条文本；正常为 `null` |
 | `window.__errors` | 捕获的 `console.error`、未捕获异常与被拒绝的 Promise（最多 100 条） |
-| `window.__stats()` | 一帧读数：fps、tick、ping、画质、scale、GPU、draw calls、三角形、纹理、程序数、内核错误数、参数原文；`resolution` 子对象含平滑帧时间、升降次数、画质降档次数、是否处于回升封锁 |
+| `window.__stats()` | 一帧读数：fps、tick、ping、画质、scale、GPU、draw calls、三角形、纹理、程序数、内核错误数、参数原文、`renderPath`（post/direct）；`resolution` 子对象含平滑帧时间、升降次数、画质降档次数、是否处于回升封锁 |
 | `window.__shotReady` | 截图模式稳定帧数已到 |
 | `window.__bench` | 基准结果 `{ frames, avg, median, p99, min, max, gpu }` |
 | `window.__benchDone` | 基准已完成 |
@@ -165,7 +166,9 @@ node tools/qa-smoke.mjs --url http://127.0.0.1:5173/
 - 截图对比工具（`pnpm qa:diff`，带通过阈值与退出码）；
 - 全路径冒烟（`pnpm qa:smoke`，覆盖主界面→入场→暂停→恢复→回大厅→再入场）；
 - 指针锁降级：API 缺失或 `pointerlockerror` 时自动切"移动鼠标转向"，
-  `Game.lookHint()` / 状态条给出对应文案。
+  `Game.lookHint()` / 状态条给出对应文案；
+- 后处理链自检：预热后检查核心 pass 的 program 链接状态，失败或 `?postfail=1`
+  时回退 ACES 前向直出（`renderPath: direct`）。
 
 尚未完成（按收益排序）：
 
@@ -184,6 +187,7 @@ node tools/qa-smoke.mjs --url http://127.0.0.1:5173/
 - [ ] `__stats().kernelErrors === 0`。
 - [ ] `__stats()` 的 calls / triangles / textures / programs 在预算内且与上次同机位可对比。
 - [ ] `?q=performance`、`?post=0`、`?noaudio=1` 都能正常进局。
+- [ ] `?postfail=1` 时 `__stats().renderPath === 'direct'`，画面非黑、`__errors` 为空。
 - [ ] `?hud=0&vm=0` 画面里没有 UI、没有枪。
 - [ ] `?show=lair` 在每张地图上都能落到求解出的巢穴点。
 - [ ] 窗口缩放、DPR 变化不崩；切后台再回来不炸。

@@ -50,6 +50,8 @@
   60Hz tick、20Hz 快照。
 - QA：固定 seed / 画质 / 机位 / 冻结帧 / 无音频；`window.__stats()`；
   `pnpm qa:diff` 像素对比；`pnpm qa:smoke` 全路径冒烟。
+- 鲁棒性：指针锁不可用时自动降级为移动鼠标转向；后处理链启动自检，
+  失败或 `?postfail=1` 时回退 ACES 前向直出（`__stats().renderPath`）。
 - `pnpm test` 239 条纯函数与集成测试。
 
 ## 技术栈

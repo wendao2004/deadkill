@@ -14,6 +14,7 @@
  *   ?seed=4207                             固定程序化随机种子（game.ts 读取）
  *   ?noaudio=1                             不创建/不解锁音频，便于无声环境跑基准
  *   ?post=0                                关闭泛光/颗粒/暗角/色差/锐化/接触阴影
+ *   ?postfail=1                            强制绕过整条后处理链，验证前向直出回退
  *   ?autostart=1                           跳过主界面直接进场（shot/bench/show 隐含）
  *   ?dt=0                                  冻结模拟，只重绘；?dt=16.67 固定每帧 16.67ms
  *   ?cam=x,y,z,tx,ty,tz                    固定机位（世界坐标，看向 target）
@@ -49,6 +50,8 @@ export interface QaParams {
   noaudio: boolean
   /** false = ?post=0，关闭画面风格层。 */
   post: boolean
+  /** true = ?postfail=1，强制绕过整条后处理链，验证前向直出回退。 */
+  postFail: boolean
   autostart: boolean
   /** 固定每帧时长（秒）。0 = 冻结模拟，只重绘。 */
   fixedDt: number | null
@@ -144,6 +147,7 @@ export function parseQa(source: string): QaParams {
     reload: clamp(finite(params.get('reload')), 0, 1),
     noaudio: flag(params, 'noaudio', false),
     post: flag(params, 'post', true),
+    postFail: flag(params, 'postfail', false),
     autostart,
     // dt 以毫秒书写（16.67 = 60Hz）；0 是冻结，不是"没设"。
     fixedDt: dtMs === null ? null : Math.max(0, dtMs) / 1000,

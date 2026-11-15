@@ -37,6 +37,13 @@ test('QA 参数：post/hud/vm 用 0 关闭，缺省为开', () => {
   assert.equal(parseQa('?noaudio=0').noaudio, false)
 })
 
+test('QA 参数：postfail 强制绕过整条后处理链', () => {
+  assert.equal(parseQa('?postfail=1').postFail, true)
+  assert.equal(parseQa('?postfail').postFail, true)
+  assert.equal(parseQa('?postfail=0').postFail, false)
+  assert.equal(parseQa('').postFail, false)
+})
+
 test('QA 参数：shot/bench/show 隐含自动进场', () => {
   assert.equal(parseQa('?shot=1').autostart, true)
   assert.equal(parseQa('?bench=1').autostart, true)

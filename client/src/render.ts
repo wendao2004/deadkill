@@ -56,6 +56,7 @@ import {
   MeshToonMaterial,
   NearestFilter,
   NoToneMapping,
+  ACESFilmicToneMapping,
   PCFShadowMap,
   PerspectiveCamera,
   PointLight,
@@ -550,6 +551,8 @@ export class Renderer {
   private fixedCamera: QaCamera | null = null
   /** QA：`?post=0` 时关掉画面风格层；画质自动降档也不能把它悄悄开回来。 */
   private postEnabled = true
+  /** 后处理自检失败/被强制关闭时，整条链绕过，直接画到画布。 */
+  private directRender = false
   /** auto 解析后的实际档位；接触阴影/降档判断要用它，而不是靠 minScale 反推。 */
   private resolvedQuality: Exclude<GraphicsQuality, 'auto'> = 'balanced'
   /** QA 子系统展示：mats / fx / weapon；null = 正常游戏。 */
@@ -1736,6 +1739,10 @@ export class Renderer {
       console.warn('[prewarm] 预热失败，继续进局', error)
     } finally {
       r.setRenderTarget(prevTarget)
+      // 预热已经跑过完整一帧（含 present），后处理 program 此时都已编译。
+      // 自检失败或 QA 强制时，整条链绕过，改为前向直出。
+      if (qa.postFail) this.disablePost('QA 强制 (?postfail=1)')
+      else if (!this.post.selfCheck()) this.disablePost('后处理链自检失败')
     }
   }
 
@@ -2777,6 +2784,10 @@ export class Renderer {
       this.camera.lookAt(c.tx, c.ty, c.tz)
       this.camera.updateMatrixWorld()
     }
+    if (this.directRender) {
+      this.renderDirect()
+      return
+    }
     this.post.renderWorld(this.scene, this.camera)
     // 深度已经写完：把相机矩阵与朝月亮的方向交给接触阴影。放在武器层之前，
     // present 里就能直接用这一帧的深度，不需要额外 prepass。
@@ -2788,13 +2799,53 @@ export class Renderer {
   }
 
   /**
+   * 后处理链不可用时的前向直出回退。
+   *
+   * 触发条件：启动自检发现核心 pass 链接失败，或 QA 的 `?postfail=1`。
+   * 后处理本来承担 AgX 色调映射与色彩空间转换；直出必须自己补一个 ACES，
+   * 否则高光会被硬削成一片白。代价是泛光/AO/颗粒/FXAA 全部没有，但游戏可玩。
+   */
+  private disablePost(reason: string): void {
+    if (this.directRender) return
+    this.directRender = true
+    this.gl.toneMapping = ACESFilmicToneMapping
+    this.gl.toneMappingExposure = 1.22
+    // 武器层默认没有背景；直出时确保它不会盖住世界。
+    this.viewScene.background = null
+    console.warn(`[render] 后处理不可用，回退前向直出：${reason}`)
+  }
+
+  /** 前向直出：世界画到画布，清深度后把第一人称武器叠上去。 */
+  private renderDirect(): void {
+    const gl = this.gl
+    const prevAutoClear = gl.autoClear
+    gl.setRenderTarget(null)
+    gl.autoClear = true
+    gl.render(this.scene, this.camera)
+    // 武器是独立场景：世界深度已经写好，清掉深度再画，枪不会被墙吃掉。
+    gl.autoClear = false
+    gl.clearDepth()
+    gl.render(this.viewScene, this.viewCamera)
+    gl.autoClear = prevAutoClear
+  }
+
+  /**
    * 渲染开销探针。
    *
    * 只靠 fps 判断性能是错的：fps 里混着服务端 tick、物理步进、DOM 写入和
    * 浏览器的合成开销，看不出钱花在哪。draw call 数与三角形数是唯一能直接
    * 定位"是几何太多还是着色太贵"的两个数。
    */
-  stats(): { calls: number; triangles: number; lines: number; points: number; programs: number; geometries: number; textures: number } {
+  stats(): {
+    calls: number
+    triangles: number
+    lines: number
+    points: number
+    programs: number
+    geometries: number
+    textures: number
+    renderPath: 'post' | 'direct'
+  } {
     const info = this.gl.info
     return {
       calls: info.render.calls,
@@ -2804,6 +2855,7 @@ export class Renderer {
       programs: info.programs?.length ?? 0,
       geometries: info.memory.geometries,
       textures: info.memory.textures,
+      renderPath: this.directRender ? 'direct' : 'post',
     }
   }
 

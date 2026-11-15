@@ -1002,6 +1002,43 @@ export class PostFX {
    * 改采样数必须重建两张带深度的 RT；改层数必须重建金字塔。都会 dispose
    * 旧目标，不会随切换累积显存。
    */
+  /**
+   * 后处理链自检：预热跑过一帧后，检查核心 pass 的 program 是否成功链接。
+   *
+   * Three 在着色器编译/链接失败时只往 console 打错误，画面会变成一片黑，
+   * 但不会抛异常。这里直接读 `renderer.properties.get(material).currentProgram`
+   * 的 LINK_STATUS，得到一个可判定的布尔值。
+   *
+   * 只检查**已经编译过**的材质：性能档会关掉泛光/FXAA，接触阴影也要等第一帧
+   * 深度才编译；它们的 currentProgram 为 null 时跳过。核心的 combine 与
+   * composite 必须都编译成功，否则整条链不可用。
+   */
+  selfCheck(): boolean {
+    if (this.disposed) return true
+    const gl = this.renderer.getContext()
+    const materials: ShaderMaterial[] = [
+      this.combineMaterial,
+      this.compositeMaterial,
+      this.downMaterial,
+      this.upMaterial,
+      this.fxaaMaterial,
+      this.contactMaterial,
+    ]
+    let compiled = 0
+    let core = 0
+    for (const material of materials) {
+      const props = this.renderer.properties.get(material) as {
+        currentProgram?: { program?: WebGLProgram | null } | null
+      }
+      const handle = props.currentProgram?.program
+      if (handle === undefined || handle === null) continue
+      compiled++
+      if (material === this.combineMaterial || material === this.compositeMaterial) core++
+      if (!gl.getProgramParameter(handle, gl.LINK_STATUS)) return false
+    }
+    return compiled > 0 && core === 2
+  }
+
   setQuality(quality: {
     samples?: number
     bloomLevels?: number
