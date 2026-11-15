@@ -718,7 +718,6 @@ export class Character {
    * 墙面还必须比脚底高出一人多（1.6m 以上），否则交给翻越/攀沿处理。
    */
   private tryClimb(world: World, input: PlayerInput): boolean {
-    console.log("DBG tryClimb", input.yaw, this.feet.y.toFixed(2), this.feet.z.toFixed(2), CLIMB_REACH)
     const feet = this.feet
     const fwd = yawToForward(input.yaw)
     const origin = {
