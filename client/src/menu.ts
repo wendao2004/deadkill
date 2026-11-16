@@ -1272,6 +1272,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   let profileNameEl: HTMLElement | null = null
   let functionTitleEl: HTMLElement | null = null
   let functionMetaEl: HTMLElement | null = null
+  const shelterButtons = new Map<PaneId, HTMLButtonElement>()
   /** 构造期就会走到 refreshRooms（房间面板自己拉一次列表），必须先声明。 */
   let disposed = false
 
@@ -1282,6 +1283,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   host.appendChild(buildOnboarding())
   host.appendChild(buildExitScreen())
   host.appendChild(buildFunctionBar())
+  host.appendChild(buildShelterNav())
 
   // ---------------------------------------------------------------- 出击
 
@@ -1456,7 +1458,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     // 功能页是独立沉浸层：没有全局导航/顶栏/底栏，只留左上角返回。
     host.classList.toggle('is-immersive', !next)
     if (next) {
-      host.classList.remove('is-exited')
+      host.classList.remove('is-exited', 'is-shelter')
       updateHomeMeta()
       const first = host.querySelector<HTMLButtonElement>('.dk-home__item')
       requestAnimationFrame(() => first?.focus({ preventScroll: true }))
@@ -1503,9 +1505,48 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     functionMetaEl.textContent = pick[1]
   }
 
+  function buildShelterNav(): HTMLElement {
+    const nav = mk('nav', 'dk-shelter-nav')
+    const entries: Array<[PaneId, string, string]> = [
+      ['hunter', '猎人档案', 'HUNTER'],
+      ['arsenal', '军械库', 'ARSENAL'],
+      ['records', '传奇', 'RECORDS'],
+      ['keys', '操作', 'CONTROLS'],
+    ]
+    for (const [id, cn, en] of entries) {
+      const btn = mkButton('dk-shelter-nav__item')
+      btn.appendChild(mk('span', 'dk-shelter-nav__cn', cn))
+      btn.appendChild(mk('span', 'dk-shelter-nav__en', en))
+      btn.addEventListener('click', () => openShelterPane(id))
+      shelterButtons.set(id, btn)
+      nav.appendChild(btn)
+    }
+    return nav
+  }
+
+  function syncShelterNav(id: PaneId): void {
+    for (const [pane, btn] of shelterButtons) {
+      const active = pane === id
+      btn.classList.toggle('is-active', active)
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false')
+    }
+  }
+
+  function openShelterPane(id: PaneId): void {
+    showHome(false)
+    activatePane(id)
+    host.classList.add('is-shelter')
+    updateFunctionTitle(id, 1)
+    syncShelterNav(id)
+  }
+
   function enterFunction(id: PaneId): void {
     showHome(false)
     activatePane(id)
+    const shelter =
+      id === 'hunter' || id === 'arsenal' || id === 'records' || id === 'keys'
+    host.classList.toggle('is-shelter', shelter)
+    syncShelterNav(id)
     updateFunctionTitle(id, 1)
     if (id === 'deploy') setDeployStep(1)
   }

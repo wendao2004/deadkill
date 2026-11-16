@@ -3948,3 +3948,56 @@
 .dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-deploy__maps > .dk-section-head { display: none; }
 .dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-map { height: min(48vh, 400px); }
 .dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-map__art { height: 52%; }
+
+/* 庇护所内部导航：只在这一组功能页出现，不恢复全局导航。 */
+.dk-shelter-nav {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 58px;
+  z-index: 7;
+  display: none;
+  align-items: stretch;
+  gap: 0;
+  padding: 0 clamp(22px, 4vw, 64px);
+  border-bottom: 1px solid rgba(216, 207, 186, 0.14);
+}
+
+.dk-menu.is-shelter .dk-shelter-nav { display: flex; }
+.dk-menu.is-shelter .dk-main { padding-top: 122px; }
+.dk-menu.is-home .dk-shelter-nav,
+.dk-menu.is-exited .dk-shelter-nav { display: none; }
+
+.dk-shelter-nav__item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 16px 11px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ash);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.dk-shelter-nav__item:hover,
+.dk-shelter-nav__item:focus-visible { outline: none; color: var(--bone); }
+
+.dk-shelter-nav__item.is-active {
+  color: var(--bone);
+  border-bottom-color: var(--amber);
+}
+
+.dk-shelter-nav__cn {
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+}
+
+.dk-shelter-nav__en {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  opacity: 0.65;
+}
