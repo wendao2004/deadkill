@@ -3257,3 +3257,111 @@
 @media (max-width: 980px) {
   .dk-deploy[data-step='3'] .dk-step-room { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* 房号输入 + 复制：房号要能口头报，也要能一键发。 */
+.dk-room-code { display: flex; gap: 6px; align-items: stretch; }
+.dk-room-code .dk-input { flex: 1; min-width: 0; }
+
+.dk-room-copy {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border: 2px solid var(--ink);
+  background: rgba(42, 49, 56, 0.9);
+  box-shadow: 3px 3px 0 var(--ink);
+  color: var(--bone);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+
+.dk-room-copy:hover,
+.dk-room-copy:focus-visible {
+  outline: none;
+  transform: translate(-1px, -1px);
+  box-shadow: 5px 5px 0 var(--ink);
+}
+
+/* 选中房间的组队名册：一眼看清谁和谁一队。 */
+.dk-room-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 11px 11px;
+  border: 2px solid var(--ink);
+  background: rgba(12, 11, 10, 0.72);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.dk-room-detail__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dk-room-detail__label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  color: var(--ash);
+}
+
+.dk-room-detail__id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+}
+
+.dk-room-detail__meta {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--bone);
+}
+
+.dk-room-detail__empty {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--ash);
+}
+
+.dk-room-detail__teams {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 24vh;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.dk-room-team {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  border-top: 1px solid rgba(216, 207, 186, 0.1);
+}
+
+.dk-room-team__badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid rgba(217, 154, 74, 0.5);
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+}
+
+.dk-room-team__names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  font-size: 10.5px;
+  color: var(--bone);
+}
+
+.dk-room-team__name.is-dead { color: var(--ash); text-decoration: line-through; }

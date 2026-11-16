@@ -1195,7 +1195,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   let deployGrid: HTMLElement | null = null
   const stepButtons = new Map<number, HTMLButtonElement>()
   let roomListEl: HTMLElement | null = null
+  let roomDetailEl: HTMLElement | null = null
   let roomStatusEl: HTMLElement | null = null
+  const roomCache = new Map<string, RoomView>()
   let homeNickEl: HTMLElement | null = null
   let homeCoinsEl: HTMLElement | null = null
   let onboardEl: HTMLElement | null = null
@@ -1591,6 +1593,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     // 房间列表可以很长，但「进入猎场」必须永远在视口里：把状态+CTA+返回
     // 收进一个 sticky 底栏，列表在它上面滚动。
     const roomCommit = mk('div', 'dk-room-commit')
+    roomDetailEl = mk('div', 'dk-room-detail')
+    roomCommit.appendChild(roomDetailEl)
+    renderRoomDetail(null)
     roomCommit.appendChild(matchInfoEl)
     roomCommit.appendChild(cta)
     roomCommit.appendChild(roomNav)
@@ -1941,6 +1946,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       row.appendChild(btn)
     }
     wrap.appendChild(row)
+    wrap.appendChild(
+      mk('p', 'dk-deploy__hint', '双人：同房间相邻入场自动同队；同队不友伤、倒地可互相救援。'),
+    )
     return wrap
   }
 
@@ -2149,7 +2157,36 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       refreshMatchInfo()
     })
     wrap.appendChild(label)
-    wrap.appendChild(input)
+    const row = mk('div', 'dk-room-code')
+    row.appendChild(input)
+    const copy = mkButton('dk-room-copy', '复制房号')
+    copy.title = '把房号发给队友，他们可以手输加入'
+    const done = (): void => {
+      copy.textContent = '已复制'
+      window.setTimeout(() => {
+        copy.textContent = '复制房号'
+      }, 1200)
+    }
+    copy.addEventListener('click', () => {
+      const text = config.matchId || 'default'
+      const fallback = (): void => {
+        input.focus()
+        input.select()
+        try {
+          document.execCommand('copy')
+          done()
+        } catch {
+          // 没有剪贴板权限时至少把房号选中，玩家可以 Ctrl+C。
+        }
+      }
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(fallback)
+      } else {
+        fallback()
+      }
+    })
+    row.appendChild(copy)
+    wrap.appendChild(row)
     return { wrap, input }
   }
 
@@ -2194,6 +2231,70 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   }
 
   /**
+   * 选中房间的名册，按服务端下发的 `team` 分组。
+   *
+   * 房间卡片上的「1 队 · 泥鳅」只够判断有没有人；真正组队前需要看清
+   * 谁和谁一队。独狼的 team 是 1000+id，双人队是 1、2…，这里分开显示。
+   */
+  function renderRoomDetail(room: RoomView | null): void {
+    if (!roomDetailEl) return
+    roomDetailEl.replaceChildren()
+    if (!room) {
+      roomDetailEl.appendChild(mk('p', 'dk-room-detail__empty', '未选择房间 · 点左侧一间加入'))
+      return
+    }
+    const head = mk('div', 'dk-room-detail__head')
+    head.appendChild(mk('span', 'dk-room-detail__label', '当前房间'))
+    head.appendChild(mk('span', 'dk-room-detail__id', room.id))
+    roomDetailEl.appendChild(head)
+
+    const phase =
+      room.phase === 'lobby'
+        ? '空闲'
+        : room.phase === 'over'
+          ? '已结束'
+          : room.players === 0
+            ? '空闲'
+            : '进行中'
+    roomDetailEl.appendChild(
+      mk(
+        'p',
+        'dk-room-detail__meta',
+        `${getLevel(room.levelId).name} · ${room.players}/${MAX_PLAYERS} 人 · ${phase}`,
+      ),
+    )
+
+    if (room.roster.length === 0) {
+      roomDetailEl.appendChild(mk('p', 'dk-room-detail__empty', '空房 · 等待猎人'))
+      return
+    }
+
+    const teams = new Map<number, RoomView['roster']>()
+    for (const player of room.roster) {
+      const list = teams.get(player.team)
+      if (list) list.push(player)
+      else teams.set(player.team, [player])
+    }
+    const list = mk('div', 'dk-room-detail__teams')
+    for (const [team, players] of [...teams].sort((a, b) => a[0] - b[0])) {
+      const row = mk('div', 'dk-room-team')
+      const solo = team >= 1000
+      row.appendChild(
+        mk('span', 'dk-room-team__badge', solo ? '独狼' : '队伍 ' + team),
+      )
+      const names = mk('span', 'dk-room-team__names')
+      for (const player of players) {
+        const name = mk('span', 'dk-room-team__name', player.name)
+        if (!player.alive) name.classList.add('is-dead')
+        names.appendChild(name)
+      }
+      row.appendChild(names)
+      list.appendChild(row)
+    }
+    roomDetailEl.appendChild(list)
+  }
+
+  /**
    * 选一个房间：写进 config / 房间号输入 / CTA。
    *
    * 不立刻出击：玩家可能还要换枪或等队友。选中的房间在列表里高亮，
@@ -2216,6 +2317,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
         card.classList.toggle('is-selected', card.dataset.roomId === id)
       }
     }
+    renderRoomDetail(roomCache.get(id) ?? null)
     refreshMatchInfo()
   }
 
@@ -2226,7 +2328,11 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       if (!res.ok) throw new Error(String(res.status))
       const data = (await res.json()) as { rooms?: RoomView[] }
       if (disposed || !roomListEl) return
-      renderRooms(data.rooms ?? [])
+      const rooms = data.rooms ?? []
+      roomCache.clear()
+      for (const room of rooms) roomCache.set(room.id, room)
+      renderRooms(rooms)
+      renderRoomDetail(roomCache.get(config.matchId) ?? null)
     } catch {
       if (roomStatusEl) roomStatusEl.textContent = '房间列表不可用'
     }
