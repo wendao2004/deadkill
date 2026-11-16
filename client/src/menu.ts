@@ -1257,6 +1257,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   let deployStep = 1
   let deployGrid: HTMLElement | null = null
   const stepButtons = new Map<number, HTMLButtonElement>()
+  let stepNextButton: HTMLButtonElement | null = null
   let roomListEl: HTMLElement | null = null
   let roomDetailEl: HTMLElement | null = null
   let roomStatusEl: HTMLElement | null = null
@@ -1716,23 +1717,27 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     left.appendChild(nextMap)
 
     // 枪架属于第二步（组队/配装），第一步只看地图。
+    // 第二步上半：主武器压成一条横向速览；下半：队伍 / 好友并排。
+    const teamTop = mk('div', 'dk-team-top dk-step dk-step-team')
     const primaryPanel = buildPrimaryPicker()
-    primaryPanel.classList.add('dk-step', 'dk-step-team')
-    left.appendChild(primaryPanel)
+    teamTop.appendChild(primaryPanel)
+    left.appendChild(teamTop)
+
+    const teamBody = mk('div', 'dk-team-body dk-step dk-step-team')
     const partyPanel = buildPartyPanel()
-    partyPanel.classList.add('dk-step', 'dk-step-team')
-    left.appendChild(partyPanel)
+    partyPanel.classList.add('dk-party-card')
     const friendsPanel = buildFriendsPanel()
-    friendsPanel.classList.add('dk-step', 'dk-step-team')
-    left.appendChild(friendsPanel)
+    friendsPanel.classList.add('dk-friends-card')
+    teamBody.appendChild(partyPanel)
+    teamBody.appendChild(friendsPanel)
+    left.appendChild(teamBody)
     grid.appendChild(left)
 
     const side = mk('div', 'dk-deploy__side')
 
-    // ---- 第二步：组队 / 威胁 / 合同 / 身份 ----
+    // ---- 第二步：配装 / 威胁 / 合同 / 身份 ----
     const teamStep = mk('div', 'dk-step dk-step-team dk-step-group')
-    teamStep.appendChild(buildSquadPicker())
-    teamStep.appendChild(buildThreatPicker())
+    teamStep.appendChild(mk('p', 'dk-step-label', '配 装 · LOADOUT'))
     teamStep.appendChild(buildContractPicker())
     teamStep.appendChild(buildExtrasPicker())
     // 旧的一件式配件先整块收起，等塔科夫式多槽位系统落地后再换回来
@@ -1747,10 +1752,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     primaryLine = mk('p', 'dk-deploy__primary', primaryLabel())
     teamStep.appendChild(primaryLine)
 
-    const teamNav = mk('div', 'dk-step-nav')
-    teamNav.appendChild(buildStepBack('上一步 · 地图', () => setDeployStep(1)))
-    teamNav.appendChild(buildStepNext('下一步 · 房间', () => requireNickname(() => setDeployStep(3))))
-    teamStep.appendChild(teamNav)
+    // 第二步不再放底部导航：顶部步骤条右侧有常驻「下一步」，面板可以
+    // 占满首屏；右侧配装也就能完整露出代号/天赋。
     side.appendChild(teamStep)
 
     // ---- 第三步：房间 ----
@@ -1811,6 +1814,11 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       stepButtons.set(step, btn)
       bar.appendChild(btn)
     }
+    stepNextButton = mkButton('dk-steps__next', '下一步 · 组队')
+    stepNextButton.addEventListener('click', () => {
+      if (deployStep < 3) requireNickname(() => setDeployStep(deployStep + 1))
+    })
+    bar.appendChild(stepNextButton)
     return bar
   }
 
@@ -1833,6 +1841,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     for (const [value, btn] of stepButtons) {
       btn.classList.toggle('is-active', value === next)
       btn.setAttribute('aria-pressed', value === next ? 'true' : 'false')
+    }
+    if (stepNextButton) {
+      stepNextButton.hidden = next !== 2
+      stepNextButton.textContent = '下一步 · 房间'
     }
     if (next === 3) {
       void refreshRooms()
@@ -2093,83 +2105,6 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
     panel.appendChild(row)
     return panel
-  }
-
-  function buildSquadPicker(): HTMLElement {
-    const wrap = mk('div', 'dk-field')
-    wrap.appendChild(mk('span', 'dk-field__label', '队伍规模'))
-    const row = mk('div', 'dk-segment')
-    const entries: Array<['solo' | 'duo', string]> = [
-      ['solo', '单人'],
-      ['duo', '双人'],
-    ]
-    for (const [value, label] of entries) {
-      const btn = mkButton('dk-segment__item', label)
-      btn.title =
-        value === 'duo'
-          ? '同一局里相邻入场的两人自动同队；同队不友伤，倒地可互相救援'
-          : '每个人各自一队，没有队友'
-      btn.setAttribute('aria-pressed', deployState.squad === value ? 'true' : 'false')
-      if (deployState.squad === value) btn.classList.add('is-selected')
-      btn.addEventListener('click', () => {
-        deployState.squad = value
-        config.squad = value === 'duo' ? 1 : 0
-        saveConfig(config)
-        for (const other of row.querySelectorAll('.dk-segment__item')) {
-          const isSelf = other === btn
-          other.classList.toggle('is-selected', isSelf)
-          other.setAttribute('aria-pressed', isSelf ? 'true' : 'false')
-        }
-      })
-      row.appendChild(btn)
-    }
-    wrap.appendChild(row)
-    wrap.appendChild(
-      mk(
-        'p',
-        'dk-deploy__hint',
-        '双人：邀请好友组成队伍，队长出击后一起加载、共享出生点；无队伍时与同房相邻入场者自动同队。',
-      ),
-    )
-    return wrap
-  }
-
-  function buildThreatPicker(): HTMLElement {
-    const wrap = mk('div', 'dk-field')
-    wrap.appendChild(mk('span', 'dk-field__label', '威胁等级'))
-    const track = mk('div', 'dk-threat')
-    track.setAttribute('role', 'group')
-    track.setAttribute('aria-label', '威胁等级')
-    const thumb = mk('span', 'dk-threat__thumb')
-    track.appendChild(thumb)
-    const labels = ['低', '中', '高']
-    // 滑块按列宽平移。轨道是 3 列 + 4px gap，所以每一档的位移是"列宽 + gap"，
-    // 直接用百分比会在列间累积误差，用 calc 才能和 grid 的实际布局对齐。
-    const moveThumb = (index: number): void => {
-      thumb.style.transform = 'translateX(calc(' + index + ' * (100% + 4px)))'
-      thumb.classList.toggle('is-hot', index === 2)
-    }
-    labels.forEach((label, index) => {
-      const btn = mkButton('dk-threat__stop', label)
-      // 威胁等级还没映射到怪量/掉落：先禁用，避免“调了难度没变化”的假承诺。
-      btn.disabled = true
-      btn.title = '难度系统未接入 · 暂不可选'
-      btn.setAttribute('aria-pressed', index === deployState.threat ? 'true' : 'false')
-      if (index === deployState.threat) btn.classList.add('is-selected')
-      btn.addEventListener('click', () => {
-        deployState.threat = index
-        moveThumb(index)
-        for (const other of track.querySelectorAll('.dk-threat__stop')) {
-          const isSelf = other === btn
-          other.classList.toggle('is-selected', isSelf)
-          other.setAttribute('aria-pressed', isSelf ? 'true' : 'false')
-        }
-      })
-      track.appendChild(btn)
-    })
-    moveThumb(deployState.threat)
-    wrap.appendChild(track)
-    return wrap
   }
 
   function buildContractPicker(): HTMLElement {
@@ -2651,7 +2586,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   function syncSquadUI(): void {
     const pane = panes.get('deploy')
     if (!pane) return
-    const wantDuo = party !== null || config.squad === 1
+    const wantDuo = party !== null
     deployState.squad = wantDuo ? 'duo' : 'solo'
     config.squad = wantDuo ? 1 : 0
     for (const btn of pane.querySelectorAll<HTMLButtonElement>('.dk-segment__item')) {
@@ -2855,8 +2790,13 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
         partyMembersEl.appendChild(row)
       }
       if (party.leader === friendCode) {
+        if (party.members.length < 2) {
+          partyMembersEl.appendChild(
+            mk('div', 'dk-party__slot', '空位 · 在好友列表点「邀请」'),
+          )
+        }
         partyMembersEl.appendChild(
-          mk('p', 'dk-party__hint', '在好友列表点「邀请」；人齐后在房间页按「进入猎场」，队友会一起加载。'),
+          mk('p', 'dk-party__hint', '人齐后在房间页按「进入猎场」，队友会一起加载。'),
         )
         const leave = mkButton('dk-party__leave', '解散队伍')
         leave.addEventListener('click', () => void leaveParty())
@@ -3012,7 +2952,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     actions.appendChild(invite)
     panel.appendChild(actions)
     panel.appendChild(
-      mk('p', 'dk-friends__hint', '好友加入同一房间后，双方都选「双人」即可自动同队。'),
+      mk('p', 'dk-friends__hint', '邀请好友加入队伍；队长在房间页出击后，全队一起加载并共享出生点。'),
     )
     renderFriends()
     void refreshFriends()
@@ -3209,7 +3149,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     rememberLevelId(deployState.mapId)
     // 队伍随配装进 Loadout：服务端据此强制同队并共享出生点。
     config.partyId = party?.id
-    if (party) config.squad = 1
+    config.squad = party ? 1 : 0
     if (party && party.leader === friendCode) void launchParty()
     if (cta) {
       cta.disabled = true

@@ -177,8 +177,8 @@ async function main() {
     await evaluate("document.querySelectorAll('.dk-home__item')[0].click()")
     await waitFor(evaluate, "document.querySelector('.dk-step-next')", '出击向导第一步出现')
     await evaluate("document.querySelector('.dk-step-next').click()")
-    await waitFor(evaluate, "document.querySelector('.dk-step-nav .dk-step-next')", '组队步骤出现')
-    await evaluate("document.querySelector('.dk-step-nav .dk-step-next').click()")
+    await waitFor(evaluate, "document.querySelector('.dk-steps__next') && !document.querySelector('.dk-steps__next').hidden", '组队步骤出现')
+    await evaluate("document.querySelector('.dk-steps__next').click()")
     await waitFor(evaluate, "document.querySelector('.dk-cta')", '房间步骤出现')
   }
 
