@@ -3293,9 +3293,11 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
           return
         }
         if (world.phase === 'over') {
-          matchNeedsNext = false
-          matchInfoEl.textContent = `房间「${matchId}」本局已结束 · 即将复盘`
-          matchInfoEl.classList.remove('is-warning')
+          // 已结束的房间不能再把人塞进去等复盘：出击时自动切到同名 -next
+          // 房间，和"剩余 ≤3 分钟"走同一条分流逻辑。
+          matchNeedsNext = true
+          matchInfoEl.textContent = `房间「${matchId}」本局已结束 · 出击将进入下一局`
+          matchInfoEl.classList.add('is-warning')
           return
         }
         const secs = Math.max(0, Math.ceil(world.secondsLeft))
