@@ -31,6 +31,7 @@ import {
   PLAYER_SNAPSHOT_SIZE,
   PROTOCOL_VERSION,
   SNAPSHOT_HEADER,
+  truncateUtf8,
   SWITCH_SLOT_SIZE,
   WELCOME_SIZE,
 } from '../shared/src/index.ts'
@@ -702,4 +703,14 @@ test('names: 全量昵称名单往返，中文按 UTF-8 计长', () => {
   ]
   assert.deepEqual(decodeNames(encodeNames(entries)), entries)
   assert.throws(() => decodeNames(encodeHello('x')), /不是名单包/)
+})
+
+
+test('nickname: UTF-8 边界截断，不产生半个汉字', () => {
+  assert.equal(truncateUtf8('泥鳅', 4), '泥')
+  assert.equal(truncateUtf8('泥鳅', 6), '泥鳅')
+  assert.equal(truncateUtf8('abc', 2), 'ab')
+  const hello = decodeHello(encodeHello('泥'.repeat(20)))
+  assert.ok(new TextEncoder().encode(hello.nickname).length <= 48)
+  assert.ok(!hello.nickname.includes('�'))
 })

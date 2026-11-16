@@ -62,7 +62,7 @@
   `pnpm qa:diff` 像素对比；`pnpm qa:smoke` 全路径冒烟。
 - 鲁棒性：指针锁不可用时自动降级为移动鼠标转向；后处理链启动自检，
   失败或 `?postfail=1` 时回退 ACES 前向直出（`__stats().renderPath`）。
-- `pnpm test` 254 条纯函数与集成测试。
+- `pnpm test` 255 条纯函数与集成测试。
 
 ## 技术栈
 
@@ -171,7 +171,7 @@ client/          Three.js 客户端
   main.ts        DOM 接线（换成 Vue 组件只需改这一个文件）
 
 tools/           qa-diff.mjs（PNG 像素对比）、qa-smoke.mjs（CDP 全路径冒烟）
-tests/           254 条纯函数/集成测试（node --test）
+tests/           255 条纯函数/集成测试（node --test）
 docs/            设计、渲染、AI、QA、部署与评审文档
 ```
 
