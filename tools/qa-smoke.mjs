@@ -161,7 +161,28 @@ async function main() {
   const evaluate = await connect()
 
   console.log(`qa-smoke: ${url}`)
-  await waitFor(evaluate, "document.querySelector('.dk-cta')", '主界面出击按钮出现')
+
+  // 新大厅：主页四选项 → 地图 → 组队 → 房间 → 出击。首次还要填代号。
+  // 冒烟脚本走的就是玩家真实路径，不能绕开这些步骤直接点隐藏的 CTA。
+  async function walkToRooms() {
+    await waitFor(evaluate, "document.querySelector('.dk-home__item')", '主页选项出现')
+    const wantsName = await evaluate(
+      "!!document.querySelector('.dk-onboard__input') && document.querySelector('.dk-menu').classList.contains('is-onboarding')",
+    )
+    if (wantsName) {
+      await evaluate(
+        "(()=>{const i=document.querySelector('.dk-onboard__input'); i.value='QA猎人'; document.querySelector('.dk-onboard__confirm').click()})()",
+      )
+    }
+    await evaluate("document.querySelectorAll('.dk-home__item')[0].click()")
+    await waitFor(evaluate, "document.querySelector('.dk-step-next')", '出击向导第一步出现')
+    await evaluate("document.querySelector('.dk-step-next').click()")
+    await waitFor(evaluate, "document.querySelector('.dk-step-nav .dk-step-next')", '组队步骤出现')
+    await evaluate("document.querySelector('.dk-step-nav .dk-step-next').click()")
+    await waitFor(evaluate, "document.querySelector('.dk-cta')", '房间步骤出现')
+  }
+
+  await walkToRooms()
   if ((await evaluate('window.__fatal')) !== null) throw new Error(`启动即 fatal: ${await evaluate('window.__fatal')}`)
   pass('主界面加载')
 
@@ -195,6 +216,7 @@ async function main() {
   await waitFor(evaluate, "!document.querySelector('#menu').classList.contains('is-hidden')", '主界面重新可见')
   pass('放弃本局 → 回大厅')
 
+  await walkToRooms()
   await waitFor(evaluate, "document.querySelector('.dk-cta') && !document.querySelector('.dk-cta').disabled", '出击按钮重新可用')
   await evaluate("document.querySelector('.dk-cta').click()")
   await waitFor(evaluate, 'window.__G && window.__G.game && window.__ready', '第二次进入游戏')

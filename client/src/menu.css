@@ -2725,3 +2725,535 @@
   }
   .dk-bg canvas { transition: none; }
 }
+
+/* ==========================================================================
+ * 主页 / 出击向导 / 房间列表
+ *
+ * 主页是塔科夫式的「中心四选一」：先把功能收起来，点进去才展开内容。
+ * 所有层级仍然沿用同一套油墨描边 + 硬投影，不引入圆角与柔和阴影。
+ * ========================================================================== */
+
+.dk-menu.is-home .dk-top,
+.dk-menu.is-home .dk-main,
+.dk-menu.is-home .dk-bottom {
+  display: none;
+}
+
+.dk-home {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(18px, 3vh, 38px);
+  padding: 6vh 8vw;
+  pointer-events: auto;
+}
+
+.dk-menu.is-home .dk-home { display: flex; }
+
+.dk-home__head { text-align: center; transform: rotate(-0.6deg); }
+
+.dk-home__kicker {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.36em;
+  color: var(--ash);
+}
+
+.dk-home__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(48px, 9vw, 112px);
+  line-height: 0.82;
+  letter-spacing: -0.04em;
+  color: var(--bone);
+  text-shadow:
+    3px 3px 0 var(--ink),
+    7px 7px 0 rgba(125, 43, 34, 0.9),
+    11px 11px 0 rgba(12, 11, 10, 0.6);
+}
+
+.dk-home__sub {
+  margin: 12px 0 0;
+  font-family: var(--font-mono);
+  font-size: clamp(10px, 1vw, 12px);
+  letter-spacing: 0.24em;
+  color: var(--ash);
+}
+
+.dk-home__menu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(460px, 84vw);
+}
+
+.dk-home__item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 13px 18px 14px;
+  border: 3px solid var(--ink);
+  border-left: 6px solid rgba(217, 154, 74, 0.55);
+  background: linear-gradient(90deg, rgba(42, 49, 56, 0.86), rgba(12, 11, 10, 0.86));
+  box-shadow: 5px 5px 0 var(--ink);
+  color: var(--bone);
+  text-align: left;
+  cursor: pointer;
+  transform: rotate(-0.3deg);
+  transition: transform 90ms steps(2, end), box-shadow 90ms steps(2, end),
+    border-color 90ms steps(2, end), background 90ms steps(2, end);
+}
+
+.dk-home__item:nth-child(2) { transform: rotate(0.4deg); }
+.dk-home__item:nth-child(3) { transform: rotate(-0.2deg); }
+.dk-home__item:nth-child(4) { transform: rotate(0.3deg); }
+
+.dk-home__item:hover,
+.dk-home__item:focus-visible {
+  transform: translate(-2px, -2px) rotate(-0.3deg);
+  box-shadow: 8px 8px 0 var(--ink);
+  border-left-color: var(--amber);
+  background: linear-gradient(90deg, rgba(58, 66, 74, 0.92), rgba(18, 16, 14, 0.92));
+  outline: none;
+}
+
+.dk-home__item:active {
+  transform: translate(3px, 3px) rotate(-0.3deg);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.dk-home__index {
+  min-width: 30px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--amber);
+}
+
+.dk-home__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dk-home__cn {
+  font-family: var(--font-display);
+  font-size: clamp(19px, 2vw, 26px);
+  line-height: 1;
+  letter-spacing: 0.06em;
+}
+
+.dk-home__en {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  color: var(--ash);
+}
+
+.dk-home__arrow {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  color: var(--amber);
+  opacity: 0.7;
+}
+
+.dk-home__item:hover .dk-home__arrow { opacity: 1; }
+
+.dk-home__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ash);
+}
+
+.dk-home__nick { color: var(--bone); }
+.dk-home__sep { opacity: 0.5; }
+.dk-home__coins { color: var(--amber); }
+
+/* ---- 昵称引导 / 退出层 ---- */
+
+.dk-onboard,
+.dk-exit {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 6vh 6vw;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(42, 49, 56, 0.55), rgba(7, 9, 11, 0.97) 70%),
+    rgba(7, 9, 11, 0.97);
+}
+
+.dk-menu.is-onboarding .dk-onboard { display: flex; }
+.dk-menu.is-exited .dk-exit { display: flex; }
+
+.dk-menu.is-exited .dk-home,
+.dk-menu.is-exited .dk-main,
+.dk-menu.is-exited .dk-top,
+.dk-menu.is-exited .dk-bottom { display: none; }
+
+.dk-onboard__card,
+.dk-exit__card {
+  width: min(440px, 90vw);
+  padding: 24px 24px 26px;
+  border: 3px solid var(--ink);
+  background: linear-gradient(to bottom, rgba(42, 49, 56, 0.94), rgba(12, 11, 10, 0.98));
+  box-shadow: 8px 8px 0 var(--ink);
+  transform: rotate(-0.4deg);
+}
+
+.dk-onboard__kicker,
+.dk-exit__kicker {
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.32em;
+  color: var(--amber);
+}
+
+.dk-onboard__title,
+.dk-exit__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(24px, 3vw, 34px);
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.dk-onboard__desc,
+.dk-exit__desc {
+  margin: 12px 0 16px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ash);
+}
+
+.dk-onboard__input { width: 100%; }
+
+.dk-onboard__error {
+  min-height: 16px;
+  margin: 6px 0 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--blood);
+}
+
+.dk-onboard__confirm { width: 100%; }
+
+/* ---- 出击向导 ---- */
+
+.dk-steps {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  padding-bottom: 2px;
+  border-bottom: 3px solid var(--ink);
+}
+
+.dk-steps__item {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px 9px;
+  border: 2px solid transparent;
+  background: rgba(12, 11, 10, 0.55);
+  color: var(--ash);
+  text-align: left;
+  cursor: pointer;
+  transition: color 90ms steps(2, end), border-color 90ms steps(2, end),
+    background 90ms steps(2, end);
+}
+
+.dk-steps__item:hover,
+.dk-steps__item:focus-visible { outline: none; color: var(--bone); }
+
+.dk-steps__item.is-active {
+  border-color: var(--amber);
+  background: linear-gradient(to bottom, rgba(217, 154, 74, 0.16), rgba(12, 11, 10, 0.72));
+  color: var(--bone);
+}
+
+.dk-steps__num {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--amber);
+}
+
+.dk-steps__cn {
+  font-family: var(--font-display);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+}
+
+.dk-steps__en {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  opacity: 0.65;
+}
+
+.dk-step-group {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.dk-step-nav {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.dk-step-next,
+.dk-step-back {
+  flex: 1;
+  padding: 10px 12px;
+  border: 2px solid var(--ink);
+  background: var(--amber);
+  box-shadow: 3px 3px 0 var(--ink);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: transform 90ms steps(2, end), box-shadow 90ms steps(2, end);
+}
+
+.dk-step-back {
+  background: rgba(42, 49, 56, 0.9);
+  color: var(--bone);
+}
+
+.dk-step-next:hover,
+.dk-step-back:hover,
+.dk-step-next:focus-visible,
+.dk-step-back:focus-visible {
+  outline: none;
+  transform: translate(-1px, -1px);
+  box-shadow: 5px 5px 0 var(--ink);
+}
+
+.dk-step-next:active,
+.dk-step-back:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+/* 步骤显隐：只有当前步骤的区块参与布局，其他整块 display:none。
+   不用 visibility/opacity —— 那会留下不可点的占位，玩家会以为界面卡住。 */
+.dk-deploy[data-step='1'] { grid-template-columns: minmax(0, 1fr); }
+.dk-deploy[data-step='1'] .dk-deploy__side { display: none; }
+.dk-deploy[data-step='1'] .dk-step-team { display: none; }
+.dk-deploy[data-step='1'] .dk-maps { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.dk-deploy[data-step='1'] .dk-map__art { height: clamp(96px, 13vh, 150px); }
+
+.dk-deploy[data-step='2'] .dk-step-map { display: none; }
+.dk-deploy[data-step='2'] .dk-step-room { display: none; }
+
+.dk-deploy[data-step='3'] { grid-template-columns: minmax(0, 1fr); }
+.dk-deploy[data-step='3'] .dk-deploy__maps { display: none; }
+.dk-deploy[data-step='3'] .dk-deploy__side { transform: none; }
+.dk-deploy[data-step='3'] .dk-step-team { display: none; }
+.dk-deploy[data-step='3'] .dk-step-room { display: flex; }
+
+.dk-step-next.dk-step-map { margin-top: 12px; }
+
+/* ---- 房间列表 ---- */
+
+.dk-rooms { display: flex; flex-direction: column; gap: 10px; }
+
+.dk-rooms__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 8px;
+  max-height: 40vh;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.dk-rooms__empty {
+  margin: 0;
+  padding: 14px 12px;
+  border: 2px dashed rgba(216, 207, 186, 0.2);
+  color: var(--ash);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.dk-room-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px 11px;
+  border: 2px solid var(--ink);
+  border-left: 4px solid rgba(141, 133, 120, 0.45);
+  background: rgba(12, 11, 10, 0.72);
+  box-shadow: 3px 3px 0 var(--ink);
+  color: var(--bone);
+  text-align: left;
+  cursor: pointer;
+  transform: rotate(-0.2deg);
+  transition: transform 90ms steps(2, end), border-color 90ms steps(2, end),
+    background 90ms steps(2, end);
+}
+
+.dk-room-card:hover,
+.dk-room-card:focus-visible {
+  outline: none;
+  transform: translate(-1px, -1px);
+  border-left-color: var(--amber);
+  background: rgba(42, 49, 56, 0.8);
+}
+
+.dk-room-card.is-selected {
+  border-color: var(--amber);
+  border-left-color: var(--amber);
+  background: linear-gradient(to right, rgba(217, 154, 74, 0.14), rgba(12, 11, 10, 0.78));
+}
+
+.dk-room-card.is-full { opacity: 0.45; cursor: not-allowed; }
+
+.dk-room-card__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dk-room-card__id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+}
+
+.dk-room-card__players {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--bone);
+}
+
+.dk-room-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--ash);
+}
+
+.dk-room-card__phase { color: var(--bile); }
+.dk-room-card__time { color: var(--amber); }
+
+.dk-room-card__roster {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: rgba(216, 207, 186, 0.78);
+}
+
+.dk-rooms__actions { display: flex; gap: 8px; }
+
+.dk-rooms__create,
+.dk-rooms__refresh {
+  flex: 1;
+  padding: 9px 10px;
+  border: 2px solid var(--ink);
+  background: rgba(42, 49, 56, 0.9);
+  box-shadow: 3px 3px 0 var(--ink);
+  color: var(--bone);
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+
+.dk-rooms__create {
+  background: var(--amber);
+  color: var(--ink);
+}
+
+.dk-rooms__create:hover,
+.dk-rooms__refresh:hover,
+.dk-rooms__create:focus-visible,
+.dk-rooms__refresh:focus-visible {
+  outline: none;
+  transform: translate(-1px, -1px);
+  box-shadow: 5px 5px 0 var(--ink);
+}
+
+.dk-rooms__status {
+  margin: 0;
+  min-height: 16px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ash);
+}
+
+.dk-nav__home {
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(216, 207, 186, 0.14);
+  opacity: 0.72;
+}
+
+.dk-nav__home:hover,
+.dk-nav__home:focus-visible { opacity: 1; }
+
+/* 房间第三步的提交栏：列表再长，「进入猎场」也钉在视口底部。 */
+.dk-room-commit {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  background: linear-gradient(to top, rgba(12, 11, 10, 0.98) 72%, rgba(12, 11, 10, 0));
+}
+
+.dk-deploy[data-step='1'] .dk-maps {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+/* 房间第三步：左列表、右提交。列表再长也不会把「进入猎场」和创建按钮
+   推到视口外；窄屏再折回单列。 */
+.dk-deploy[data-step='3'] .dk-step-room {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 330px);
+  align-items: start;
+  gap: 12px;
+}
+
+.dk-step-room > .dk-field { grid-column: 1 / -1; }
+
+.dk-room-commit {
+  position: static;
+  padding-top: 0;
+  background: none;
+}
+
+@media (max-width: 980px) {
+  .dk-deploy[data-step='3'] .dk-step-room { grid-template-columns: minmax(0, 1fr); }
+}

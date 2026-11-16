@@ -29,6 +29,7 @@ import {
   CONTRACTS,
   clampAttachment,
   clampContract,
+  MAX_PLAYERS,
   MAX_TRAITS,
   MELEE_WEAPON_ID,
   PROTOCOL_VERSION,
@@ -1102,6 +1103,17 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   const ink = mk('div', 'dk-nav__ink')
   nav.appendChild(ink)
 
+  // 功能页里的「返回主页」。主页本身把导航整列藏起来，所以它只出现在
+  // 地图/庇护所/设置这些功能页里，不会和主页四选项打架。
+  const homeTab = mkButton('dk-nav__item dk-nav__home')
+  homeTab.setAttribute('role', 'button')
+  homeTab.appendChild(mk('span', 'dk-nav__index', '←'))
+  homeTab.appendChild(mk('span', 'dk-nav__cn', '主页'))
+  homeTab.appendChild(mk('span', 'dk-nav__en', 'HOME'))
+  homeTab.tabIndex = 0
+  homeTab.addEventListener('click', () => showHome(true))
+  nav.appendChild(homeTab)
+
   const tabButtons = new Map<PaneId, HTMLButtonElement>()
   NAV_ENTRIES.forEach((entry, index) => {
     const tab = mkButton('dk-nav__item')
@@ -1176,6 +1188,30 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   host.appendChild(flash)
   host.appendChild(veil)
   host.appendChild(stage)
+
+  // 主页 / 昵称引导 / 退出层的状态必须先于 buildHome 声明：这些是 let，
+  // 在 TDZ 里被 buildHome 读到会直接抛 ReferenceError（不是 undefined）。
+  let deployStep = 1
+  let deployGrid: HTMLElement | null = null
+  const stepButtons = new Map<number, HTMLButtonElement>()
+  let roomListEl: HTMLElement | null = null
+  let roomStatusEl: HTMLElement | null = null
+  let homeNickEl: HTMLElement | null = null
+  let homeCoinsEl: HTMLElement | null = null
+  let onboardEl: HTMLElement | null = null
+  let onboardInput: HTMLInputElement | null = null
+  let onboardError: HTMLElement | null = null
+  let onboardThen: (() => void) | null = null
+  let profileNameEl: HTMLElement | null = null
+  /** 构造期就会走到 refreshRooms（房间面板自己拉一次列表），必须先声明。 */
+  let disposed = false
+
+  // 主页 / 昵称引导 / 退出层。z-index 低于 veil/stage 的只有主页，
+  // 所以出击黑场会正常盖住它；昵称与退出层必须盖在最上面。
+  const home = buildHome()
+  host.appendChild(home)
+  host.appendChild(buildOnboarding())
+  host.appendChild(buildExitScreen())
 
   // ---------------------------------------------------------------- 出击
 
@@ -1290,21 +1326,196 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     syncPrimary()
   }
 
+  // ---------------------------------------------------------------- 主页
+
+  /**
+   * 主页：塔科夫式中心菜单。
+   *
+   * 只放四个入口，功能内容全部收进各自的页面 —— 大厅不再一上来就把地图卡、
+   * 枪架、天赋、房间号全糊在玩家脸上。进出功能页用 `is-home` 类切换，
+   * 导航列与内容栈整体隐藏，主页层叠在上面。
+   */
+  function buildHome(): HTMLElement {
+    const home = mk('div', 'dk-home')
+    const head = mk('div', 'dk-home__head')
+    head.appendChild(mk('p', 'dk-home__kicker', '路易斯安那 · 1890'))
+    head.appendChild(mk('h2', 'dk-home__title', 'DEAD KILL'))
+    head.appendChild(mk('p', 'dk-home__sub', '带走赏金，或者成为赏金'))
+    home.appendChild(head)
+
+    const menu = mk('div', 'dk-home__menu')
+    const items: Array<{ index: string; cn: string; en: string; run: () => void }> = [
+      { index: '01', cn: '进入沼泽', en: 'ENTER THE BAYOU', run: () => requireNickname(() => enterFunction('deploy')) },
+      { index: '02', cn: '庇护所', en: 'HIDEOUT', run: () => requireNickname(() => enterFunction('hunter')) },
+      { index: '03', cn: '设置', en: 'SETTINGS', run: () => enterFunction('settings') },
+      { index: '04', cn: '退出', en: 'EXIT', run: () => showExit() },
+    ]
+    for (const item of items) {
+      const btn = mkButton('dk-home__item')
+      btn.appendChild(mk('span', 'dk-home__index', item.index))
+      const body = mk('span', 'dk-home__body')
+      body.appendChild(mk('span', 'dk-home__cn', item.cn))
+      body.appendChild(mk('span', 'dk-home__en', item.en))
+      btn.appendChild(body)
+      btn.appendChild(mk('span', 'dk-home__arrow', '→'))
+      btn.addEventListener('click', item.run)
+      menu.appendChild(btn)
+    }
+    home.appendChild(menu)
+
+    const foot = mk('div', 'dk-home__foot')
+    homeNickEl = mk('span', 'dk-home__nick', '未命名猎人')
+    homeCoinsEl = mk('span', 'dk-home__coins', '金币 0')
+    homeCoinsEl.classList.add('dk-home__coins')
+    foot.appendChild(homeNickEl)
+    foot.appendChild(mk('span', 'dk-home__sep', '·'))
+    foot.appendChild(homeCoinsEl)
+    home.appendChild(foot)
+    updateHomeMeta()
+    return home
+  }
+
+  function updateHomeMeta(): void {
+    if (homeNickEl) homeNickEl.textContent = config.nickname.trim() || '未命名猎人'
+    if (homeCoinsEl) homeCoinsEl.textContent = '金币 ' + formatCoins(config.coins ?? 0)
+    if (profileNameEl) profileNameEl.textContent = '猎手 · ' + (config.nickname.trim() || '无名者')
+  }
+
+  function showHome(next: boolean): void {
+    host.classList.toggle('is-home', next)
+    if (next) {
+      host.classList.remove('is-exited')
+      updateHomeMeta()
+      const first = host.querySelector<HTMLButtonElement>('.dk-home__item')
+      requestAnimationFrame(() => first?.focus({ preventScroll: true }))
+    }
+  }
+
+  function enterFunction(id: PaneId): void {
+    showHome(false)
+    activatePane(id)
+    if (id === 'deploy') setDeployStep(1)
+  }
+
+  /**
+   * 昵称引导。首次进游戏必须先报代号：击杀播报、队友列表、房间名册都读它。
+   * 老存档已有 `dk.nickname` 时直接放行，不打扰。
+   */
+  function buildOnboarding(): HTMLElement {
+    const el = mk('div', 'dk-onboard')
+    const card = mk('div', 'dk-onboard__card')
+    card.appendChild(mk('p', 'dk-onboard__kicker', 'BEFORE YOU ENTER'))
+    card.appendChild(mk('h2', 'dk-onboard__title', '报上你的猎人代号'))
+    card.appendChild(
+      mk('p', 'dk-onboard__desc', '击杀播报、队友列表和房间名册都会用这个代号。最多 16 个字，之后可以在身份栏修改。'),
+    )
+    onboardInput = mk('input', 'dk-input dk-onboard__input')
+    onboardInput.type = 'text'
+    onboardInput.maxLength = 16
+    onboardInput.autocomplete = 'off'
+    onboardInput.spellcheck = false
+    onboardInput.placeholder = '例如：泥鳅'
+    onboardInput.value = config.nickname.trim()
+    card.appendChild(onboardInput)
+    onboardError = mk('p', 'dk-onboard__error', '')
+    card.appendChild(onboardError)
+    const confirm = mkButton('dk-cta dk-onboard__confirm', '确 认 代 号')
+    confirm.addEventListener('click', () => commitNickname())
+    card.appendChild(confirm)
+    onboardInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        commitNickname()
+      }
+    })
+    el.appendChild(card)
+    onboardEl = el
+    return el
+  }
+
+  function showOnboarding(then?: () => void): void {
+    if (then !== undefined) onboardThen = then
+    if (!onboardEl) return
+    host.classList.add('is-onboarding')
+    if (onboardError) onboardError.textContent = ''
+    if (onboardInput) {
+      onboardInput.value = config.nickname.trim()
+      onboardInput.focus()
+      onboardInput.select()
+    }
+  }
+
+  function commitNickname(): void {
+    const name = (onboardInput?.value ?? '').trim().replace(/\s+/g, ' ').slice(0, 16)
+    if (!name) {
+      if (onboardError) onboardError.textContent = '代号不能为空'
+      return
+    }
+    config.nickname = name
+    saveConfig(config)
+    if (identity) identity.nickInput.value = name
+    updateHomeMeta()
+    host.classList.remove('is-onboarding')
+    const then = onboardThen
+    onboardThen = null
+    then?.()
+  }
+
+  function requireNickname(then: () => void): void {
+    if (config.nickname.trim()) {
+      then()
+      return
+    }
+    showOnboarding(then)
+  }
+
+  function buildExitScreen(): HTMLElement {
+    const el = mk('div', 'dk-exit')
+    const card = mk('div', 'dk-exit__card')
+    card.appendChild(mk('p', 'dk-exit__kicker', 'THE SWAMP REMEMBERS'))
+    card.appendChild(mk('h2', 'dk-exit__title', '已退出'))
+    card.appendChild(mk('p', 'dk-exit__desc', '可以关闭这个标签页了。若是误触，下面还能回去。'))
+    const back = mkButton('dk-cta', '返 回 主 页')
+    back.addEventListener('click', () => {
+      host.classList.remove('is-exited')
+      showHome(true)
+    })
+    card.appendChild(back)
+    el.appendChild(card)
+    return el
+  }
+
+  function showExit(): void {
+    host.classList.add('is-exited')
+    host.classList.remove('is-home')
+    // 浏览器只允许脚本打开的窗口被 close()；失败就留在退出页，不是错误。
+    try {
+      window.close()
+    } catch {
+      // 留在退出页。
+    }
+  }
+
   function buildDeploy(): void {
     const pane = panes.get('deploy')
     if (!pane) return
     const grid = mk('div', 'dk-deploy')
+    grid.dataset.step = String(deployStep)
+    deployGrid = grid
+    grid.appendChild(buildStepBar())
 
+    // ---- 第一步：地图 ----
     const left = mk('div', 'dk-deploy__maps')
-    const head = mk('div', 'dk-section-head')
-    head.appendChild(mk('h2', 'dk-section-head__cn', '出击'))
-    head.appendChild(mk('span', 'dk-section-head__en', 'DEPLOY'))
+    const head = mk('div', 'dk-section-head dk-step dk-step-map')
+    head.appendChild(mk('h2', 'dk-section-head__cn', '选择猎场'))
+    head.appendChild(mk('span', 'dk-section-head__en', 'SELECT MAP'))
     head.appendChild(mk('span', 'dk-section-head__rule'))
     left.appendChild(head)
 
-    const cards = mk('div', 'dk-maps')
+    const cards = mk('div', 'dk-maps dk-step dk-step-map')
     for (const entry of MAP_ENTRIES) {
       const card = mkButton('dk-map')
+      card.dataset.mapId = entry.id
       card.setAttribute('aria-pressed', entry.id === deployState.mapId ? 'true' : 'false')
       if (entry.id === deployState.mapId) card.classList.add('is-selected')
       const art = mk('span', 'dk-map__art')
@@ -1324,57 +1535,131 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
         // 却没按下「出击」直接刷新时，也应该还在同一张图上（联调试多图全靠它）。
         rememberLevelId(entry.id)
         setCtaLabel(entry)
-        for (const other of cards.querySelectorAll('.dk-map')) {
-          const isSelf = other === card
-          other.classList.toggle('is-selected', isSelf)
-          other.setAttribute('aria-pressed', isSelf ? 'true' : 'false')
-        }
+        syncMapSelection()
       })
       cards.appendChild(card)
     }
     left.appendChild(cards)
-    // 枪架挂在左列地图卡下方，而不是跨两列贴底：右列（队伍/威胁/昵称/出击）
-    // 天生比左列高约 200px，枪架留在底部会把天赋面板顶出可视区。
-    left.appendChild(buildPrimaryPicker())
+    const nextMap = buildStepNext('下一步 · 组队', () => requireNickname(() => setDeployStep(2)))
+    nextMap.classList.add('dk-step', 'dk-step-map')
+    left.appendChild(nextMap)
+
+    // 枪架属于第二步（组队/配装），第一步只看地图。
+    const primaryPanel = buildPrimaryPicker()
+    primaryPanel.classList.add('dk-step', 'dk-step-team')
+    left.appendChild(primaryPanel)
     grid.appendChild(left)
 
     const side = mk('div', 'dk-deploy__side')
-    side.appendChild(buildSquadPicker())
-    side.appendChild(buildThreatPicker())
-    side.appendChild(buildContractPicker())
-    side.appendChild(buildExtrasPicker())
+
+    // ---- 第二步：组队 / 威胁 / 合同 / 身份 ----
+    const teamStep = mk('div', 'dk-step dk-step-team dk-step-group')
+    teamStep.appendChild(buildSquadPicker())
+    teamStep.appendChild(buildThreatPicker())
+    teamStep.appendChild(buildContractPicker())
+    teamStep.appendChild(buildExtrasPicker())
     // 旧的一件式配件先整块收起，等塔科夫式多槽位系统落地后再换回来
     // （见 shared/src/attachments.ts 的 ATTACHMENTS_ENABLED）。
-    if (ATTACHMENTS_ENABLED) side.appendChild(buildAttachmentPicker())
-    side.appendChild(buildIdentityFields())
+    if (ATTACHMENTS_ENABLED) teamStep.appendChild(buildAttachmentPicker())
+    const nickField = buildNicknameField()
+    teamStep.appendChild(nickField.wrap)
 
     // 天赋摘要紧跟主武器那行：出击前最后一眼能同时确认"这把枪"和"这三条天赋"。
     traitSummaryEl = mk('p', 'dk-trait-summary', traitSummaryLabel())
-    side.appendChild(traitSummaryEl)
-    // 按下出击前最后一眼能确认自己带的是哪把枪，所以紧贴按钮上方
+    teamStep.appendChild(traitSummaryEl)
     primaryLine = mk('p', 'dk-deploy__primary', primaryLabel())
-    side.appendChild(primaryLine)
+    teamStep.appendChild(primaryLine)
+
+    const teamNav = mk('div', 'dk-step-nav')
+    teamNav.appendChild(buildStepBack('上一步 · 地图', () => setDeployStep(1)))
+    teamNav.appendChild(buildStepNext('下一步 · 房间', () => requireNickname(() => setDeployStep(3))))
+    teamStep.appendChild(teamNav)
+    side.appendChild(teamStep)
+
+    // ---- 第三步：房间 ----
+    const roomStep = mk('div', 'dk-step dk-step-room dk-step-group')
+    const roomField = buildRoomCodeField()
+    roomStep.appendChild(roomField.wrap)
+    roomStep.appendChild(buildRoomPanel())
 
     matchInfoEl = mk('div', 'dk-match-info', '正在读取房间…')
-    side.appendChild(matchInfoEl)
-
     cta = mkButton('dk-cta', '进 入 猎 场')
     cta.addEventListener('click', () => beginDeploy())
-    side.appendChild(cta)
     setCtaLabel(currentMap())
-    side.appendChild(
+    const roomNav = mk('div', 'dk-step-nav')
+    roomNav.appendChild(buildStepBack('上一步 · 组队', () => setDeployStep(2)))
+    // 房间列表可以很长，但「进入猎场」必须永远在视口里：把状态+CTA+返回
+    // 收进一个 sticky 底栏，列表在它上面滚动。
+    const roomCommit = mk('div', 'dk-room-commit')
+    roomCommit.appendChild(matchInfoEl)
+    roomCommit.appendChild(cta)
+    roomCommit.appendChild(roomNav)
+    roomStep.appendChild(roomCommit)
+    roomStep.appendChild(
       mk(
         'p',
         'dk-deploy__hint',
         'WASD 移动 · Shift 疾跑 · Ctrl 蹲伏 · 左键开火 · 右键瞄准 · R 换装填',
       ),
     )
+    side.appendChild(roomStep)
+
+    identity = { nickInput: nickField.input, matchInput: roomField.input }
     grid.appendChild(side)
-    // 天赋网格移到「猎人」页：出击页只保留地图/枪架/侧栏摘要，
-    // 1366×768 下不再被底部裁掉；猎人页本身可滚动。
     pane.appendChild(grid)
     syncPrimary()
     syncTraits()
+    setDeployStep(deployStep)
+  }
+
+  function buildStepBar(): HTMLElement {
+    const bar = mk('div', 'dk-steps')
+    const defs: Array<[number, string, string]> = [
+      [1, '地图', 'MAP'],
+      [2, '组队', 'TEAM'],
+      [3, '房间', 'ROOM'],
+    ]
+    for (const [step, cn, en] of defs) {
+      const btn = mkButton('dk-steps__item')
+      btn.appendChild(mk('span', 'dk-steps__num', String(step).padStart(2, '0')))
+      btn.appendChild(mk('span', 'dk-steps__cn', cn))
+      btn.appendChild(mk('span', 'dk-steps__en', en))
+      btn.addEventListener('click', () => {
+        if (step > 1) requireNickname(() => setDeployStep(step))
+        else setDeployStep(step)
+      })
+      stepButtons.set(step, btn)
+      bar.appendChild(btn)
+    }
+    return bar
+  }
+
+  function buildStepNext(label: string, run: () => void): HTMLButtonElement {
+    const btn = mkButton('dk-step-next', label)
+    btn.addEventListener('click', run)
+    return btn
+  }
+
+  function buildStepBack(label: string, run: () => void): HTMLButtonElement {
+    const btn = mkButton('dk-step-back', label)
+    btn.addEventListener('click', run)
+    return btn
+  }
+
+  function setDeployStep(step: number): void {
+    const next = Math.max(1, Math.min(3, Math.trunc(step) || 1))
+    deployStep = next
+    if (deployGrid) deployGrid.dataset.step = String(next)
+    for (const [value, btn] of stepButtons) {
+      btn.classList.toggle('is-active', value === next)
+      btn.setAttribute('aria-pressed', value === next ? 'true' : 'false')
+    }
+    if (next === 3) {
+      void refreshRooms()
+      refreshMatchInfo()
+    }
+    const pane = panes.get('deploy')
+    if (pane) pane.scrollTop = 0
   }
 
   function buildPrimaryPicker(): HTMLElement {
@@ -1821,42 +2106,212 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     return wrap
   }
 
-  function buildIdentityFields(): HTMLElement {
+  function buildNicknameField(): { wrap: HTMLElement; input: HTMLInputElement } {
     const wrap = mk('div', 'dk-field')
-    const nickLabel = mk('label', 'dk-field__label', '猎人代号')
-    const nickInput = mk('input', 'dk-input')
-    nickInput.id = 'dk-nickname'
-    nickLabel.setAttribute('for', nickInput.id)
-    nickInput.type = 'text'
-    nickInput.maxLength = 16
-    nickInput.autocomplete = 'off'
-    nickInput.spellcheck = false
-    nickInput.placeholder = '猎人'
-    nickInput.value = config.nickname
-    nickInput.addEventListener('change', () => {
-      config.nickname = nickInput.value.trim().slice(0, 16)
+    const label = mk('label', 'dk-field__label', '猎人代号')
+    const input = mk('input', 'dk-input')
+    input.id = 'dk-nickname'
+    label.setAttribute('for', input.id)
+    input.type = 'text'
+    input.maxLength = 16
+    input.autocomplete = 'off'
+    input.spellcheck = false
+    input.placeholder = '猎人'
+    input.value = config.nickname
+    input.addEventListener('change', () => {
+      config.nickname = input.value.trim().replace(/\s+/g, ' ').slice(0, 16)
+      input.value = config.nickname
+      saveConfig(config)
+      updateHomeMeta()
     })
-    wrap.appendChild(nickLabel)
-    wrap.appendChild(nickInput)
+    wrap.appendChild(label)
+    wrap.appendChild(input)
+    return { wrap, input }
+  }
 
-    const matchLabel = mk('label', 'dk-field__label', '房间号')
-    const matchInput = mk('input', 'dk-input')
-    matchInput.id = 'dk-match'
-    matchLabel.setAttribute('for', matchInput.id)
-    matchInput.type = 'text'
-    matchInput.maxLength = 32
-    matchInput.autocomplete = 'off'
-    matchInput.spellcheck = false
-    matchInput.placeholder = 'default'
-    matchInput.value = config.matchId
-    matchInput.addEventListener('change', () => {
-      config.matchId = matchInput.value.trim().slice(0, 32)
+  function buildRoomCodeField(): { wrap: HTMLElement; input: HTMLInputElement } {
+    const wrap = mk('div', 'dk-field')
+    const label = mk('label', 'dk-field__label', '房间号（也可以直接点下面的房间）')
+    const input = mk('input', 'dk-input')
+    input.id = 'dk-match'
+    label.setAttribute('for', input.id)
+    input.type = 'text'
+    input.maxLength = 32
+    input.autocomplete = 'off'
+    input.spellcheck = false
+    input.placeholder = 'default'
+    input.value = config.matchId
+    input.addEventListener('change', () => {
+      config.matchId = input.value.trim().slice(0, 32) || 'default'
+      input.value = config.matchId
+      saveConfig(config)
+      void refreshRooms()
+      refreshMatchInfo()
     })
-    wrap.appendChild(matchLabel)
-    wrap.appendChild(matchInput)
+    wrap.appendChild(label)
+    wrap.appendChild(input)
+    return { wrap, input }
+  }
 
-    identity = { nickInput, matchInput }
-    return wrap
+  interface RoomView {
+    id: string
+    levelId: string
+    players: number
+    secondsLeft: number
+    phase: string
+    roster: { id: number; name: string; team: number; alive: boolean }[]
+  }
+
+  function buildRoomPanel(): HTMLElement {
+    const panel = mk('div', 'dk-panel dk-rooms')
+    const head = mk('div', 'dk-section-head')
+    head.appendChild(mk('h2', 'dk-section-head__cn', '房间'))
+    head.appendChild(mk('span', 'dk-section-head__en', 'ROOMS'))
+    head.appendChild(mk('span', 'dk-section-head__rule'))
+    panel.appendChild(head)
+
+    roomListEl = mk('div', 'dk-rooms__list')
+    roomListEl.setAttribute('role', 'list')
+    panel.appendChild(roomListEl)
+
+    const actions = mk('div', 'dk-rooms__actions')
+    const create = mkButton('dk-rooms__create', '创建新房间')
+    create.addEventListener('click', () => void createRoom())
+    const refresh = mkButton('dk-rooms__refresh', '刷新')
+    refresh.addEventListener('click', () => void refreshRooms())
+    actions.appendChild(create)
+    actions.appendChild(refresh)
+    panel.appendChild(actions)
+
+    roomStatusEl = mk('p', 'dk-rooms__status', '正在读取房间…')
+    panel.appendChild(roomStatusEl)
+    void refreshRooms()
+    return panel
+  }
+
+  function apiBase(): string {
+    return location.pathname.replace(/[^/]*$/, '').replace(/\/$/, '')
+  }
+
+  /**
+   * 选一个房间：写进 config / 房间号输入 / CTA。
+   *
+   * 不立刻出击：玩家可能还要换枪或等队友。选中的房间在列表里高亮，
+   * 按「进入猎场」才真正握手。
+   */
+  function selectRoom(id: string, levelId?: string): void {
+    config.matchId = id
+    saveConfig(config)
+    // 房间自带地图：加入别人的房间时，客户端必须按房间的图握手，
+    // 否则空房会被自己的默认图覆盖（registerLevel 对空场采纳新请求）。
+    if (levelId && levelId !== deployState.mapId) {
+      deployState.mapId = levelId
+      rememberLevelId(levelId)
+      syncMapSelection()
+      setCtaLabel(currentMap())
+    }
+    if (identity) identity.matchInput.value = id
+    if (roomListEl) {
+      for (const card of roomListEl.querySelectorAll<HTMLElement>('.dk-room-card')) {
+        card.classList.toggle('is-selected', card.dataset.roomId === id)
+      }
+    }
+    refreshMatchInfo()
+  }
+
+  async function refreshRooms(): Promise<void> {
+    if (!roomListEl || disposed) return
+    try {
+      const res = await fetch(`${apiBase()}/api/rooms`, { cache: 'no-store' })
+      if (!res.ok) throw new Error(String(res.status))
+      const data = (await res.json()) as { rooms?: RoomView[] }
+      if (disposed || !roomListEl) return
+      renderRooms(data.rooms ?? [])
+    } catch {
+      if (roomStatusEl) roomStatusEl.textContent = '房间列表不可用'
+    }
+  }
+
+  function renderRooms(rooms: RoomView[]): void {
+    if (!roomListEl) return
+    roomListEl.replaceChildren()
+    if (rooms.length === 0) {
+      roomListEl.appendChild(mk('p', 'dk-rooms__empty', '还没有房间。创建一间，或者等别人先开。'))
+      if (roomStatusEl) roomStatusEl.textContent = '空房列表 · 创建一个房间开始'
+      return
+    }
+    for (const room of rooms) {
+      const card = mkButton('dk-room-card')
+      card.dataset.roomId = room.id
+      card.setAttribute('role', 'listitem')
+      if (room.id === config.matchId) card.classList.add('is-selected')
+      const top = mk('div', 'dk-room-card__top')
+      top.appendChild(mk('span', 'dk-room-card__id', room.id))
+      top.appendChild(
+        mk('span', 'dk-room-card__players', `${room.players}/${MAX_PLAYERS}`),
+      )
+      card.appendChild(top)
+      const meta = mk('div', 'dk-room-card__meta')
+      meta.appendChild(mk('span', 'dk-room-card__map', getLevel(room.levelId).name))
+      const phase =
+        room.phase === 'lobby'
+          ? '空闲'
+          : room.phase === 'over'
+            ? '已结束'
+            : room.players === 0
+              ? '空闲'
+              : '进行中'
+      meta.appendChild(mk('span', 'dk-room-card__phase', phase))
+      if (room.phase !== 'lobby' && room.secondsLeft > 0) {
+        const secs = Math.max(0, Math.ceil(room.secondsLeft))
+        meta.appendChild(
+          mk('span', 'dk-room-card__time', `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`),
+        )
+      }
+      card.appendChild(meta)
+      const teams = new Set(room.roster.map((p) => p.team)).size
+      const names = room.roster
+        .slice(0, 4)
+        .map((p) => p.name)
+        .join('、')
+      const roster = mk('div', 'dk-room-card__roster')
+      roster.textContent =
+        room.roster.length === 0
+          ? '空房 · 等待猎人'
+          : `${teams} 队 · ${names}${room.roster.length > 4 ? '…' : ''}`
+      card.appendChild(roster)
+      if (room.players >= MAX_PLAYERS) {
+        card.classList.add('is-full')
+        card.disabled = true
+      }
+      card.dataset.levelId = room.levelId
+      card.addEventListener('click', () => selectRoom(room.id, room.levelId))
+      roomListEl.appendChild(card)
+    }
+    if (roomStatusEl) roomStatusEl.textContent = `${rooms.length} 个房间 · 点一间加入，或创建新房间`
+  }
+
+  async function createRoom(): Promise<void> {
+    if (roomStatusEl) roomStatusEl.textContent = '正在创建房间…'
+    try {
+      const res = await fetch(`${apiBase()}/api/rooms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ levelId: deployState.mapId }),
+      })
+      const data = (await res.json()) as {
+        ok?: boolean
+        id?: string
+        levelId?: string
+        error?: string
+      }
+      if (!res.ok || !data.ok || !data.id) throw new Error(data.error ?? '创建失败')
+      selectRoom(data.id, data.levelId)
+      await refreshRooms()
+      if (roomStatusEl) roomStatusEl.textContent = `房间 ${data.id} 已创建 · 按「进入猎场」`
+    } catch (error) {
+      if (roomStatusEl) roomStatusEl.textContent = error instanceof Error ? error.message : '创建失败'
+    }
   }
 
   let identity: { nickInput: HTMLInputElement; matchInput: HTMLInputElement } | null = null
@@ -1867,6 +2322,17 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
    * 原来写死「进入沼泽」，可玩家能换图 —— 点的是一张图、按钮说的是另一张，
    * 这类文案错位比没有文案更糟。
    */
+  /** 房间/地图数据变化后把地图卡的选中态刷成 deployState.mapId。 */
+  function syncMapSelection(): void {
+    const pane = panes.get('deploy')
+    if (!pane) return
+    for (const card of pane.querySelectorAll<HTMLElement>('.dk-map')) {
+      const isSelf = card.dataset.mapId === deployState.mapId
+      card.classList.toggle('is-selected', isSelf)
+      card.setAttribute('aria-pressed', isSelf ? 'true' : 'false')
+    }
+  }
+
   function setCtaLabel(entry: MapEntry): void {
     if (cta) cta.textContent = '进 入 ' + entry.name
   }
@@ -1887,6 +2353,12 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   function beginDeploy(): void {
     if (deploying) return
+    // 代号是击杀播报/队友列表的显示名，也是服务端唯一的玩家标识；没有就不放行。
+    if (identity) config.nickname = identity.nickInput.value.trim().replace(/\s+/g, ' ').slice(0, 16)
+    if (!config.nickname) {
+      showOnboarding(() => beginDeploy())
+      return
+    }
     // 改键捕获不能跨进出击：否则加载时按的第一个键会被静默写进键位表。
     cancelActiveKeyCapture()
     deploying = true
@@ -1948,7 +2420,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     profile.appendChild(avatar)
 
     const idBlock = mk('div', 'dk-profile__meta')
-    idBlock.appendChild(mk('span', 'dk-profile__name', '猎手 · 无名者'))
+    profileNameEl = mk('span', 'dk-profile__name', '猎手 · ' + (config.nickname.trim() || '无名者'))
+    idBlock.appendChild(profileNameEl)
     idBlock.appendChild(
       mk(
         'span',
@@ -2572,7 +3045,6 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   if (firstPane) firstPane.classList.add('is-active', 'is-entering')
   tabButtons.get('deploy')?.classList.add('is-active')
 
-  let disposed = false
   let mounted = false
   let visible = true
   // 揭开流程的令牌：每次揭开自增，旧的 .then 链看到令牌变了就自己作废
@@ -2693,6 +3165,12 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
    * 不然玩家会在一局只剩 2 分钟时进去，跑 200m 才发现没时间撤离；或者进了
    * 一个空房，对着 260m 的沼泽走 15 分钟以为游戏没做好。
    */
+  /** 大厅轮询：房间状态每次都刷，房间列表只在第三步刷（避免主页/地图页无谓请求）。 */
+  function refreshLive(): void {
+    refreshMatchInfo()
+    if (deployStep === 3) void refreshRooms()
+  }
+
   function refreshMatchInfo(): void {
     if (!matchInfoEl || disposed) return
     const base = location.pathname.replace(/[^/]*$/, '').replace(/\/$/, '')
@@ -2782,8 +3260,12 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
         if (!disposed) ink.classList.add('is-ready')
       })
       window.addEventListener('resize', onHostResize)
-      refreshMatchInfo()
-      matchInfoTimer = window.setInterval(refreshMatchInfo, 8000)
+      // 主页是默认入口；首次没有代号就立刻弹报名字的卡，避免玩家点进地图
+      // 之后才发现自己叫「猎人 #7」。
+      showHome(true)
+      if (!config.nickname.trim()) showOnboarding()
+      refreshLive()
+      matchInfoTimer = window.setInterval(refreshLive, 8000)
     },
 
     setVisible(next: boolean): void {
@@ -2795,6 +3277,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
         // 撤回还没播完的揭开：启动失败退回菜单时，整层必须立刻能点。
         // 这段逻辑必须和 setVisible 的早退解耦：移动端阻断发生在菜单仍可见时。
         abortDeploy()
+        // 从对局回来先回主页：玩家刚打完一局，第一件事是决定下一局去哪，
+        // 而不是继续盯着上局的地图卡。
+        showHome(true)
         // 从对局回来：整体从略缩/虚焦回到锐利，像镜头重新对焦。
         host.classList.remove('is-returning')
         void host.offsetWidth
