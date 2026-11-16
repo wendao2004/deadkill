@@ -9,6 +9,7 @@
     "test": "node --test --experimental-strip-types tests/*.test.ts",
     "qa:diff": "node tools/qa-diff.mjs",
     "qa:smoke": "node tools/qa-smoke.mjs",
+    "qa:bench": "node tools/qa-bench.mjs",
     "typecheck": "pnpm -F @dk/shared typecheck && pnpm -F @dk/server typecheck && pnpm -F @dk/client typecheck",
     "start": "pnpm -F @dk/server start"
   },

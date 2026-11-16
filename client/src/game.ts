@@ -722,6 +722,7 @@ export class Game {
   diagnostics(): Record<string, unknown> {
     const render = this.renderer.stats()
     return {
+      frames: diag.frames,
       fps: Math.round(this.fps * 10) / 10,
       // 有真实 fps 时以它为准：QA 固定档下治理器不推进，smoothedMs 会停在
       // 初值，拿它判断"跑多快"会得出错误结论。

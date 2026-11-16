@@ -195,3 +195,16 @@ node tools/qa-smoke.mjs --url http://127.0.0.1:5173/
 - [ ] 任意一个系统初始化抛错时，标题/进局仍可完成，`__errors` 能读到原因。
 - [ ] 同 seed 两次启动，`__stats()` 的场景读数一致（差异可解释）。
 - [ ] `?bench=1` 能输出 `__bench`，p99 在预算内。
+
+
+### 基准（可进 CI）
+
+```bash
+pnpm qa:bench
+# 或指定完整 URL / 阈值
+pnpm qa:bench -- --url "http://127.0.0.1:5173/?bench=1&q=quality&seed=4207&noaudio=1" --p99 22 --avg 15
+```
+
+输出 `__bench` 的 frames/avg/median/p99/min/max 与 `__stats()`。软件渲染
+（SwiftShader/llvmpipe）只警告、不按硬件阈值失败；CI 容器没有 GPU 时不会误判。
+脚本结束会清理整套 Chrome 子进程。

@@ -183,6 +183,8 @@ docs/            设计、渲染、AI、QA、部署与评审文档
 
 | 文档 | 内容 |
 |---|---|
+| [方向定调](docs/direction.md) | 一句话幻想、三根支柱、三色/两字体/一母题、约束与输入矩阵 |
+| [架构与运行契约](docs/architecture.md) | 分层、启动/更新顺序、权威网络、降级、QA、已知缺口 |
 | [技术栈决策](docs/技术栈决策.md) | 为什么是 Three/Rapier/Fastify，被否决的方案与代价 |
 | [内核](docs/内核.md) | 固定步、帧相位、确定性随机、共享层边界 |
 | [接入 WebLearning](docs/接入%20WebLearning.md) | 作为宿主插件部署的步骤与检查清单 |
