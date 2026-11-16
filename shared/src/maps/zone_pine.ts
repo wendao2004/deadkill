@@ -49,18 +49,13 @@ function enterableCabin(s: BrushSet, x: number, z: number, rotY: number): void {
   const put = (lx: number, lz: number, hx: number, hz: number): void => {
     ghost(s, x + lx * c - lz * sn, z + lx * sn + lz * c, hx, hz, 0, H, rotY)
   }
-  // 前后墙（沿局部 X），前墙 -Z 侧留门
+  // 前后墙（沿局部 X），+Z 侧留门（与 log_cabin_a 的门/门廊同侧）
   put(0, -HZ, HX, T)
   put(-(HX + door) / 2, HZ, (HX - door) / 2, T)
   put((HX + door) / 2, HZ, (HX - door) / 2, T)
   // 左右墙（沿局部 Z）
   put(-HX, 0, T, HZ)
   put(HX, 0, T, HZ)
-}
-
-/** 实心木屋：不开放内部，美观上更省盒子。 */
-function solidCabin(s: BrushSet, x: number, z: number, hx: number, hz: number, top: number, rotY = 0): void {
-  ghost(s, x, z, hx, hz, 0, snap(top), rotY)
 }
 
 /** 木栈桥：桥面 + 两侧栏杆。 */
@@ -76,11 +71,13 @@ function bridge(s: BrushSet, x: number, z: number, hx: number, hz: number, rotY 
 
 /** 木屋区：三栋木屋 + 水井 + 晾木架 + 篝火。 */
 function buildCamp(s: BrushSet): void {
-  // 主屋：可进入，门朝营地中心（+Z 方向 → rotY = PI 让模型的 -Z 正面转过来）
-  enterableCabin(s, -10, -5, Math.PI)
-  // 两栋实心屋：从外围绕行时提供剪影层次
-  solidCabin(s, 9, -9, 3.0, 2.4, 2.8, -0.35)
-  solidCabin(s, 12, 5, 2.7, 2.2, 2.4, 2.5)
+  // 主屋：可进入，门朝营地中心（局部 +Z 是门，rotY=0 时正对 (0,0) 的篝火）
+  enterableCabin(s, -10, -5, 0)
+  // 两栋侧屋也必须是可进入的：它们用的是同一套带门 log_cabin_a 外观，
+  // 旧版用实心 ghost 把门堵死，玩家看到门却撞上一堵不存在的墙。
+  // 三栋房的碰撞/门洞现在与外观完全一致。
+  enterableCabin(s, 9, -9, -0.35)
+  enterableCabin(s, 12, 5, 2.5)
 
   // 水井：井台可站（顶面 0.4m），井圈挡视线
   s.slab(-1, -2, 1.0, 1.0, 0, 0.4, 'stone')

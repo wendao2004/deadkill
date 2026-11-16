@@ -70,8 +70,8 @@ const water: WaterRect[] = pineWater()
  * 盒子负责"能不能过"。两者之间只差一个 noRender。
  */
 const heroes: HeroAnchor[] = [
-  // 营地：主屋可进入，两侧实心屋提供剪影层次
-  { asset: 'log_cabin_a', x: -10, z: -5, rotY: Math.PI },
+  // 营地：三栋木屋都可进入，碰撞门洞与 log_cabin_a 的门对齐
+  { asset: 'log_cabin_a', x: -10, z: -5, rotY: 0 },
   { asset: 'log_cabin_a', x: 9, z: -9, rotY: -0.35 },
   { asset: 'log_cabin_a', x: 12, z: 5, rotY: 2.5 },
   { asset: 'bonfire', x: 0, z: 0 },
@@ -130,7 +130,7 @@ export const LEVEL_PINE_CAMP: LevelDef = {
   boxes: boxes.list,
   heroes,
   water,
-  doors: [{ x: -10, z: -7.25, hx: 0.7, hz: 0.12, height: 2.2, rotY: Math.PI, name: '猎屋门' }],
+  doors: [{ x: -10, z: -2.75, hx: 0.7, hz: 0.12, height: 2.2, rotY: 0, name: '猎屋门' }],
   // 土路上的捕兽夹：主路不再是可以直线冲刺的安全路线。
   traps: [
     { x: 6, z: 40 },
