@@ -55,10 +55,26 @@ export function resolveLevelId(
   return { levelId: safeFallback, rejected: requested }
 }
 
+/** 大厅里最多保留多少个房间登记（含还没人进的空房）。防止 POST 刷爆内存。 */
+const MAX_ROOM_REGISTRATIONS = 64
+/** 空房登记多久没人进就回收。有人进过之后由 World 的清扫器接管。 */
+const EMPTY_ROOM_TTL_MS = 30 * 60_000
+
+export interface RoomSummary {
+  id: string
+  levelId: string
+  players: number
+  secondsLeft: number
+  phase: string
+  roster: { id: number; name: string; team: number; alive: boolean }[]
+}
+
 export class WorldRegistry {
   private readonly worlds = new Map<string, World>()
   /** matchId -> 关卡 id。世界被清扫掉时一起删，避免这张表无限增长。 */
   private readonly levels = new Map<string, string>()
+  /** matchId -> 空房登记时间。只用于回收"创建了但一直没人进"的房间。 */
+  private readonly registeredAt = new Map<string, number>()
   private readonly defaultLevelId: string
   private sweeper: NodeJS.Timeout | null = null
 
@@ -101,6 +117,7 @@ export class WorldRegistry {
           this.worlds.delete(matchId)
         }
         this.levels.set(matchId, levelId)
+        this.registeredAt.set(matchId, Date.now())
         console.info(`[worlds] 匹配 ${matchId} 空场，按请求从 ${existing} 换成 ${levelId}`)
         return levelId
       }
@@ -110,7 +127,43 @@ export class WorldRegistry {
       return existing
     }
     this.levels.set(matchId, levelId)
+    this.registeredAt.set(matchId, Date.now())
     return levelId
+  }
+
+  /** 大厅创建房间时防止撞上已有 id / 世界。 */
+  has(matchId: string): boolean {
+    return this.levels.has(matchId) || this.worlds.has(matchId)
+  }
+
+  /** 当前登记的房间数（含空房），用于创建上限。 */
+  get roomCount(): number {
+    return this.levels.size
+  }
+
+  /**
+   * 大厅房间列表：活跃世界 + 已创建但还没人进的空房。
+   *
+   * 空房必须出现在列表里，否则"创建房间"之后别人在列表里永远找不到它 ——
+   * 只能靠房号手输，那就等于没有房间列表。
+   */
+  listRooms(): RoomSummary[] {
+    const out: RoomSummary[] = []
+    for (const world of this.worlds.values()) {
+      const description = world.describe()
+      out.push({ ...description, levelId: this.levelIdOf(description.id) })
+    }
+    for (const [id, levelId] of this.levels) {
+      if (this.worlds.has(id)) continue
+      out.push({ id, levelId, players: 0, secondsLeft: 0, phase: 'lobby', roster: [] })
+    }
+    // 有人的房间排前面；同人数按房号，结果稳定，不随 Map 插入顺序跳。
+    out.sort((a, b) => b.players - a.players || a.id.localeCompare(b.id))
+    return out
+  }
+
+  canCreateRoom(): boolean {
+    return this.levels.size < MAX_ROOM_REGISTRATIONS
   }
 
   /** 这个 matchId 实际用的关卡 id（未登记 = 默认图）。Welcome 包要用它回传。 */
@@ -197,6 +250,14 @@ export class WorldRegistry {
       // 世界没了就别再记着它用哪张图：否则每个来过的 matchId 永久占一条。
       // 重新进来时由 Hello 重新协商，空世界里没有状态可保。
       this.levels.delete(id)
+      this.registeredAt.delete(id)
+    }
+    // 创建了房间但一直没人进：30 分钟后回收登记，否则大厅列表会被空房撑满。
+    for (const [id, at] of this.registeredAt) {
+      if (this.worlds.has(id)) continue
+      if (now - at < EMPTY_ROOM_TTL_MS) continue
+      this.levels.delete(id)
+      this.registeredAt.delete(id)
     }
   }
 }

@@ -9,6 +9,7 @@ import {
   decodeEvents,
   decodeHello,
   decodeInputPacket,
+  decodeNames,
   decodeSnapshot,
   decodeSwitchSlot,
   decodeWelcome,
@@ -16,6 +17,7 @@ import {
   encodeEvents,
   encodeHello,
   encodeInputPacket,
+  encodeNames,
   encodeSnapshot,
   encodeSwitchSlot,
   encodeWelcome,
@@ -120,10 +122,10 @@ test('hello: 4 字节头 + utf8 昵称，版本号与 PROTOCOL_VERSION 一致', 
   assert.equal(hello.version, PROTOCOL_VERSION)
   assert.equal(hello.nickname, 'ash')
 
-  // 昵称按 UTF-8 字节长度写进 u8 长度位，超长在编码侧截到 24 个字符。
-  const long = encodeHello('x'.repeat(30))
-  assert.equal(long.byteLength, 4 + 24)
-  assert.equal(decodeHello(long).nickname.length, 24)
+  // 昵称按 UTF-8 字节长度写进 u8 长度位，超长在编码侧截到 48 字节。
+  const long = encodeHello('x'.repeat(60))
+  assert.equal(long.byteLength, 4 + 48)
+  assert.equal(decodeHello(long).nickname.length, 48)
 })
 
 // ---------------------------------------------------------------- welcome
@@ -228,7 +230,7 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   // v19：战利品包加合同 id/进度 2 字节（11 → 13）。
   // v20：目标包加巢穴状态位图 1 字节（26 → 27）。
   // v21：玩家快照加队伍 1 字节（36 → 37）；配装包加组队偏好，战利品包加救援进度。
-  assert.equal(PROTOCOL_VERSION, 21)
+  assert.equal(PROTOCOL_VERSION, 22)
   assert.equal(SNAPSHOT_HEADER, 17)
   assert.equal(PLAYER_SNAPSHOT_SIZE, 37)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)
@@ -686,7 +688,18 @@ test('Msg 的消息类型编号是线上契约，不能被"整理"', () => {
       Event: Msg.Event,
       Text: Msg.Text,
       SwitchSlot: Msg.SwitchSlot,
+      Names: Msg.Names,
     },
-    { Hello: 1, Welcome: 2, Input: 3, Snapshot: 4, Ack: 5, Event: 6, Text: 7, SwitchSlot: 9 },
+    { Hello: 1, Welcome: 2, Input: 3, Snapshot: 4, Ack: 5, Event: 6, Text: 7, SwitchSlot: 9, Names: 10 },
   )
+})
+
+test('names: 全量昵称名单往返，中文按 UTF-8 计长', () => {
+  const entries = [
+    { id: 1, name: '泥鳅' },
+    { id: 7, name: 'Hunter' },
+    { id: 12, name: '沼泽里的第八个人' },
+  ]
+  assert.deepEqual(decodeNames(encodeNames(entries)), entries)
+  assert.throws(() => decodeNames(encodeHello('x')), /不是名单包/)
 })

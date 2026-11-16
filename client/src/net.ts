@@ -10,6 +10,7 @@ import {
   PROTOCOL_VERSION,
   decodeEvents,
   decodeLoot,
+  decodeNames,
   decodeObjective,
   decodeSnapshot,
   decodeText,
@@ -21,6 +22,7 @@ import {
   Msg,
   type GameEvent,
   type LootPacket,
+  type NameEntry,
   type ObjectivePacket,
   type PlayerInput,
   type Snapshot,
@@ -53,6 +55,8 @@ export interface NetHandlers {
   onLoot: (loot: LootPacket) => void
   /** 服务端发给本人的一句中文（'搜到 $86、怀表 ×1'）。 */
   onText: (text: string) => void
+  /** 全场昵称名单。加入/离开/改名时全量到达。 */
+  onNames?: (entries: NameEntry[]) => void
   onClose: (info: CloseInfo) => void
 }
 
@@ -212,6 +216,9 @@ export class Net {
             break
           case Msg.Text:
             this.handlers?.onText(decodeText(buffer))
+            break
+          case Msg.Names:
+            this.handlers?.onNames?.(decodeNames(buffer))
             break
           default:
             break

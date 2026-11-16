@@ -132,6 +132,7 @@ import {
   resetLoadout,
   encodeEvents,
   encodeLoot,
+  encodeNames,
   encodeObjective,
   encodeSnapshot,
   encodeText,
@@ -1522,6 +1523,22 @@ export class World {
         // 关一个已经半死的 socket 失败，不影响接管本身。
       }
     }
+    // 重连可能换了昵称：名单必须重发，否则击杀播报还挂着旧代号。
+    this.broadcastNames()
+  }
+
+  /**
+   * 全量昵称名单：加入 / 离开 / 改名时广播。
+   *
+   * 只在 roster 变化时发，不跟 20Hz 快照。客户端拿它替换「猎人 #id」，
+   * 击杀播报、队友列表、房间列表都读同一份名字。
+   */
+  private broadcastNames(): void {
+    if (this.players.size === 0) return
+    const entries: { id: number; name: string }[] = []
+    for (const player of this.players.values()) entries.push({ id: player.id, name: player.nickname })
+    const buffer = encodeNames(entries)
+    for (const player of this.players.values()) this.send(player, buffer)
   }
 
   /**
@@ -1616,6 +1633,7 @@ export class World {
     // 先让新角色的碰撞体进入物理世界，否则它第一 tick 会被射线/角色控制器忽略。
     this.physics.step()
     this.emptySince = 0
+    this.broadcastNames()
     return { id: player.id, spawn, resumed: false }
   }
 
@@ -1632,6 +1650,7 @@ export class World {
       this.emptySince = Date.now()
       this.onEmpty?.(this.id)
     }
+    this.broadcastNames()
   }
 
   /**
@@ -3166,13 +3185,25 @@ export class World {
   }
 
   /** 给 /api/game/status 用的自述，避免外部读私有字段。 */
-  describe(): { id: string; tick: number; players: number; secondsLeft: number; phase: string } {
+  describe(): {
+    id: string
+    tick: number
+    players: number
+    secondsLeft: number
+    phase: string
+    roster: { id: number; name: string; team: number; alive: boolean }[]
+  } {
+    const roster: { id: number; name: string; team: number; alive: boolean }[] = []
+    for (const player of this.players.values()) {
+      roster.push({ id: player.id, name: player.nickname, team: player.team, alive: player.alive })
+    }
     return {
       id: this.id,
       tick: this.tick,
       players: this.players.size,
       secondsLeft: this.match.state.secondsLeft,
       phase: this.match.state.phase,
+      roster,
     }
   }
 }

@@ -348,6 +348,8 @@ export class Game {
   private character: Character | null = null
 
   private myId = 0
+  /** 服务端下发的全场昵称。击杀播报与队友列表都读这里，缺项才回退到 #id。 */
+  private readonly playerNames = new Map<number, string>()
   private seq = 0
   private pending: PendingInput[] = []
   private remote = new Map<number, RemoteState>()
@@ -652,6 +654,10 @@ export class Game {
       onEvents: (events) => this.onEvents(events),
       onObjective: (objective) => this.onObjective(objective),
       onLoot: (loot) => this.onLoot(loot),
+      onNames: (entries) => {
+        this.playerNames.clear()
+        for (const entry of entries) this.playerNames.set(entry.id, entry.name)
+      },
       onText: (text) => this.options.onText?.(text),
       onClose: (info) => {
         this.running = false
@@ -1436,6 +1442,12 @@ export class Game {
 
   // ------------------------------------------------------------ 事件
 
+  /** 玩家代号。名单包没到（刚进局/旧服务端）时回退到编号，绝不显示 undefined。 */
+  private playerName(id: number): string {
+    if (id <= 0) return '沼泽'
+    return this.playerNames.get(id) ?? `猎人 #${id}`
+  }
+
   private onEvents(events: GameEvent[]): void {
     const eye = this.character?.eye ?? null
     // 同一批事件里已经命中玩家/怪的枪，不再补"打在墙上"的落点声：
@@ -1519,8 +1531,8 @@ export class Game {
         }
         this.audio.death()
         this.feedback.kill(
-          nameOf(event.killerId),
-          nameOf(event.victimId),
+          this.playerName(event.killerId),
+          this.playerName(event.victimId),
           this.weaponNameOf(event.killerId),
           event.headshot,
         )
@@ -2011,7 +2023,7 @@ export class Game {
           .filter((p) => p.id !== this.myId && p.team === team)
           .map((p) => ({
             id: p.id,
-            name: '猎人 #' + p.id,
+            name: this.playerName(p.id),
             health: p.health,
             downed: (p.flags & StateFlags.Downed) !== 0,
             alive: (p.flags & StateFlags.Alive) !== 0,
@@ -2659,10 +2671,6 @@ function monsterNameOf(kind: number): string {
   if (kind === 5) return '石心巨像'
   if (kind === 6) return '末班车长'
   return '沼泽行尸'
-}
-
-function nameOf(id: number): string {
-  return id > 0 ? `猎人 #${id}` : '沼泽'
 }
 
 /** 角度插值要按最短弧，否则 179° → -179° 会转一大圈。 */

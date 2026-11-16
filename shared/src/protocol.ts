@@ -54,6 +54,14 @@ export const Msg = {
    */
   SwitchSlot: 9,
   /**
+   * S→C 昵称名单：id → 昵称。加入/离开/改名时广播全量。
+   *
+   * 击杀播报和队友列表要显示玩家自己起的代号，而不是「猎人 #7」。
+   * 快照是 20Hz 的高频包，不能为了十几个名字每帧背字符串；名单一次只有
+   * 十几条、几秒才变一次，所以单独一个低频包。
+   */
+  Names: 10,
+  /**
    * S→C 战利品/搜索状态，**只发给本人**。
    *
    * 为什么不并进快照：快照是广播包（16 个人都收），而"我身上多少钱、
@@ -778,7 +786,26 @@ export function decodeEvents(buffer: ArrayBuffer): GameEvent[] {
 // ---------------------------------------------------------------- 握手
 
 /** 昵称的最大字节数。编码时截断，两端遵守同一个上限。 */
-const NICKNAME_MAX_BYTES = 24
+const NICKNAME_MAX_BYTES = 48
+
+/**
+ * 按 UTF-8 边界截断，绝不切在半个汉字/emoji 中间。
+ *
+ * `TextEncoder.encode(str).slice(0, max)` 会在 3 字节字符的第 2 字节处切断，
+ * 解码出来是一个 U+FFFD；玩家名字会变成「泥�」。这个函数按码点累加，
+ * 超限就停在上一个完整字符。
+ */
+export function truncateUtf8(text: string, maxBytes: number): string {
+  let out = ''
+  let used = 0
+  for (const ch of text) {
+    const size = new TextEncoder().encode(ch).length
+    if (used + size > maxBytes) break
+    out += ch
+    used += size
+  }
+  return out
+}
 
 /** 关卡 id 的最大字节数。关卡 id 都是短 ASCII（marsh-p0、chapel-p1）。 */
 export const LEVEL_ID_MAX_BYTES = 32
@@ -831,7 +858,7 @@ function clampLevelId(levelId: string | null | undefined): string {
  * 不带 levelId 时包体与老版本**逐字节相同**（旧服务端照样能读）。
  */
 export function encodeHello(nickname: string, levelId?: string | null): ArrayBuffer {
-  const bytes = new TextEncoder().encode(nickname.slice(0, NICKNAME_MAX_BYTES))
+  const bytes = new TextEncoder().encode(truncateUtf8(nickname, NICKNAME_MAX_BYTES))
   const tail = clampLevelId(levelId)
   const buffer = new ArrayBuffer(4 + bytes.length + tailByteLength(tail))
   const view = new DataView(buffer)
@@ -1128,5 +1155,70 @@ export function decodeText(buffer: ArrayBuffer): string {
     throw new Error('文本包被截断：声明 ' + len + ' 字节，实到 ' + (view.byteLength - 2))
   }
   return new TextDecoder().decode(new Uint8Array(buffer, 2, len))
+}
+
+// ---------------------------------------------------------------- 昵称名单
+
+export interface NameEntry {
+  id: number
+  name: string
+}
+
+/** 单包最多多少个名字。16 人房够用，超出截断而不是拒绝。 */
+const NAME_ROSTER_MAX = 64
+/** 单条昵称的字节上限（16 个汉字 = 48 字节；这里放到 48 覆盖中文）。 */
+const NAME_ENTRY_MAX_BYTES = 48
+
+/**
+ * 全量名单包：`u8 Msg.Names`、`u8 count`，随后每条
+ * `u16le id`、`u8 byteLen`、UTF-8 昵称。
+ *
+ * 用**全量**而不是增量：16 条 × 平均 12 字节 ≈ 200 字节，几秒才发一次；
+ * 增量包要维护"谁走了"的墓碑，丢一个包就永久错名，全量则天然自愈。
+ */
+export function encodeNames(entries: NameEntry[]): ArrayBuffer {
+  const list = entries.slice(0, NAME_ROSTER_MAX)
+  const encoder = new TextEncoder()
+  const encoded: Uint8Array[] = []
+  let total = 2
+  for (const entry of list) {
+    const bytes = encoder.encode(truncateUtf8(entry.name, NAME_ENTRY_MAX_BYTES))
+    encoded.push(bytes)
+    total += 3 + bytes.length
+  }
+  const buffer = new ArrayBuffer(total)
+  const view = new DataView(buffer)
+  view.setUint8(0, Msg.Names)
+  view.setUint8(1, list.length)
+  let offset = 2
+  for (let i = 0; i < list.length; i++) {
+    const bytes = encoded[i]!
+    view.setUint16(offset, list[i]!.id & 0xffff, true)
+    view.setUint8(offset + 2, bytes.length)
+    new Uint8Array(buffer, offset + 3, bytes.length).set(bytes)
+    offset += 3 + bytes.length
+  }
+  return buffer
+}
+
+export function decodeNames(buffer: ArrayBuffer): NameEntry[] {
+  const view = new DataView(buffer)
+  if (view.byteLength < 2) throw new Error('名单包长度不足')
+  if (view.getUint8(0) !== Msg.Names) throw new Error('不是名单包')
+  const count = view.getUint8(1)
+  if (count > NAME_ROSTER_MAX) throw new Error('名单条目过多')
+  const out: NameEntry[] = []
+  let offset = 2
+  for (let i = 0; i < count; i++) {
+    if (offset + 3 > view.byteLength) throw new Error('名单包被截断')
+    const id = view.getUint16(offset, true)
+    const len = view.getUint8(offset + 2)
+    offset += 3
+    if (offset + len > view.byteLength) throw new Error('名单昵称被截断')
+    const name = new TextDecoder().decode(new Uint8Array(buffer, offset, len))
+    offset += len
+    out.push({ id, name })
+  }
+  return out
 }
 

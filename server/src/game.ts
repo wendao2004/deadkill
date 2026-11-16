@@ -20,6 +20,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { WebSocket } from 'ws'
 import {
   MAX_INPUTS_PER_PACKET,
+  MAX_PLAYERS,
   Msg,
   initPhysics,
   PROTOCOL_VERSION,
@@ -33,7 +34,7 @@ import {
   type PlayerInput,
 } from '@dk/shared'
 
-import { WorldRegistry } from './worlds.ts'
+import { WorldRegistry, resolveLevelId } from './worlds.ts'
 
 export interface GameAuthResult {
   /** 稳定用户标识。同一个账号重连后仍然拿到同一个 id，用于战绩与养成存档。 */
@@ -84,6 +85,35 @@ export function registerGame(
     snapshotRate: SNAPSHOT_RATE,
     ...registry.describe(),
   }))
+
+  /**
+   * 大厅房间列表。含"已创建但还没人进"的空房，否则创建完只能在列表里消失，
+   * 其他玩家永远找不到这局。
+   */
+  app.get('/api/rooms', async () => ({
+    ok: true as const,
+    maxPlayers: MAX_PLAYERS,
+    rooms: registry.listRooms(),
+  }))
+
+  /**
+   * 创建房间。只登记房号与地图，真正的 World 仍在第一个玩家 WS 握手时懒创建。
+   *
+   * 这里不返回世界状态，也不创建物理世界 —— 512MB 容器里"点了创建但没人进"
+   * 不应该先吃掉 8~20MB。
+   */
+  app.post('/api/rooms', async (request, reply) => {
+    if (!registry.canCreateRoom()) {
+      reply.code(409)
+      return { ok: false as const, error: '房间数量已达上限，请稍后再试' }
+    }
+    const body = (request.body ?? {}) as { levelId?: unknown }
+    const requested = typeof body.levelId === 'string' ? body.levelId : null
+    const id = createRoomId(registry)
+    const { levelId } = resolveLevelId(requested)
+    registry.registerLevel(id, levelId)
+    return { ok: true as const, id, levelId }
+  })
 
   app.get('/ws/game', { websocket: true }, (socket, request) => {
     handleConnection(socket, request, { registry, physicsReady, allowAnonymous, maxPerSecond, authenticate: options.authenticate })
@@ -336,6 +366,22 @@ function toArrayBuffer(data: unknown): ArrayBuffer | null {
 }
 
 /** matchId 只允许简单的字符集，避免它被拼进日志/将来被拼进 SQL 时出问题。 */
+/** 房号字母表：去掉了 0/o/1/i/l 这类读起来会吵架的字符。 */
+const ROOM_CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'
+
+/** 随机房号，短到能口头报，长到 33^5 足够撞不上。 */
+function createRoomId(registry: WorldRegistry): string {
+  for (let attempt = 0; attempt < 32; attempt++) {
+    let id = 'r-'
+    for (let i = 0; i < 5; i++) {
+      id += ROOM_CODE_ALPHABET[Math.floor(Math.random() * ROOM_CODE_ALPHABET.length)]
+    }
+    if (!registry.has(id)) return id
+  }
+  // 32 次全撞上（几乎只可能是被恶意占满）：退化成时间戳，仍满足 sanitize。
+  return 'r-' + Date.now().toString(36)
+}
+
 function sanitizeMatchId(raw: string): string {
   const cleaned = raw.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32)
   return cleaned || 'default'
