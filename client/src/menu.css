@@ -3365,3 +3365,586 @@
 }
 
 .dk-room-team__name.is-dead { color: var(--ash); text-decoration: line-through; }
+
+/* ==========================================================================
+ * 沉浸式大厅 · 2026 重做
+ *
+ * 去掉旧版的硬阴影、旋转卡片和常驻侧边导航。四个主页入口各自是一块独立
+ * 的满屏界面：只有左上角返回、当前功能标题和本步骤需要的内容。地图选择
+ * 做成一张横向铺开的猎场图板，而不是一排小卡片。
+ * ========================================================================== */
+
+/* ---- 主页：电影片头式中心菜单 ---- */
+
+.dk-menu .dk-home {
+  background:
+    linear-gradient(180deg, rgba(4, 6, 8, 0.12) 0%, rgba(4, 6, 8, 0.58) 62%, rgba(4, 6, 8, 0.9) 100%);
+  gap: clamp(22px, 4vh, 46px);
+}
+
+.dk-menu .dk-home__head { transform: none; }
+
+.dk-menu .dk-home__title {
+  font-size: clamp(52px, 10vw, 128px);
+  letter-spacing: -0.055em;
+  text-shadow:
+    0 1px 0 rgba(12, 11, 10, 0.9),
+    0 0 70px rgba(217, 154, 74, 0.16);
+}
+
+.dk-menu .dk-home__kicker {
+  color: var(--amber);
+  opacity: 0.8;
+}
+
+.dk-menu .dk-home__menu {
+  width: min(560px, 86vw);
+  gap: 0;
+  border-top: 1px solid rgba(216, 207, 186, 0.14);
+}
+
+.dk-menu .dk-home__item {
+  gap: 18px;
+  padding: 17px 10px 18px;
+  border: 0;
+  border-bottom: 1px solid rgba(216, 207, 186, 0.14);
+  border-left: 2px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+  transition: background 140ms ease, border-color 140ms ease, padding-left 140ms ease;
+}
+
+.dk-menu .dk-home__item:nth-child(2),
+.dk-menu .dk-home__item:nth-child(3),
+.dk-menu .dk-home__item:nth-child(4) { transform: none; }
+
+.dk-menu .dk-home__item:hover,
+.dk-menu .dk-home__item:focus-visible {
+  transform: none;
+  box-shadow: none;
+  padding-left: 18px;
+  border-left-color: var(--amber);
+  background: linear-gradient(90deg, rgba(217, 154, 74, 0.12), rgba(12, 11, 10, 0));
+  outline: none;
+}
+
+.dk-menu .dk-home__item:active { transform: none; box-shadow: none; }
+
+.dk-menu .dk-home__index {
+  min-width: 34px;
+  font-size: 11px;
+  color: var(--amber);
+  opacity: 0.75;
+}
+
+.dk-menu .dk-home__cn {
+  font-size: clamp(24px, 2.6vw, 34px);
+  letter-spacing: 0.02em;
+}
+
+.dk-menu .dk-home__en { font-size: 9.5px; letter-spacing: 0.34em; }
+
+.dk-menu .dk-home__arrow {
+  font-size: 20px;
+  color: var(--amber);
+  opacity: 0.35;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.dk-menu .dk-home__item:hover .dk-home__arrow { opacity: 1; transform: translateX(4px); }
+
+/* ---- 功能页：撤掉全部全局框架 ---- */
+
+.dk-function-bar { display: none; }
+
+.dk-menu.is-immersive .dk-top,
+.dk-menu.is-immersive .dk-bottom,
+.dk-menu.is-immersive .dk-nav {
+  display: none;
+}
+
+.dk-menu.is-immersive .dk-main {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: clamp(74px, 9vh, 98px) clamp(22px, 4vw, 64px) clamp(18px, 3vh, 34px);
+  overflow: hidden;
+}
+
+.dk-menu.is-immersive .dk-pane { padding-right: 2px; }
+
+.dk-menu.is-immersive .dk-function-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 18px clamp(22px, 4vw, 64px) 16px;
+  background: linear-gradient(180deg, rgba(4, 6, 8, 0.88), rgba(4, 6, 8, 0));
+  pointer-events: none;
+}
+
+.dk-function-back {
+  pointer-events: auto;
+  padding: 7px 12px;
+  border: 1px solid rgba(216, 207, 186, 0.2);
+  background: rgba(12, 11, 10, 0.4);
+  color: var(--bone);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.dk-function-back:hover,
+.dk-function-back:focus-visible {
+  outline: none;
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.dk-function-bar__text {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.dk-function-bar__title {
+  font-family: var(--font-display);
+  font-size: clamp(20px, 2.2vw, 28px);
+  letter-spacing: 0.04em;
+  color: var(--bone);
+}
+
+.dk-function-bar__meta {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.34em;
+  color: var(--ash);
+}
+
+.dk-menu.is-home .dk-function-bar,
+.dk-menu.is-exited .dk-function-bar { display: none; }
+
+/* ---- 通用材质：从"贴纸卡片"换成"战术终端" ---- */
+
+.dk-menu.is-immersive .dk-panel,
+.dk-menu.is-immersive .dk-profile,
+.dk-menu.is-immersive .dk-deploy__side,
+.dk-menu.is-immersive .dk-room-detail,
+.dk-menu.is-immersive .dk-room-card,
+.dk-menu.is-immersive .dk-map,
+.dk-menu.is-immersive .dk-weapon,
+.dk-menu.is-immersive .dk-trait,
+.dk-menu.is-immersive .dk-friends,
+.dk-menu.is-immersive .dk-table,
+.dk-menu.is-immersive .dk-scroll {
+  border-width: 1px !important;
+  border-color: rgba(216, 207, 186, 0.14) !important;
+  background: rgba(8, 10, 12, 0.62) !important;
+  box-shadow: none !important;
+  transform: none !important;
+  backdrop-filter: blur(5px);
+}
+
+.dk-menu.is-immersive .dk-panel { padding: 16px 18px 18px; }
+
+.dk-menu.is-immersive .dk-section-head {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(216, 207, 186, 0.14);
+}
+
+.dk-menu.is-immersive .dk-section-head__cn {
+  font-size: clamp(18px, 1.8vw, 24px);
+  letter-spacing: 0.06em;
+}
+
+.dk-menu.is-immersive .dk-section-head__en {
+  color: var(--amber);
+  opacity: 0.72;
+  letter-spacing: 0.3em;
+}
+
+.dk-menu.is-immersive .dk-map.is-selected,
+.dk-menu.is-immersive .dk-weapon.is-selected,
+.dk-menu.is-immersive .dk-trait.is-selected,
+.dk-menu.is-immersive .dk-room-card.is-selected,
+.dk-menu.is-immersive .dk-segment__item.is-selected,
+.dk-menu.is-immersive .dk-threat__stop.is-selected,
+.dk-menu.is-immersive .dk-steps__item.is-active {
+  border-color: var(--amber) !important;
+  box-shadow: inset 0 0 0 1px rgba(217, 154, 74, 0.22) !important;
+  background: linear-gradient(180deg, rgba(217, 154, 74, 0.12), rgba(8, 10, 12, 0.7)) !important;
+}
+
+.dk-menu.is-immersive .dk-cta {
+  border: 1px solid var(--amber);
+  background: var(--amber);
+  color: #120f0b;
+  box-shadow: none;
+  transform: none;
+  font-family: var(--font-display);
+  letter-spacing: 0.16em;
+}
+
+.dk-menu.is-immersive .dk-cta:hover:not(:disabled),
+.dk-menu.is-immersive .dk-cta:focus-visible:not(:disabled) {
+  outline: none;
+  background: #e7ad63;
+  border-color: #e7ad63;
+  transform: none;
+  box-shadow: none;
+}
+
+.dk-menu.is-immersive .dk-cta:active:not(:disabled) { transform: none; box-shadow: none; }
+
+.dk-menu.is-immersive .dk-step-next,
+.dk-menu.is-immersive .dk-step-back,
+.dk-menu.is-immersive .dk-rooms__create,
+.dk-menu.is-immersive .dk-rooms__refresh,
+.dk-menu.is-immersive .dk-friends__add-btn,
+.dk-menu.is-immersive .dk-friends__copy,
+.dk-menu.is-immersive .dk-friends__refresh,
+.dk-menu.is-immersive .dk-friends__invite {
+  border: 1px solid rgba(216, 207, 186, 0.18);
+  background: transparent;
+  color: var(--bone);
+  box-shadow: none;
+  transform: none;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.dk-menu.is-immersive .dk-step-next,
+.dk-menu.is-immersive .dk-rooms__create,
+.dk-menu.is-immersive .dk-friends__add-btn {
+  border-color: var(--amber);
+  background: rgba(217, 154, 74, 0.12);
+  color: var(--amber);
+}
+
+.dk-menu.is-immersive .dk-step-next:hover,
+.dk-menu.is-immersive .dk-step-back:hover,
+.dk-menu.is-immersive .dk-rooms__create:hover,
+.dk-menu.is-immersive .dk-rooms__refresh:hover,
+.dk-menu.is-immersive .dk-friends__add-btn:hover,
+.dk-menu.is-immersive .dk-friends__copy:hover,
+.dk-menu.is-immersive .dk-friends__refresh:hover,
+.dk-menu.is-immersive .dk-friends__invite:hover {
+  outline: none;
+  border-color: var(--amber);
+  background: rgba(217, 154, 74, 0.18);
+  color: var(--amber);
+  transform: none;
+  box-shadow: none;
+}
+
+.dk-menu.is-immersive .dk-segment__item,
+.dk-menu.is-immersive .dk-threat__stop,
+.dk-menu.is-immersive .dk-threat {
+  border-width: 1px;
+  box-shadow: none;
+  transform: none;
+}
+
+.dk-menu.is-immersive .dk-input {
+  border: 1px solid rgba(216, 207, 186, 0.18);
+  background: rgba(4, 6, 8, 0.55);
+  box-shadow: none;
+}
+
+/* ---- 出击向导：细线步骤条 ---- */
+
+.dk-menu.is-immersive .dk-deploy {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  gap: 20px;
+}
+
+.dk-menu.is-immersive .dk-steps {
+  border-bottom: 1px solid rgba(216, 207, 186, 0.14);
+  gap: 0;
+}
+
+.dk-menu.is-immersive .dk-steps__item {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 11px 16px 12px;
+}
+
+.dk-menu.is-immersive .dk-steps__item.is-active {
+  border-bottom-color: var(--amber);
+  background: linear-gradient(180deg, rgba(217, 154, 74, 0.08), transparent) !important;
+}
+
+.dk-menu.is-immersive .dk-steps__num { color: var(--amber); }
+
+.dk-menu.is-immersive .dk-deploy[data-step='1'] { grid-template-columns: minmax(0, 1fr); }
+
+/* ---- 第一步：横向铺开的猎场图板 ---- */
+
+.dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-maps {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.dk-menu.is-immersive .dk-map {
+  position: relative;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid rgba(216, 207, 186, 0.14) !important;
+  background: rgba(6, 8, 10, 0.72) !important;
+  cursor: pointer;
+}
+
+.dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-map {
+  display: flex;
+  flex-direction: column;
+  height: min(58vh, 560px);
+}
+
+.dk-menu.is-immersive .dk-map__art {
+  height: 58%;
+  border-bottom: 1px solid rgba(216, 207, 186, 0.12);
+  filter: saturate(0.7) brightness(0.86);
+  transition: filter 220ms ease, transform 260ms ease;
+}
+
+.dk-menu.is-immersive .dk-map.is-selected .dk-map__art,
+.dk-menu.is-immersive .dk-map:hover .dk-map__art {
+  filter: saturate(1) brightness(0.94);
+  transform: scale(1.02);
+}
+
+.dk-menu.is-immersive .dk-map__index {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 2;
+  font-family: var(--font-display);
+  font-size: clamp(24px, 3vw, 40px);
+  line-height: 1;
+  color: rgba(216, 207, 186, 0.82);
+  text-shadow: 0 1px 0 rgba(12, 11, 10, 0.9);
+}
+
+.dk-menu.is-immersive .dk-map.is-selected .dk-map__index { color: var(--amber); }
+
+.dk-menu.is-immersive .dk-map__body {
+  flex: 1;
+  gap: 3px;
+  padding: 13px 14px 15px;
+  background: linear-gradient(180deg, rgba(8, 10, 12, 0.3), rgba(8, 10, 12, 0.88));
+}
+
+.dk-menu.is-immersive .dk-map__name {
+  font-family: var(--font-display);
+  font-size: clamp(15px, 1.4vw, 20px);
+  line-height: 1.05;
+}
+
+.dk-menu.is-immersive .dk-map__desc {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ash);
+}
+
+.dk-menu.is-immersive .dk-map__threat {
+  border: 1px solid rgba(125, 43, 34, 0.65);
+  background: transparent;
+  color: #d99a4a;
+}
+
+.dk-menu.is-immersive .dk-step-next.dk-step-map {
+  margin-top: 14px;
+  align-self: flex-start;
+  min-width: 220px;
+}
+
+/* 第二步：左配装/好友，右队伍/合同 */
+.dk-menu.is-immersive .dk-deploy[data-step='2'] .dk-deploy__maps { min-width: 0; }
+.dk-menu.is-immersive .dk-deploy[data-step='2'] .dk-deploy__side { align-self: start; }
+
+/* 第三步：左列表、右提交的网格已经存在，换细线即可 */
+.dk-menu.is-immersive .dk-deploy[data-step='3'] .dk-step-room {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+}
+
+.dk-menu.is-immersive .dk-room-detail,
+.dk-menu.is-immersive .dk-room-card { border-left-width: 1px !important; }
+
+.dk-menu.is-immersive .dk-room-card.is-selected { border-left-color: var(--amber) !important; }
+
+/* ---- 好友面板 ---- */
+
+.dk-friends { display: flex; flex-direction: column; gap: 9px; }
+
+.dk-friends__online {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--bile);
+}
+
+.dk-friends__code {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(216, 207, 186, 0.12);
+  background: rgba(4, 6, 8, 0.4);
+}
+
+.dk-friends__label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: var(--ash);
+}
+
+.dk-friends__value {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--amber);
+}
+
+.dk-friends__copy,
+.dk-friends__add-btn,
+.dk-friends__refresh,
+.dk-friends__invite {
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+
+.dk-friends__add { display: flex; gap: 6px; }
+.dk-friends__add .dk-input { flex: 1; min-width: 0; }
+
+.dk-friends__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-height: 26vh;
+  overflow: auto;
+  scrollbar-width: thin;
+  border-top: 1px solid rgba(216, 207, 186, 0.1);
+}
+
+.dk-friends__empty {
+  margin: 0;
+  padding: 10px 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--ash);
+}
+
+.dk-friend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 2px;
+  border-bottom: 1px solid rgba(216, 207, 186, 0.08);
+}
+
+.dk-friend__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(141, 133, 120, 0.5);
+}
+
+.dk-friend.is-online .dk-friend__dot {
+  background: var(--bile);
+  box-shadow: 0 0 7px rgba(154, 168, 69, 0.7);
+}
+
+.dk-friend__body { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
+.dk-friend__name { font-size: 11.5px; color: var(--bone); }
+.dk-friend__meta { font-family: var(--font-mono); font-size: 9px; color: var(--ash); }
+
+.dk-friend__join {
+  padding: 3px 8px;
+  border: 1px solid var(--amber);
+  background: transparent;
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.dk-friend__join:hover { background: rgba(217, 154, 74, 0.16); }
+
+.dk-friend__remove {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ash);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.dk-friend__remove:hover { color: var(--blood); }
+
+.dk-friends__actions { display: flex; gap: 6px; }
+.dk-friends__hint { margin: 0; font-size: 10px; line-height: 1.6; color: var(--ash); }
+
+/* ---- 昵称/退出：同样的细线卡片 ---- */
+
+.dk-onboard__card,
+.dk-exit__card {
+  border-width: 1px;
+  border-color: rgba(216, 207, 186, 0.18);
+  background: rgba(8, 10, 12, 0.9);
+  box-shadow: none;
+  transform: none;
+}
+
+.dk-onboard__title,
+.dk-exit__title { letter-spacing: 0.02em; }
+
+.dk-onboard__input { border-radius: 0; }
+
+/* ---- 窄屏 ---- */
+
+@media (max-width: 1100px) {
+  .dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-maps {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+  .dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-map { height: min(42vh, 400px); }
+  .dk-menu.is-immersive .dk-deploy { grid-template-columns: minmax(0, 1fr); }
+  .dk-menu.is-immersive .dk-deploy[data-step='3'] .dk-step-room { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 720px) {
+  .dk-menu.is-immersive .dk-main { padding: 66px 14px 18px; }
+  .dk-menu.is-immersive .dk-function-bar { padding: 12px 14px; }
+  .dk-menu .dk-home__cn { font-size: 22px; }
+  .dk-menu .dk-home__item { padding: 13px 6px 14px; }
+}
+
+/* 功能页把 top/bottom 都藏了，grid 的 auto/1fr/auto 三行会让 main 落到
+   auto 行里塌成内容高度；功能页改成单行，main 才真的铺满视口。 */
+.dk-menu.is-immersive { grid-template-rows: 1fr; }
+.dk-menu.is-immersive .dk-main { grid-row: 1; }
+
+/* 第一步的标题已经由左上角功能条承担，图板里不再重复一遍；
+   同时把图板高度压到 48vh，保证「下一步」在 720p 也完整露出。 */
+.dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-deploy__maps > .dk-section-head { display: none; }
+.dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-map { height: min(48vh, 400px); }
+.dk-menu.is-immersive .dk-deploy[data-step='1'] .dk-map__art { height: 52%; }

@@ -191,6 +191,8 @@ const KEY_TRAITS = 'dk.traits'
 const KEY_TRAIT_OWNED = 'dk.traitOwned'
 /** 金币余额：天赋解锁与升级的唯一货币。 */
 const KEY_COINS = 'dk.coins'
+const KEY_FRIENDS = 'dk.friends'
+const KEY_FRIEND_CODE = 'dk.friendCode'
 
 /** Safari 隐私模式 / 被策略禁用时 localStorage 会直接抛，所以每一次访问都要兜住。 */
 function readRaw(key: string): string | null {
@@ -320,6 +322,58 @@ export function saveConfig(config: Partial<MenuConfig>): void {
   if (config.squad !== undefined) writeRaw(KEY_SQUAD, config.squad ? '1' : '0')
   // 金币不进配装包也照样落盘：大厅一刷新，余额和等级都还在。
   if (config.coins !== undefined) writeRaw(KEY_COINS, String(normalizeCoins(config.coins)))
+}
+
+// ---------------------------------------------------------------- 好友
+
+interface FriendEntry {
+  name: string
+  /** 好友码可选：知道码时按码配对，避免同名玩家串台。 */
+  code?: string
+}
+
+const FRIEND_CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'
+
+function makeFriendCode(): string {
+  let out = 'h-'
+  for (let i = 0; i < 6; i++) {
+    out += FRIEND_CODE_ALPHABET[Math.floor(Math.random() * FRIEND_CODE_ALPHABET.length)]
+  }
+  return out
+}
+
+function loadFriends(): FriendEntry[] {
+  const raw = readRaw(KEY_FRIENDS)
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    const out: FriendEntry[] = []
+    const seen = new Set<string>()
+    for (const item of parsed) {
+      if (typeof item !== 'object' || item === null) continue
+      const record = item as { name?: unknown; code?: unknown }
+      const name = typeof record.name === 'string' ? record.name.trim().slice(0, 16) : ''
+      const code = typeof record.code === 'string' ? record.code.trim().toLowerCase().slice(0, 24) : ''
+      if (!name && !code) continue
+      const key = code || 'name:' + name
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(code ? { name: name || code, code } : { name })
+      if (out.length >= 30) break
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+function saveFriends(friends: FriendEntry[]): void {
+  try {
+    writeRaw(KEY_FRIENDS, JSON.stringify(friends.slice(0, 30)))
+  } catch {
+    // 存不下只是下次要重加，不影响本局。
+  }
 }
 
 // ---------------------------------------------------------------- 小工具
@@ -1001,6 +1055,13 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     traits: clampSelection(options.initial?.traits ?? saved.traits ?? 0),
     coins: normalizeCoins(options.initial?.coins ?? saved.coins ?? 0),
   }
+  // 好友码是本机身份：服务端只做在线目录，不建账号。首次生成后一直复用。
+  let friendCode = readRaw(KEY_FRIEND_CODE) ?? ''
+  if (!/^[a-z0-9-]{4,24}$/.test(friendCode)) {
+    friendCode = makeFriendCode()
+    writeRaw(KEY_FRIEND_CODE, friendCode)
+  }
+  let friends = loadFriends()
   // 已拥有等级不进 MenuConfig：它是局外进度，main.ts 发配装包时只要
   // packSelection(掩码, 已拥有) 的结果。所以这里读出唯一一份。
   let traitOwned = readTraitOwned()
@@ -1198,6 +1259,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   let roomDetailEl: HTMLElement | null = null
   let roomStatusEl: HTMLElement | null = null
   const roomCache = new Map<string, RoomView>()
+  let friendListEl: HTMLElement | null = null
+  let friendOnlineEl: HTMLElement | null = null
+  let friendInputEl: HTMLInputElement | null = null
+  let onlinePresences: PresenceView[] = []
   let homeNickEl: HTMLElement | null = null
   let homeCoinsEl: HTMLElement | null = null
   let onboardEl: HTMLElement | null = null
@@ -1205,6 +1270,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   let onboardError: HTMLElement | null = null
   let onboardThen: (() => void) | null = null
   let profileNameEl: HTMLElement | null = null
+  let functionTitleEl: HTMLElement | null = null
+  let functionMetaEl: HTMLElement | null = null
   /** 构造期就会走到 refreshRooms（房间面板自己拉一次列表），必须先声明。 */
   let disposed = false
 
@@ -1214,6 +1281,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   host.appendChild(home)
   host.appendChild(buildOnboarding())
   host.appendChild(buildExitScreen())
+  host.appendChild(buildFunctionBar())
 
   // ---------------------------------------------------------------- 出击
 
@@ -1385,6 +1453,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   function showHome(next: boolean): void {
     host.classList.toggle('is-home', next)
+    // 功能页是独立沉浸层：没有全局导航/顶栏/底栏，只留左上角返回。
+    host.classList.toggle('is-immersive', !next)
     if (next) {
       host.classList.remove('is-exited')
       updateHomeMeta()
@@ -1393,9 +1463,50 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     }
   }
 
+  function buildFunctionBar(): HTMLElement {
+    const bar = mk('div', 'dk-function-bar')
+    const back = mkButton('dk-function-back', '← 主页')
+    back.addEventListener('click', () => showHome(true))
+    const text = mk('div', 'dk-function-bar__text')
+    functionTitleEl = mk('span', 'dk-function-bar__title', '出击')
+    functionMetaEl = mk('span', 'dk-function-bar__meta', 'DEPLOY')
+    text.appendChild(functionTitleEl)
+    text.appendChild(functionMetaEl)
+    bar.appendChild(back)
+    bar.appendChild(text)
+    return bar
+  }
+
+  function updateFunctionTitle(id: PaneId, step = 1): void {
+    if (!functionTitleEl || !functionMetaEl) return
+    if (id === 'deploy') {
+      const titles = [
+        ['选择猎场', 'SELECT MAP'],
+        ['组队与配装', 'TEAM & LOADOUT'],
+        ['房间', 'ROOMS'],
+      ] as const
+      const pick = titles[Math.max(0, Math.min(2, step - 1))]!
+      functionTitleEl.textContent = pick[0]
+      functionMetaEl.textContent = pick[1]
+      return
+    }
+    const titles: Record<PaneId, [string, string]> = {
+      deploy: ['出击', 'DEPLOY'],
+      hunter: ['庇护所', 'HIDEOUT'],
+      arsenal: ['军械库', 'ARSENAL'],
+      records: ['传奇', 'RECORDS'],
+      keys: ['操作', 'CONTROLS'],
+      settings: ['设置', 'SETTINGS'],
+    }
+    const pick = titles[id]
+    functionTitleEl.textContent = pick[0]
+    functionMetaEl.textContent = pick[1]
+  }
+
   function enterFunction(id: PaneId): void {
     showHome(false)
     activatePane(id)
+    updateFunctionTitle(id, 1)
     if (id === 'deploy') setDeployStep(1)
   }
 
@@ -1457,6 +1568,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     saveConfig(config)
     if (identity) identity.nickInput.value = name
     updateHomeMeta()
+    // 引导层确认前心跳已经用「无名猎人」发过一次；立刻补一帧真名，
+    // 避免好友列表在最多 8 秒里看到占位名。
+    void heartbeatPresence()
     host.classList.remove('is-onboarding')
     const then = onboardThen
     onboardThen = null
@@ -1515,9 +1629,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     left.appendChild(head)
 
     const cards = mk('div', 'dk-maps dk-step dk-step-map')
-    for (const entry of MAP_ENTRIES) {
+    for (const [entryIndex, entry] of MAP_ENTRIES.entries()) {
       const card = mkButton('dk-map')
       card.dataset.mapId = entry.id
+      card.appendChild(mk('span', 'dk-map__index', String(entryIndex + 1).padStart(2, '0')))
       card.setAttribute('aria-pressed', entry.id === deployState.mapId ? 'true' : 'false')
       if (entry.id === deployState.mapId) card.classList.add('is-selected')
       const art = mk('span', 'dk-map__art')
@@ -1550,6 +1665,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     const primaryPanel = buildPrimaryPicker()
     primaryPanel.classList.add('dk-step', 'dk-step-team')
     left.appendChild(primaryPanel)
+    const friendsPanel = buildFriendsPanel()
+    friendsPanel.classList.add('dk-step', 'dk-step-team')
+    left.appendChild(friendsPanel)
     grid.appendChild(left)
 
     const side = mk('div', 'dk-deploy__side')
@@ -1662,6 +1780,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     if (next === 3) {
       void refreshRooms()
       refreshMatchInfo()
+    }
+    if (activePane === 'deploy' && host.classList.contains('is-immersive')) {
+      updateFunctionTitle('deploy', next)
     }
     const pane = panes.get('deploy')
     if (pane) pane.scrollTop = 0
@@ -2131,6 +2252,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       input.value = config.nickname
       saveConfig(config)
       updateHomeMeta()
+      void heartbeatPresence()
     })
     wrap.appendChild(label)
     wrap.appendChild(input)
@@ -2153,6 +2275,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       config.matchId = input.value.trim().slice(0, 32) || 'default'
       input.value = config.matchId
       saveConfig(config)
+      void heartbeatPresence()
       void refreshRooms()
       refreshMatchInfo()
     })
@@ -2197,6 +2320,13 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     secondsLeft: number
     phase: string
     roster: { id: number; name: string; team: number; alive: boolean }[]
+  }
+
+  interface PresenceView {
+    code: string
+    name: string
+    roomId: string
+    levelId: string
   }
 
   function buildRoomPanel(): HTMLElement {
@@ -2312,6 +2442,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       setCtaLabel(currentMap())
     }
     if (identity) identity.matchInput.value = id
+    void heartbeatPresence()
     if (roomListEl) {
       for (const card of roomListEl.querySelectorAll<HTMLElement>('.dk-room-card')) {
         card.classList.toggle('is-selected', card.dataset.roomId === id)
@@ -2418,6 +2549,219 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     } catch (error) {
       if (roomStatusEl) roomStatusEl.textContent = error instanceof Error ? error.message : '创建失败'
     }
+  }
+
+  // ---------------------------------------------------------------- 好友
+
+  function safeLevelName(id: string): string {
+    return LEVEL_IDS.includes(id) ? getLevel(id).name : '未知猎场'
+  }
+
+  function findFriendPresence(friend: FriendEntry): PresenceView | null {
+    if (!friend.code) return onlinePresences.find((p) => p.name === friend.name) ?? null
+    return (
+      onlinePresences.find((p) => p.code === friend.code) ??
+      onlinePresences.find((p) => p.name === friend.name) ??
+      null
+    )
+  }
+
+  async function heartbeatPresence(leave = false): Promise<void> {
+    if (disposed && !leave) return
+    try {
+      await fetch(`${apiBase()}/api/presence`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          code: friendCode,
+          name: config.nickname || '无名猎人',
+          roomId: config.matchId || '',
+          levelId: deployState.mapId,
+          ...(leave ? { leave: true } : {}),
+        }),
+      })
+    } catch {
+      // 在线目录断了不影响出击；好友列表显示离线即可。
+    }
+  }
+
+  async function refreshFriends(): Promise<void> {
+    try {
+      const res = await fetch(`${apiBase()}/api/presence`, { cache: 'no-store' })
+      const data = (await res.json()) as { online?: PresenceView[] }
+      if (!res.ok) throw new Error(String(res.status))
+      onlinePresences = Array.isArray(data.online) ? data.online : []
+    } catch {
+      onlinePresences = []
+    }
+    renderFriends()
+  }
+
+  function copyText(text: string): void {
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(text).catch(() => {})
+      return
+    }
+    const area = document.createElement('textarea')
+    area.value = text
+    area.style.position = 'fixed'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    area.select()
+    try {
+      document.execCommand('copy')
+    } catch {
+      // 剪贴板不可用时只让玩家自己看到文本。
+    }
+    area.remove()
+  }
+
+  function buildFriendsPanel(): HTMLElement {
+    const panel = mk('div', 'dk-panel dk-friends')
+    const head = mk('div', 'dk-section-head')
+    head.appendChild(mk('h2', 'dk-section-head__cn', '好友'))
+    head.appendChild(mk('span', 'dk-section-head__en', 'FRIENDS'))
+    head.appendChild(mk('span', 'dk-section-head__rule'))
+    friendOnlineEl = mk('span', 'dk-friends__online', '0 在线')
+    head.appendChild(friendOnlineEl)
+    panel.appendChild(head)
+
+    const codeRow = mk('div', 'dk-friends__code')
+    codeRow.appendChild(mk('span', 'dk-friends__label', '我的好友码'))
+    codeRow.appendChild(mk('span', 'dk-friends__value', friendCode))
+    const copyCode = mkButton('dk-friends__copy', '复制')
+    copyCode.addEventListener('click', () => copyText(friendCode))
+    codeRow.appendChild(copyCode)
+    panel.appendChild(codeRow)
+
+    const addRow = mk('div', 'dk-friends__add')
+    friendInputEl = mk('input', 'dk-input')
+    friendInputEl.type = 'text'
+    friendInputEl.maxLength = 24
+    friendInputEl.autocomplete = 'off'
+    friendInputEl.spellcheck = false
+    friendInputEl.placeholder = '好友代号或好友码'
+    const add = mkButton('dk-friends__add-btn', '添加')
+    const submit = (): void => {
+      const value = friendInputEl?.value.trim() ?? ''
+      if (!value) return
+      void addFriend(value)
+    }
+    add.addEventListener('click', submit)
+    friendInputEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        submit()
+      }
+    })
+    addRow.appendChild(friendInputEl)
+    addRow.appendChild(add)
+    panel.appendChild(addRow)
+
+    friendListEl = mk('div', 'dk-friends__list')
+    panel.appendChild(friendListEl)
+
+    const actions = mk('div', 'dk-friends__actions')
+    const refresh = mkButton('dk-friends__refresh', '刷新在线')
+    refresh.addEventListener('click', () => void refreshFriends())
+    const invite = mkButton('dk-friends__invite', '复制我的房号')
+    invite.addEventListener('click', () => void copyMyRoom())
+    actions.appendChild(refresh)
+    actions.appendChild(invite)
+    panel.appendChild(actions)
+    panel.appendChild(
+      mk('p', 'dk-friends__hint', '好友加入同一房间后，双方都选「双人」即可自动同队。'),
+    )
+    renderFriends()
+    void refreshFriends()
+    return panel
+  }
+
+  async function addFriend(value: string): Promise<void> {
+    await refreshFriends()
+    const lookup = value.toLowerCase()
+    const online =
+      onlinePresences.find((p) => p.code === lookup) ??
+      onlinePresences.find((p) => p.name === value) ??
+      null
+    const entry: FriendEntry = online
+      ? { name: online.name, code: online.code }
+      : { name: value.slice(0, 16) }
+    const duplicate = friends.some(
+      (friend) => (entry.code && friend.code === entry.code) || friend.name === entry.name,
+    )
+    if (!duplicate) friends.push(entry)
+    saveFriends(friends)
+    if (friendInputEl) friendInputEl.value = ''
+    renderFriends()
+  }
+
+  function removeFriend(entry: FriendEntry): void {
+    friends = friends.filter(
+      (friend) => !((entry.code && friend.code === entry.code) || friend.name === entry.name),
+    )
+    saveFriends(friends)
+    renderFriends()
+  }
+
+  function renderFriends(): void {
+    if (!friendListEl) return
+    friendListEl.replaceChildren()
+    const onlineCount = friends.reduce((n, friend) => n + (findFriendPresence(friend) ? 1 : 0), 0)
+    if (friendOnlineEl) friendOnlineEl.textContent = `${onlineCount} 在线`
+
+    if (friends.length === 0) {
+      friendListEl.appendChild(
+        mk('p', 'dk-friends__empty', '还没有好友。把好友码发给对方，或者输入对方的代号添加。'),
+      )
+      return
+    }
+
+    for (const friend of friends) {
+      const presence = findFriendPresence(friend)
+      const row = mk('div', 'dk-friend')
+      row.classList.toggle('is-online', presence !== null)
+      row.appendChild(mk('span', 'dk-friend__dot'))
+
+      const body = mk('div', 'dk-friend__body')
+      body.appendChild(mk('span', 'dk-friend__name', friend.name))
+      if (presence) {
+        body.appendChild(
+          mk(
+            'span',
+            'dk-friend__meta',
+            presence.roomId
+              ? `${safeLevelName(presence.levelId)} · ${presence.roomId}`
+              : '在线 · 尚未选房',
+          ),
+        )
+      } else {
+        body.appendChild(mk('span', 'dk-friend__meta', '离线'))
+      }
+      row.appendChild(body)
+
+      if (presence?.roomId) {
+        const join = mkButton('dk-friend__join', '加入')
+        join.addEventListener('click', () => {
+          requireNickname(() => {
+            selectRoom(presence.roomId, presence.levelId || undefined)
+            setDeployStep(3)
+          })
+        })
+        row.appendChild(join)
+      }
+      const remove = mkButton('dk-friend__remove', '×')
+      remove.title = '从好友列表移除'
+      remove.addEventListener('click', () => removeFriend(friend))
+      row.appendChild(remove)
+      friendListEl.appendChild(row)
+    }
+  }
+
+  async function copyMyRoom(): Promise<void> {
+    if (!config.matchId || config.matchId === 'default') await createRoom()
+    copyText(config.matchId || 'default')
+    if (roomStatusEl) roomStatusEl.textContent = `房号 ${config.matchId || 'default'} 已复制 · 发给好友`
   }
 
   let identity: { nickInput: HTMLInputElement; matchInput: HTMLInputElement } | null = null
@@ -3274,6 +3618,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   /** 大厅轮询：房间状态每次都刷，房间列表只在第三步刷（避免主页/地图页无谓请求）。 */
   function refreshLive(): void {
     refreshMatchInfo()
+    void heartbeatPresence()
+    if (friendListEl) void refreshFriends()
     if (deployStep === 3) void refreshRooms()
   }
 
@@ -3424,6 +3770,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     dispose(): void {
       if (disposed) return
       disposed = true
+      void heartbeatPresence(true)
       cancelActiveKeyCapture()
       // 作废排队中的揭开流程，避免它在宿主已被移除后再去碰 DOM
       launchToken += 1

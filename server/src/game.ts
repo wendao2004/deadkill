@@ -78,6 +78,66 @@ export function registerGame(
   // 而 /api/game/status 不需要物理世界，立刻就能答。
   const physicsReady = initPhysics()
 
+  /**
+   * 好友在线状态：菜单/房间页每 15 秒心跳一次。
+   *
+   * 为什么不复用 World 的玩家表：大厅里"选了房间但还没出击"的人并不在
+   * 任何 World 里；没有这份 presence，好友列表只能看到已经进图的人。
+   * 它是纯内存、45 秒 TTL 的轻量目录，不参与对局权威。
+   */
+  const presences = new Map<string, PresenceEntry>()
+  const PRESENCE_TTL_MS = 45_000
+  const MAX_PRESENCE = 256
+  const cleanPresence = (now: number): void => {
+    for (const [code, entry] of presences) {
+      if (now - entry.at > PRESENCE_TTL_MS) presences.delete(code)
+    }
+  }
+
+  app.get('/api/presence', async () => {
+    const now = Date.now()
+    cleanPresence(now)
+    return {
+      ok: true as const,
+      online: [...presences.values()]
+        .map(({ code, name, roomId, levelId }) => ({ code, name, roomId, levelId }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    }
+  })
+
+  app.post('/api/presence', async (request, reply) => {
+    const body = (request.body ?? {}) as {
+      code?: unknown
+      name?: unknown
+      roomId?: unknown
+      levelId?: unknown
+      leave?: unknown
+    }
+    const code = sanitizePresenceCode(body.code)
+    if (!code) {
+      reply.code(400)
+      return { ok: false as const, error: '好友码无效' }
+    }
+    if (body.leave === true) {
+      presences.delete(code)
+      return { ok: true as const }
+    }
+    const now = Date.now()
+    cleanPresence(now)
+    if (!presences.has(code) && presences.size >= MAX_PRESENCE) {
+      reply.code(429)
+      return { ok: false as const, error: '在线目录已满' }
+    }
+    presences.set(code, {
+      code,
+      name: sanitizePresenceName(body.name),
+      roomId: sanitizePresenceRoom(body.roomId),
+      levelId: sanitizePresenceLevel(body.levelId),
+      at: now,
+    })
+    return { ok: true as const }
+  })
+
   app.get('/api/game/status', async () => ({
     ok: true as const,
     protocolVersion: PROTOCOL_VERSION,
@@ -366,6 +426,35 @@ function toArrayBuffer(data: unknown): ArrayBuffer | null {
 }
 
 /** matchId 只允许简单的字符集，避免它被拼进日志/将来被拼进 SQL 时出问题。 */
+interface PresenceEntry {
+  code: string
+  name: string
+  roomId: string
+  levelId: string
+  at: number
+}
+
+function sanitizePresenceCode(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  return raw.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24)
+}
+
+function sanitizePresenceName(raw: unknown): string {
+  if (typeof raw !== 'string') return '无名猎人'
+  const name = raw.trim().replace(/\s+/g, ' ').slice(0, 24)
+  return name || '无名猎人'
+}
+
+function sanitizePresenceRoom(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  return raw.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32)
+}
+
+function sanitizePresenceLevel(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  return raw.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32)
+}
+
 /** 房号字母表：去掉了 0/o/1/i/l 这类读起来会吵架的字符。 */
 const ROOM_CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'
 
