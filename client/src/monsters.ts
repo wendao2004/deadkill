@@ -298,6 +298,14 @@ const BAR_FILL_COLOR = 0xc8d94a
 
 const DEFAULT_MAX_VISIBLE = 12
 
+/**
+ * 远处关掉墨线外壳。外壳是每块零件一个子 Mesh，一只怪十几到几十个
+ * draw call；70m 外它只有亚像素宽，画面上几乎不可见，却仍要提交。
+ * 近/远两档留 12m 回差，避免玩家在边界前后移动时描边闪烁。
+ */
+const INK_NEAR_DISTANCE = 66
+const INK_FAR_DISTANCE = 78
+
 // ------------------------------------------------------------------ 骨架结构
 
 interface RigMaterials {
@@ -403,6 +411,10 @@ interface Rig {
   corpseLift: number
   /** bob 的基准缩放（boss 靠它长到 3.3m，其它怪 = 1）。低血压扁时按它乘。 */
   baseScale: number
+  /** 所有墨线外壳；远距离整批 visible=false，省掉每块零件一次提交。 */
+  inkHulls: Mesh[]
+  /** 当前墨线是否可见（带 12m 回差）。 */
+  inkVisible: boolean
 }
 
 // ------------------------------------------------------------------ 实现
@@ -594,6 +606,17 @@ class MonsterLayer implements MonsterRenderer {
     }
     // 已经淡出干净的尸体保持隐藏，别每帧被下面这行点亮一次。
     rig.root.visible = !(view.state === STATE_DEAD && rig.deadTime >= CORPSE_HOLD + CORPSE_FADE)
+
+    if (this.camera !== null) {
+      const dx = rig.root.position.x - this.camera.position.x
+      const dz = rig.root.position.z - this.camera.position.z
+      const limit = rig.inkVisible ? INK_FAR_DISTANCE : INK_NEAR_DISTANCE
+      const showInk = dx * dx + dz * dz < limit * limit
+      if (showInk !== rig.inkVisible) {
+        rig.inkVisible = showInk
+        for (const hull of rig.inkHulls) hull.visible = showInk
+      }
+    }
 
     this.animateRig(rig, style, dt)
     this.updateBar(rig, style)
@@ -1226,6 +1249,8 @@ class MonsterLayer implements MonsterRenderer {
       fading: false,
       corpseLift: 0,
       baseScale: 1,
+      inkHulls: [],
+      inkVisible: true,
     }
     rig.root.add(rig.fall)
     rig.fall.add(rig.bob)
@@ -1244,6 +1269,10 @@ class MonsterLayer implements MonsterRenderer {
     else if (kind === KIND_CONDUCTOR) rig.boss = this.buildConductor(rig, mats)
     this.activeInk = null
     this.activeInkThin = null
+
+    rig.root.traverse((node) => {
+      if (node instanceof Mesh && node.userData.inkHull === true) rig.inkHulls.push(node)
+    })
 
     // 量一次"倒下去之后最低点在哪"，换算成需要抬多高。用 Box3 而不是手调魔法数：
     // 以后改比例，尸体照样正好压在泥地上。
@@ -1609,6 +1638,7 @@ class MonsterLayer implements MonsterRenderer {
     const ink = thin ? this.activeInkThin : this.activeInk
     if (ink === null) return
     const hull = new Mesh(mesh.geometry, ink)
+    hull.userData.inkHull = true
     // 外壳不参与射线：它纯粹是画面上的一圈墨，不该挡子弹也不该被拾取。
     hull.raycast = () => {}
     mesh.add(hull)
