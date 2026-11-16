@@ -138,6 +138,242 @@ export function registerGame(
     return { ok: true as const }
   })
 
+  /**
+   * 队伍（party）：邀请制，最多 2 人。
+   *
+   * 与 presence 分开：presence 只回答"谁在线、在哪个房"，party 回答"谁和谁
+   * 绑在一起"。队伍只在大厅存在，不参与对局权威；对局只认 Loadout 里带的
+   * partyId —— 同 partyId 的两人在服务端被强制编进同一队，并与同队共享出生点。
+   */
+  const parties = new Map<string, PartyRecord>()
+  const partyInvites = new Map<string, PartyInviteRecord>()
+  const PARTY_MAX_MEMBERS = 2
+  const PARTY_TTL_MS = 2 * 60 * 60_000
+  const INVITE_TTL_MS = 60_000
+
+  const cleanParties = (now: number): void => {
+    for (const [id, invite] of partyInvites) {
+      if (now - invite.at > INVITE_TTL_MS) partyInvites.delete(id)
+    }
+    for (const [id, party] of parties) {
+      if (party.members.length === 0 || now - party.updatedAt > PARTY_TTL_MS) {
+        parties.delete(id)
+        for (const [inviteId, invite] of partyInvites) {
+          if (invite.partyId === id) partyInvites.delete(inviteId)
+        }
+      }
+    }
+  }
+
+  const partyOf = (code: string): PartyRecord | null => {
+    for (const party of parties.values()) {
+      if (party.members.some((member) => member.code === code)) return party
+    }
+    return null
+  }
+
+  const partyView = (party: PartyRecord): PartyView => ({
+    id: party.id,
+    leader: party.leader,
+    members: party.members.map((member) => ({ ...member })),
+    roomId: party.roomId,
+    levelId: party.levelId,
+    launchedAt: party.launchedAt,
+  })
+
+  app.get('/api/party/state', async (request) => {
+    const code = sanitizePresenceCode((request.query as { code?: unknown }).code)
+    const now = Date.now()
+    cleanParties(now)
+    const party = code ? partyOf(code) : null
+    return {
+      ok: true as const,
+      party: party ? partyView(party) : null,
+      invites: code
+        ? [...partyInvites.values()]
+            .filter((invite) => invite.toCode === code)
+            .map((invite) => ({
+              id: invite.id,
+              partyId: invite.partyId,
+              fromCode: invite.fromCode,
+              fromName: invite.fromName,
+            }))
+        : [],
+    }
+  })
+
+  app.post('/api/party/create', async (request, reply) => {
+    const body = (request.body ?? {}) as { code?: unknown; name?: unknown }
+    const code = sanitizePresenceCode(body.code)
+    if (!code) {
+      reply.code(400)
+      return { ok: false as const, error: '好友码无效' }
+    }
+    const now = Date.now()
+    cleanParties(now)
+    const existing = partyOf(code)
+    if (existing) return { ok: true as const, party: partyView(existing) }
+    const id = createPartyId(parties)
+    const party: PartyRecord = {
+      id,
+      leader: code,
+      members: [{ code, name: sanitizePresenceName(body.name) }],
+      roomId: '',
+      levelId: '',
+      launchedAt: 0,
+      updatedAt: now,
+    }
+    parties.set(id, party)
+    return { ok: true as const, party: partyView(party) }
+  })
+
+  app.post('/api/party/invite', async (request, reply) => {
+    const body = (request.body ?? {}) as { fromCode?: unknown; toCode?: unknown }
+    const from = sanitizePresenceCode(body.fromCode)
+    const to = sanitizePresenceCode(body.toCode)
+    const now = Date.now()
+    cleanParties(now)
+    const party = partyOf(from)
+    if (!party || party.leader !== from) {
+      reply.code(403)
+      return { ok: false as const, error: '只有队长可以邀请' }
+    }
+    if (!to || to === from) {
+      reply.code(400)
+      return { ok: false as const, error: '好友码无效' }
+    }
+    if (party.members.some((member) => member.code === to)) {
+      reply.code(409)
+      return { ok: false as const, error: '对方已经在队伍里' }
+    }
+    if (party.members.length >= PARTY_MAX_MEMBERS) {
+      reply.code(409)
+      return { ok: false as const, error: '队伍已满' }
+    }
+    const target = presences.get(to)
+    if (!target) {
+      reply.code(404)
+      return { ok: false as const, error: '好友不在线' }
+    }
+    for (const [id, invite] of partyInvites) {
+      if (invite.partyId === party.id && invite.toCode === to) partyInvites.delete(id)
+    }
+    const invite: PartyInviteRecord = {
+      id: createInviteId(partyInvites),
+      partyId: party.id,
+      fromCode: from,
+      fromName: party.members.find((member) => member.code === from)?.name ?? '队长',
+      toCode: to,
+      at: now,
+    }
+    partyInvites.set(invite.id, invite)
+    party.updatedAt = now
+    return { ok: true as const, invite: { id: invite.id } }
+  })
+
+  app.post('/api/party/accept', async (request, reply) => {
+    const body = (request.body ?? {}) as { code?: unknown; inviteId?: unknown }
+    const code = sanitizePresenceCode(body.code)
+    const inviteId = typeof body.inviteId === 'string' ? body.inviteId : ''
+    const now = Date.now()
+    cleanParties(now)
+    const invite = partyInvites.get(inviteId)
+    if (!code || !invite || invite.toCode !== code) {
+      reply.code(404)
+      return { ok: false as const, error: '邀请已失效' }
+    }
+    const party = parties.get(invite.partyId)
+    if (!party) {
+      partyInvites.delete(inviteId)
+      reply.code(404)
+      return { ok: false as const, error: '队伍已解散' }
+    }
+    if (party.members.length >= PARTY_MAX_MEMBERS) {
+      reply.code(409)
+      return { ok: false as const, error: '队伍已满' }
+    }
+    // 接受新队伍前先离开旧队伍：一个人只能在一个 party 里。
+    for (const [id, other] of parties) {
+      if (id === party.id) continue
+      const before = other.members.length
+      other.members = other.members.filter((member) => member.code !== code)
+      if (other.members.length !== before) {
+        other.updatedAt = now
+        if (other.members.length === 0 || other.leader === code) {
+          parties.delete(id)
+          for (const [inviteKey, pending] of partyInvites) {
+            if (pending.partyId === id) partyInvites.delete(inviteKey)
+          }
+        }
+      }
+    }
+    const name = presences.get(code)?.name ?? sanitizePresenceName(undefined)
+    party.members.push({ code, name })
+    party.updatedAt = now
+    partyInvites.delete(inviteId)
+    for (const [id, pending] of partyInvites) {
+      if (pending.toCode === code) partyInvites.delete(id)
+    }
+    return { ok: true as const, party: partyView(party) }
+  })
+
+  app.post('/api/party/decline', async (request) => {
+    const body = (request.body ?? {}) as { code?: unknown; inviteId?: unknown }
+    const code = sanitizePresenceCode(body.code)
+    const inviteId = typeof body.inviteId === 'string' ? body.inviteId : ''
+    const invite = partyInvites.get(inviteId)
+    if (invite && invite.toCode === code) partyInvites.delete(inviteId)
+    return { ok: true as const }
+  })
+
+  app.post('/api/party/leave', async (request) => {
+    const body = (request.body ?? {}) as { code?: unknown }
+    const code = sanitizePresenceCode(body.code)
+    const now = Date.now()
+    cleanParties(now)
+    const party = partyOf(code)
+    if (!party) return { ok: true as const }
+    party.members = party.members.filter((member) => member.code !== code)
+    party.updatedAt = now
+    if (party.members.length === 0 || party.leader === code) {
+      parties.delete(party.id)
+      for (const [id, invite] of partyInvites) {
+        if (invite.partyId === party.id) partyInvites.delete(id)
+      }
+    }
+    return { ok: true as const }
+  })
+
+  app.post('/api/party/room', async (request, reply) => {
+    const body = (request.body ?? {}) as { code?: unknown; roomId?: unknown; levelId?: unknown }
+    const code = sanitizePresenceCode(body.code)
+    const party = partyOf(code)
+    if (!party || party.leader !== code) {
+      reply.code(403)
+      return { ok: false as const, error: '只有队长可以选房' }
+    }
+    party.roomId = sanitizePresenceRoom(body.roomId)
+    party.levelId = sanitizePresenceLevel(body.levelId)
+    party.launchedAt = 0
+    party.updatedAt = Date.now()
+    return { ok: true as const, party: partyView(party) }
+  })
+
+  app.post('/api/party/launch', async (request, reply) => {
+    const body = (request.body ?? {}) as { code?: unknown; roomId?: unknown; levelId?: unknown }
+    const code = sanitizePresenceCode(body.code)
+    const party = partyOf(code)
+    if (!party || party.leader !== code) {
+      reply.code(403)
+      return { ok: false as const, error: '只有队长可以出击' }
+    }
+    party.roomId = sanitizePresenceRoom(body.roomId)
+    party.levelId = sanitizePresenceLevel(body.levelId)
+    party.launchedAt = Date.now()
+    party.updatedAt = party.launchedAt
+    return { ok: true as const, party: partyView(party) }
+  })
+
   app.get('/api/game/status', async () => ({
     ok: true as const,
     protocolVersion: PROTOCOL_VERSION,
@@ -310,7 +546,16 @@ function handleConnection(
     if (kind === Msg.Loadout) {
       try {
         const loadout = decodeLoadout(buffer)
-        world.receiveLoadout(playerId, loadout.weaponId, loadout.traits, loadout.contract, loadout.extras, loadout.attachment, loadout.squad)
+        world.receiveLoadout(
+          playerId,
+          loadout.weaponId,
+          loadout.traits,
+          loadout.contract,
+          loadout.extras,
+          loadout.attachment,
+          loadout.squad,
+          loadout.partyId ?? '',
+        )
       } catch {
         socket.close(4003, '选枪包解析失败')
       }
@@ -368,7 +613,7 @@ function handleConnection(
     // 旧客户端的 Hello 里没有这一段（decodeHello 给 null），登记的就是默认图。
     ctx.registry.registerLevel(matchId, hello.levelId)
     const target = ctx.registry.get(matchId)
-    const joined = target.addPlayer(socket, identity.nickname, identity.userId)
+    const joined = target.addPlayer(socket, identity.nickname, identity.userId, hello.partyId ?? '')
     if (!joined) {
       socket.close(4009, '房间已满')
       return
@@ -426,6 +671,61 @@ function toArrayBuffer(data: unknown): ArrayBuffer | null {
 }
 
 /** matchId 只允许简单的字符集，避免它被拼进日志/将来被拼进 SQL 时出问题。 */
+interface PartyMember {
+  code: string
+  name: string
+}
+
+interface PartyRecord {
+  id: string
+  leader: string
+  members: PartyMember[]
+  roomId: string
+  levelId: string
+  launchedAt: number
+  updatedAt: number
+}
+
+interface PartyView {
+  id: string
+  leader: string
+  members: PartyMember[]
+  roomId: string
+  levelId: string
+  launchedAt: number
+}
+
+interface PartyInviteRecord {
+  id: string
+  partyId: string
+  fromCode: string
+  fromName: string
+  toCode: string
+  at: number
+}
+
+function createPartyId(parties: Map<string, PartyRecord>): string {
+  for (let i = 0; i < 32; i++) {
+    let id = 'p-'
+    for (let j = 0; j < 5; j++) {
+      id += ROOM_CODE_ALPHABET[Math.floor(Math.random() * ROOM_CODE_ALPHABET.length)]
+    }
+    if (!parties.has(id)) return id
+  }
+  return 'p-' + Date.now().toString(36)
+}
+
+function createInviteId(invites: Map<string, PartyInviteRecord>): string {
+  for (let i = 0; i < 32; i++) {
+    let id = 'i-'
+    for (let j = 0; j < 5; j++) {
+      id += ROOM_CODE_ALPHABET[Math.floor(Math.random() * ROOM_CODE_ALPHABET.length)]
+    }
+    if (!invites.has(id)) return id
+  }
+  return 'i-' + Date.now().toString(36)
+}
+
 interface PresenceEntry {
   code: string
   name: string

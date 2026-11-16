@@ -40,6 +40,8 @@
   可一键创建房间，也可手输房号。房间按 matchId 隔离，其他玩家能直接看到并加入。
 - 好友：本机好友码 + 在线目录（`/api/presence`），好友在线时可直接加入其房间；
   组队页同时显示好友与队伍名册。
+- 队伍：邀请好友入队 → 队长选房 → 队长出击；队员自动一起加载进同一房间、
+  强制同队，并共享出生点（首次出生与重生都用同一锚点）。
 - 昵称：首次进大厅必须先报代号（`dk.nickname`）；服务端通过 `Msg.Names`
   全量广播名单，击杀播报、队友列表、房间名册统一显示这个代号。
 
@@ -57,14 +59,14 @@
 ### 工程与验收
 - 服务端权威 + 客户端预测/和解 + 远端插值 + 延迟补偿；两端共用
   `shared/sim.ts`、`shared/character.ts` 与同一套 Rapier 物理。
-- 协议：手写二进制，定长、小端；当前 `PROTOCOL_VERSION = 22`，
+- 协议：手写二进制，定长、小端；当前 `PROTOCOL_VERSION = 23`，
   60Hz tick、20Hz 快照。22 新增 `Msg.Names` 昵称名单（加入/离开时全量广播），
   击杀播报与队友列表读玩家代号，不再显示「猎人 #id」。
 - QA：固定 seed / 画质 / 机位 / 冻结帧 / 无音频；`window.__stats()`；
   `pnpm qa:diff` 像素对比；`pnpm qa:smoke` 全路径冒烟。
 - 鲁棒性：指针锁不可用时自动降级为移动鼠标转向；后处理链启动自检，
   失败或 `?postfail=1` 时回退 ACES 前向直出（`__stats().renderPath`）。
-- `pnpm test` 255 条纯函数与集成测试。
+- `pnpm test` 257 条纯函数与集成测试。
 
 ## 技术栈
 
@@ -173,7 +175,7 @@ client/          Three.js 客户端
   main.ts        DOM 接线（换成 Vue 组件只需改这一个文件）
 
 tools/           qa-diff.mjs（PNG 像素对比）、qa-smoke.mjs（CDP 全路径冒烟）
-tests/           255 条纯函数/集成测试（node --test）
+tests/           257 条纯函数/集成测试（node --test）
 docs/            设计、渲染、AI、QA、部署与评审文档
 ```
 

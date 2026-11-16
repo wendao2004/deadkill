@@ -216,10 +216,25 @@ export interface LoadoutRequest {
   attachment: number
   /** 0 单人 / 1 双人：决定服务端是否把相邻入场的两人编进同一队。 */
   squad: number
+  /**
+   * 队伍 id（可选）。同 partyId 的玩家在服务端被强制编进同一队，并共享
+   * 出生点；没有 partyId 时才退回 squad 的相邻配对。
+   */
+  partyId?: string
 }
 
-export function encodeLoadout(weaponId: number, traits = 0, contract = 0, extras = 0, attachment = 0, squad = 0): ArrayBuffer {
-  const buffer = new ArrayBuffer(LOADOUT_SIZE)
+export function encodeLoadout(
+  weaponId: number,
+  traits = 0,
+  contract = 0,
+  extras = 0,
+  attachment = 0,
+  squad = 0,
+  partyId = '',
+): ArrayBuffer {
+  const bytes = partyId ? new TextEncoder().encode(partyId.slice(0, 24)) : new Uint8Array(0)
+  const extra = bytes.length > 0 ? 1 + bytes.length : 0
+  const buffer = new ArrayBuffer(LOADOUT_SIZE + extra)
   const view = new DataView(buffer)
   view.setUint8(0, Msg.Loadout)
   view.setUint16(1, weaponId & 0xffff, true)
@@ -228,6 +243,10 @@ export function encodeLoadout(weaponId: number, traits = 0, contract = 0, extras
   view.setUint8(8, extras & 0xff)
   view.setUint8(9, attachment & 0xff)
   view.setUint8(10, squad & 0xff)
+  if (bytes.length > 0) {
+    view.setUint8(LOADOUT_SIZE, bytes.length)
+    new Uint8Array(buffer, LOADOUT_SIZE + 1).set(bytes)
+  }
   return buffer
 }
 
@@ -239,7 +258,22 @@ export function decodeLoadout(buffer: ArrayBuffer): LoadoutRequest {
   const extras = buffer.byteLength > 8 ? view.getUint8(8) : 0
   const attachment = buffer.byteLength > 9 ? view.getUint8(9) : 0
   const squad = buffer.byteLength > 10 ? view.getUint8(10) : 0
-  return { weaponId: view.getUint16(1, true), traits: view.getUint32(3, true), contract, extras, attachment, squad }
+  let partyId = ''
+  if (buffer.byteLength > LOADOUT_SIZE) {
+    const len = view.getUint8(LOADOUT_SIZE)
+    if (buffer.byteLength >= LOADOUT_SIZE + 1 + len) {
+      partyId = new TextDecoder().decode(new Uint8Array(buffer, LOADOUT_SIZE + 1, len))
+    }
+  }
+  return {
+    weaponId: view.getUint16(1, true),
+    traits: view.getUint32(3, true),
+    contract,
+    extras,
+    attachment,
+    squad,
+    partyId,
+  }
 }
 
 // ---------------------------------------------------------------- 快照
@@ -853,20 +887,33 @@ function clampLevelId(levelId: string | null | undefined): string {
 
 /**
  * C→S 握手包：u8 kind + u16le version + u8 昵称长度 + 昵称
- * + 【可选】u8 levelId 长度 + levelId。
+ * + 【可选】u8 levelId 长度 + levelId
+ * + 【可选】u8 partyId 长度 + partyId。
  *
- * 不带 levelId 时包体与老版本**逐字节相同**（旧服务端照样能读）。
+ * 不带 levelId/partyId 时包体与老版本**逐字节相同**（旧服务端照样能读）。
+ * partyId 放在最后：服务端在创建角色之前就能知道队伍，从而让第二名队员
+ * 直接生成在共享出生点，而不是先落随机点再被纠正一帧。
  */
-export function encodeHello(nickname: string, levelId?: string | null): ArrayBuffer {
+export function encodeHello(
+  nickname: string,
+  levelId?: string | null,
+  partyId?: string | null,
+): ArrayBuffer {
   const bytes = new TextEncoder().encode(truncateUtf8(nickname, NICKNAME_MAX_BYTES))
-  const tail = clampLevelId(levelId)
-  const buffer = new ArrayBuffer(4 + bytes.length + tailByteLength(tail))
+  const level = clampLevelId(levelId)
+  const party = (partyId ?? '').slice(0, 24)
+  const levelPart = level ? tailByteLength(level) : party ? 1 : 0
+  const partyPart = tailByteLength(party)
+  const buffer = new ArrayBuffer(4 + bytes.length + levelPart + partyPart)
   const view = new DataView(buffer)
   view.setUint8(0, Msg.Hello)
   view.setUint16(1, PROTOCOL_VERSION, true)
   view.setUint8(3, bytes.length)
   new Uint8Array(buffer, 4).set(bytes)
-  if (tail) writeTail(view, 4 + bytes.length, tail)
+  const offset = 4 + bytes.length
+  if (level) writeTail(view, offset, level)
+  else if (party) view.setUint8(offset, 0)
+  if (party) writeTail(view, offset + levelPart, party)
   return buffer
 }
 
@@ -875,13 +922,26 @@ export function decodeHello(buffer: ArrayBuffer): {
   nickname: string
   /** 客户端想进的图；null = 没指定（旧客户端）→ 服务端用 DEFAULT_LEVEL_ID。 */
   levelId: string | null
+  /** 大厅队伍 id；null = 单人/旧客户端。 */
+  partyId: string | null
 } {
   const view = new DataView(buffer)
   if (view.getUint8(0) !== Msg.Hello) throw new Error('不是握手包')
   const version = view.getUint16(1, true)
   const len = view.getUint8(3)
   const nickname = new TextDecoder().decode(new Uint8Array(buffer, 4, len))
-  return { version, nickname, levelId: readTail(view, 4 + len) }
+  let offset = 4 + len
+  let levelId: string | null = null
+  if (offset + 1 <= view.byteLength) {
+    const levelLen = view.getUint8(offset)
+    offset += 1
+    if (levelLen > 0 && offset + levelLen <= view.byteLength) {
+      levelId = new TextDecoder().decode(new Uint8Array(buffer, offset, levelLen))
+    }
+    offset += levelLen
+  }
+  const partyId = readTail(view, offset)
+  return { version, nickname, levelId, partyId }
 }
 
 /**

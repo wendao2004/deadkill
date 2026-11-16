@@ -226,6 +226,8 @@ export interface GameOptions {
   attachment?: number
   /** 0 单人 / 1 双人（双人两两编队）。 */
   squad?: number
+  /** 队伍 id：同 party 的玩家强制同队并共享出生点。 */
+  partyId?: string
   /**
    * 某条天赋刚起了作用。HUD 那颗徽记会闪一下 —— 天赋是看不见的数值加成，
    * 不给这一下反馈，玩家永远不知道自己买的天赋到底生效没有。
@@ -622,6 +624,7 @@ export class Game {
       this.options.extras ?? 0,
       this.attachment,
       this.options.squad ?? 0,
+      this.options.partyId ?? '',
       {
       onWelcome: (info) => {
         this.myId = info.playerId

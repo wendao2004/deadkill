@@ -504,6 +504,7 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
     extras: config.extras ?? 0,
     attachment: config.attachment ?? 0,
     squad: config.squad ?? 0,
+    partyId: config.partyId,
     onTraitFx: flashTrait,
     onStatus: setStatus,
     onConnected: () => {

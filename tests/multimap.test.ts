@@ -48,7 +48,7 @@ function welcome(levelId?: string | null) {
 test('hello: 不带关卡时 levelId 为 null 且包体与老格式一致', () => {
   const buffer = encodeHello('ash')
   assert.equal(buffer.byteLength, 4 + 3)
-  assert.deepEqual(decodeHello(buffer), { version: PROTOCOL_VERSION, nickname: 'ash', levelId: null })
+  assert.deepEqual(decodeHello(buffer), { version: PROTOCOL_VERSION, nickname: 'ash', levelId: null, partyId: null })
 })
 
 test('hello: 带关卡时往返，且前缀与不带关卡逐字节相同', () => {
@@ -73,7 +73,7 @@ test('hello: 老客户端手工构的包（没有尾部）照样能解', () => {
   view.setUint8(3, name.length)
   new Uint8Array(buffer, 4).set(name)
 
-  assert.deepEqual(decodeHello(buffer), { version: PROTOCOL_VERSION, nickname: 'ash', levelId: null })
+  assert.deepEqual(decodeHello(buffer), { version: PROTOCOL_VERSION, nickname: 'ash', levelId: null, partyId: null })
 })
 
 test('hello: 空长度的尾部等同于没有（旧版留的 0 长度是合法输入）', () => {

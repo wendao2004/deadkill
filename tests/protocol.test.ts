@@ -9,6 +9,7 @@ import {
   decodeEvents,
   decodeHello,
   decodeInputPacket,
+  decodeLoadout,
   decodeNames,
   decodeSnapshot,
   decodeSwitchSlot,
@@ -17,6 +18,7 @@ import {
   encodeEvents,
   encodeHello,
   encodeInputPacket,
+  encodeLoadout,
   encodeNames,
   encodeSnapshot,
   encodeSwitchSlot,
@@ -231,7 +233,7 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   // v19：战利品包加合同 id/进度 2 字节（11 → 13）。
   // v20：目标包加巢穴状态位图 1 字节（26 → 27）。
   // v21：玩家快照加队伍 1 字节（36 → 37）；配装包加组队偏好，战利品包加救援进度。
-  assert.equal(PROTOCOL_VERSION, 22)
+  assert.equal(PROTOCOL_VERSION, 23)
   assert.equal(SNAPSHOT_HEADER, 17)
   assert.equal(PLAYER_SNAPSHOT_SIZE, 37)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)
@@ -713,4 +715,24 @@ test('nickname: UTF-8 边界截断，不产生半个汉字', () => {
   const hello = decodeHello(encodeHello('泥'.repeat(20)))
   assert.ok(new TextEncoder().encode(hello.nickname).length <= 48)
   assert.ok(!hello.nickname.includes('�'))
+})
+
+
+test('loadout: 可选 partyId 尾段往返', () => {
+  const withParty = decodeLoadout(encodeLoadout(1, 2, 3, 1, 0, 1, 'p-abcde'))
+  assert.equal(withParty.weaponId, 1)
+  assert.equal(withParty.squad, 1)
+  assert.equal(withParty.partyId, 'p-abcde')
+  const solo = decodeLoadout(encodeLoadout(1))
+  assert.equal(solo.partyId, '')
+})
+
+
+test('hello: levelId 与 partyId 两段可选尾段', () => {
+  const hello = decodeHello(encodeHello('队长', 'quarry-dust', 'p-abcde'))
+  assert.equal(hello.nickname, '队长')
+  assert.equal(hello.levelId, 'quarry-dust')
+  assert.equal(hello.partyId, 'p-abcde')
+  const solo = decodeHello(encodeHello('solo', 'marsh-p0'))
+  assert.equal(solo.partyId, null)
 })

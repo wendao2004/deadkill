@@ -117,6 +117,8 @@ export interface MenuConfig {
   attachment?: number
   /** 0 单人 / 1 双人：请求服务端把相邻入场的两人编进同一队。 */
   squad?: number
+  /** 大厅队伍 id；同 partyId 的玩家由服务端强制同队并共享出生点。 */
+  partyId?: string
   /**
    * 金币余额。**可选**：main.ts 还没接这条线，必填会让它当场编译不过。
    *
@@ -1263,6 +1265,16 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   let friendOnlineEl: HTMLElement | null = null
   let friendInputEl: HTMLInputElement | null = null
   let onlinePresences: PresenceView[] = []
+  let party: PartyView | null = null
+  let partyInvites: PartyInviteView[] = []
+  let partyMembersEl: HTMLElement | null = null
+  let partyInviteEl: HTMLElement | null = null
+  let partyStatusEl: HTMLElement | null = null
+  let partyAlertEl: HTMLElement | null = null
+  let partyTimer = 0
+  let partySeq = 0
+  let lastPartyLaunch = 0
+  let autoFollowing = false
   let homeNickEl: HTMLElement | null = null
   let homeCoinsEl: HTMLElement | null = null
   let onboardEl: HTMLElement | null = null
@@ -1284,6 +1296,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   host.appendChild(buildExitScreen())
   host.appendChild(buildFunctionBar())
   host.appendChild(buildShelterNav())
+  host.appendChild(buildPartyAlert())
 
   // ---------------------------------------------------------------- 出击
 
@@ -1706,6 +1719,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     const primaryPanel = buildPrimaryPicker()
     primaryPanel.classList.add('dk-step', 'dk-step-team')
     left.appendChild(primaryPanel)
+    const partyPanel = buildPartyPanel()
+    partyPanel.classList.add('dk-step', 'dk-step-team')
+    left.appendChild(partyPanel)
     const friendsPanel = buildFriendsPanel()
     friendsPanel.classList.add('dk-step', 'dk-step-team')
     left.appendChild(friendsPanel)
@@ -2109,7 +2125,11 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     }
     wrap.appendChild(row)
     wrap.appendChild(
-      mk('p', 'dk-deploy__hint', '双人：同房间相邻入场自动同队；同队不友伤、倒地可互相救援。'),
+      mk(
+        'p',
+        'dk-deploy__hint',
+        '双人：邀请好友组成队伍，队长出击后一起加载、共享出生点；无队伍时与同房相邻入场者自动同队。',
+      ),
     )
     return wrap
   }
@@ -2370,6 +2390,27 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     levelId: string
   }
 
+  interface PartyMemberView {
+    code: string
+    name: string
+  }
+
+  interface PartyView {
+    id: string
+    leader: string
+    members: PartyMemberView[]
+    roomId: string
+    levelId: string
+    launchedAt: number
+  }
+
+  interface PartyInviteView {
+    id: string
+    partyId: string
+    fromCode: string
+    fromName: string
+  }
+
   function buildRoomPanel(): HTMLElement {
     const panel = mk('div', 'dk-panel dk-rooms')
     const head = mk('div', 'dk-section-head')
@@ -2592,6 +2633,266 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     }
   }
 
+  // ---------------------------------------------------------------- 队伍
+
+  async function partyRequest<T>(path: string, body: unknown): Promise<T | null> {
+    try {
+      const res = await fetch(`${apiBase()}/api/party/${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      return (await res.json()) as T
+    } catch {
+      return null
+    }
+  }
+
+  function syncSquadUI(): void {
+    const pane = panes.get('deploy')
+    if (!pane) return
+    const wantDuo = party !== null || config.squad === 1
+    deployState.squad = wantDuo ? 'duo' : 'solo'
+    config.squad = wantDuo ? 1 : 0
+    for (const btn of pane.querySelectorAll<HTMLButtonElement>('.dk-segment__item')) {
+      const duo = btn.textContent === '双人'
+      const solo = btn.textContent === '单人'
+      if (!duo && !solo) continue
+      const selected = duo ? wantDuo : !wantDuo
+      btn.classList.toggle('is-selected', selected)
+      btn.setAttribute('aria-pressed', selected ? 'true' : 'false')
+    }
+  }
+
+  async function refreshParty(): Promise<void> {
+    const hadParty = party !== null
+    // 轮询和 create/accept 会并发：一个在 create 之前发出的 GET 若晚到，
+    // 会把刚加入的队伍覆盖回 null。只允许最新请求落地。
+    const seq = ++partySeq
+    try {
+      const res = await fetch(
+        `${apiBase()}/api/party/state?code=${encodeURIComponent(friendCode)}`,
+        { cache: 'no-store' },
+      )
+      if (!res.ok) throw new Error(String(res.status))
+      const data = (await res.json()) as {
+        party?: PartyView | null
+        invites?: PartyInviteView[]
+      }
+      if (seq !== partySeq) return
+      party = data.party ?? null
+      partyInvites = Array.isArray(data.invites) ? data.invites : []
+    } catch {
+      if (seq !== partySeq) return
+      // 网络断了先保留上一次的队伍显示；下一次轮询会自愈。
+    }
+    if (party) {
+      config.partyId = party.id
+      config.squad = 1
+      syncSquadUI()
+    } else {
+      config.partyId = undefined
+      lastPartyLaunch = 0
+      if (hadParty) {
+        config.squad = 0
+        deployState.squad = 'solo'
+        syncSquadUI()
+      }
+    }
+    renderParty()
+    handlePartyLaunch()
+  }
+
+  async function createParty(): Promise<void> {
+    const data = await partyRequest<{ ok?: boolean; party?: PartyView; error?: string }>('create', {
+      code: friendCode,
+      name: config.nickname,
+    })
+    if (data?.party) {
+      partySeq++
+      party = data.party
+      config.partyId = party.id
+      config.squad = 1
+      syncSquadUI()
+      renderParty()
+      void heartbeatPresence()
+    } else if (partyStatusEl) {
+      partyStatusEl.textContent = data?.error ?? '创建队伍失败'
+    }
+  }
+
+  async function inviteFriend(friend: FriendEntry, presence: PresenceView): Promise<void> {
+    if (!party) await createParty()
+    if (!party) return
+    if (party.leader !== friendCode) {
+      if (partyStatusEl) partyStatusEl.textContent = '只有队长可以邀请'
+      return
+    }
+    if (party.members.length >= 2) {
+      if (partyStatusEl) partyStatusEl.textContent = '队伍已满（双人）'
+      return
+    }
+    const data = await partyRequest<{ ok?: boolean; error?: string }>('invite', {
+      fromCode: friendCode,
+      toCode: presence.code,
+    })
+    if (partyStatusEl) {
+      partyStatusEl.textContent = data?.ok
+        ? `已邀请 ${friend.name} · 等待接受`
+        : (data?.error ?? '邀请失败')
+    }
+    void refreshParty()
+  }
+
+  async function acceptInvite(invite: PartyInviteView): Promise<void> {
+    const data = await partyRequest<{ ok?: boolean; party?: PartyView; error?: string }>('accept', {
+      code: friendCode,
+      inviteId: invite.id,
+    })
+    if (data?.party) {
+      partySeq++
+      party = data.party
+      config.partyId = party.id
+      config.squad = 1
+      syncSquadUI()
+      partyInvites = partyInvites.filter((item) => item.id !== invite.id)
+      renderParty()
+      void heartbeatPresence()
+    } else if (partyStatusEl) {
+      partyStatusEl.textContent = data?.error ?? '接受邀请失败'
+    }
+  }
+
+  async function declineInvite(invite: PartyInviteView): Promise<void> {
+    await partyRequest('decline', { code: friendCode, inviteId: invite.id })
+    partyInvites = partyInvites.filter((item) => item.id !== invite.id)
+    renderParty()
+  }
+
+  async function leaveParty(): Promise<void> {
+    await partyRequest('leave', { code: friendCode })
+    partySeq++
+    party = null
+    config.partyId = undefined
+    config.squad = 0
+    deployState.squad = 'solo'
+    lastPartyLaunch = 0
+    syncSquadUI()
+    renderParty()
+    void heartbeatPresence()
+  }
+
+  async function launchParty(): Promise<void> {
+    if (!party || party.leader !== friendCode) return
+    await partyRequest('launch', {
+      code: friendCode,
+      roomId: config.matchId,
+      levelId: deployState.mapId,
+    })
+  }
+
+  function handlePartyLaunch(): void {
+    if (!party || party.leader === friendCode) return
+    if (!party.launchedAt || party.launchedAt === lastPartyLaunch) return
+    lastPartyLaunch = party.launchedAt
+    if (deploying || !visible) return
+    autoFollowing = true
+    try {
+      config.partyId = party.id
+      config.squad = 1
+      deployState.squad = 'duo'
+      syncSquadUI()
+      if (party.roomId) selectRoom(party.roomId, party.levelId || undefined)
+      beginDeploy()
+    } finally {
+      autoFollowing = false
+    }
+  }
+
+  function renderInvitesInto(container: HTMLElement): void {
+    container.replaceChildren()
+    for (const invite of partyInvites) {
+      const card = mk('div', 'dk-party__invite')
+      card.appendChild(mk('span', 'dk-party__invite-text', `${invite.fromName} 邀请你加入队伍`))
+      const accept = mkButton('dk-party__accept', '接受')
+      accept.addEventListener('click', () => void acceptInvite(invite))
+      const decline = mkButton('dk-party__decline', '拒绝')
+      decline.addEventListener('click', () => void declineInvite(invite))
+      card.appendChild(accept)
+      card.appendChild(decline)
+      container.appendChild(card)
+    }
+  }
+
+  function buildPartyAlert(): HTMLElement {
+    partyAlertEl = mk('div', 'dk-party-alert')
+    return partyAlertEl
+  }
+
+  function renderParty(): void {
+    if (!partyMembersEl || !partyInviteEl) return
+    partyMembersEl.replaceChildren()
+    renderInvitesInto(partyInviteEl)
+    if (partyAlertEl) renderInvitesInto(partyAlertEl)
+
+    if (!party) {
+      if (partyStatusEl) partyStatusEl.textContent = '未组队'
+      const create = mkButton('dk-party__create', '创建队伍')
+      create.addEventListener('click', () => void createParty())
+      partyMembersEl.appendChild(create)
+      partyMembersEl.appendChild(
+        mk('p', 'dk-party__hint', '创建队伍后，在好友列表点「邀请」；接受后一起进入同一个房间。'),
+      )
+    } else {
+      if (partyStatusEl) {
+        partyStatusEl.textContent = `${party.members.length}/2 · ${party.leader === friendCode ? '你是队长' : '队员'}`
+      }
+      for (const member of party.members) {
+        const row = mk('div', 'dk-party__member')
+        row.appendChild(mk('span', 'dk-party__member-name', member.name))
+        if (member.code === party.leader) row.appendChild(mk('span', 'dk-party__leader', '队长'))
+        if (member.code === friendCode) row.appendChild(mk('span', 'dk-party__you', '你'))
+        partyMembersEl.appendChild(row)
+      }
+      if (party.leader === friendCode) {
+        partyMembersEl.appendChild(
+          mk('p', 'dk-party__hint', '在好友列表点「邀请」；人齐后在房间页按「进入猎场」，队友会一起加载。'),
+        )
+        const leave = mkButton('dk-party__leave', '解散队伍')
+        leave.addEventListener('click', () => void leaveParty())
+        partyMembersEl.appendChild(leave)
+      } else {
+        partyMembersEl.appendChild(
+          mk('p', 'dk-party__hint', '等待队长选房并出击；队长出击后你会自动一起加载。'),
+        )
+        const leave = mkButton('dk-party__leave', '离开队伍')
+        leave.addEventListener('click', () => void leaveParty())
+        partyMembersEl.appendChild(leave)
+      }
+    }
+
+    // 队长/队员的 CTA 文案不同：队员不能自己先进房。
+    setCtaLabel(currentMap())
+  }
+
+  function buildPartyPanel(): HTMLElement {
+    const panel = mk('div', 'dk-panel dk-party')
+    const head = mk('div', 'dk-section-head')
+    head.appendChild(mk('h2', 'dk-section-head__cn', '队伍'))
+    head.appendChild(mk('span', 'dk-section-head__en', 'PARTY'))
+    head.appendChild(mk('span', 'dk-section-head__rule'))
+    partyStatusEl = mk('span', 'dk-party__status', '未组队')
+    head.appendChild(partyStatusEl)
+    panel.appendChild(head)
+    partyInviteEl = mk('div', 'dk-party__invites')
+    panel.appendChild(partyInviteEl)
+    partyMembersEl = mk('div', 'dk-party__members')
+    panel.appendChild(partyMembersEl)
+    renderParty()
+    void refreshParty()
+    return panel
+  }
+
   // ---------------------------------------------------------------- 好友
 
   function safeLevelName(id: string): string {
@@ -2781,7 +3082,20 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       }
       row.appendChild(body)
 
-      if (presence?.roomId) {
+      const inParty =
+        presence !== null && party?.members.some((member) => member.code === presence.code)
+      const canInvite =
+        presence !== null &&
+        !inParty &&
+        (!party || (party.leader === friendCode && party.members.length < 2))
+
+      if (inParty) {
+        row.appendChild(mk('span', 'dk-friend__party', '队友'))
+      } else if (canInvite && presence) {
+        const invite = mkButton('dk-friend__invite', '邀请')
+        invite.addEventListener('click', () => void inviteFriend(friend, presence))
+        row.appendChild(invite)
+      } else if (presence?.roomId) {
         const join = mkButton('dk-friend__join', '加入')
         join.addEventListener('click', () => {
           requireNickname(() => {
@@ -2825,7 +3139,14 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   }
 
   function setCtaLabel(entry: MapEntry): void {
-    if (cta) cta.textContent = '进 入 ' + entry.name
+    if (!cta) return
+    if (party && party.leader !== friendCode) {
+      cta.disabled = true
+      cta.textContent = '等 待 队 长 出 击'
+      return
+    }
+    cta.disabled = false
+    cta.textContent = '进 入 ' + entry.name
   }
 
   function currentMap(): MapEntry {
@@ -2850,6 +3171,12 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       showOnboarding(() => beginDeploy())
       return
     }
+    // 队员不能自己先进房：必须等队长按下「进入猎场」，由 party.launchedAt
+    // 触发的 autoFollowing 才允许继续。
+    if (party && party.leader !== friendCode && !autoFollowing) {
+      if (partyStatusEl) partyStatusEl.textContent = '等待队长出击'
+      return
+    }
     // 改键捕获不能跨进出击：否则加载时按的第一个键会被静默写进键位表。
     cancelActiveKeyCapture()
     deploying = true
@@ -2860,6 +3187,11 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     config.extras = deployState.extras & 3
     config.attachment = clampAttachment(deployState.attachment)
     config.squad = deployState.squad === 'duo' ? 1 : 0
+    }
+    // 队伍默认使用自己的房号，避免和散人一起挤进 default。
+    if (party && party.leader === friendCode && (!config.matchId || config.matchId === 'default')) {
+      config.matchId = party.id
+      if (identity) identity.matchInput.value = party.id
     }
     // 本局只剩 ≤3 分钟：不让玩家进去跑 200m 才发现没时间撤，直接分到下一局
     // 的新房间（同名后缀 -next）。旧房间的猎人继续打，互不影响。
@@ -2875,6 +3207,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     // 出击前再记一次：地图卡之外没有别的地方能改这张图，但 main.ts 的 enter()
     // 只信 pickLevelId()，所以这里必须是最后写入点。
     rememberLevelId(deployState.mapId)
+    // 队伍随配装进 Loadout：服务端据此强制同队并共享出生点。
+    config.partyId = party?.id
+    if (party) config.squad = 1
+    if (party && party.leader === friendCode) void launchParty()
     if (cta) {
       cta.disabled = true
       cta.setAttribute('aria-disabled', 'true')
@@ -3761,6 +4097,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       if (!config.nickname.trim()) showOnboarding()
       refreshLive()
       matchInfoTimer = window.setInterval(refreshLive, 8000)
+      void refreshParty()
+      partyTimer = window.setInterval(() => void refreshParty(), 2500)
     },
 
     setVisible(next: boolean): void {
@@ -3822,6 +4160,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       if (matchInfoTimer) {
         window.clearInterval(matchInfoTimer)
         matchInfoTimer = 0
+      }
+      if (partyTimer) {
+        window.clearInterval(partyTimer)
+        partyTimer = 0
       }
       window.removeEventListener('resize', onHostResize)
       host.removeEventListener('pointerover', onSfxOver, true)

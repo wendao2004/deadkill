@@ -144,6 +144,8 @@ export class Net {
   private attachment = 0
   /** 0 单人 / 1 双人。 */
   private squad = 0
+  /** 队伍 id：同 party 的玩家由服务端强制编入同一队并共享出生点。 */
+  private partyId = ''
   /** 已经发给服务端的最新输入序号，重连时用来判断是否要丢弃旧输入。 */
   lastSeq = 0
   closed = false
@@ -163,6 +165,7 @@ export class Net {
     extras: number,
     attachment: number,
     squad: number,
+    partyId: string,
     handlers: NetHandlers,
   ): void {
     this.handlers = handlers
@@ -173,13 +176,14 @@ export class Net {
     this.extras = extras
     this.attachment = attachment
     this.squad = squad
+    this.partyId = partyId
     const socket = new WebSocket(wsUrl(matchId))
     // 必须显式设成 arraybuffer：默认是 blob，而 blob 要先 await arrayBuffer()
     // 才能解析，等于给每个快照加一次微任务延迟。
     socket.binaryType = 'arraybuffer'
     this.socket = socket
 
-    socket.onopen = () => socket.send(encodeHello(nickname, levelId))
+    socket.onopen = () => socket.send(encodeHello(nickname, levelId, this.partyId))
 
     socket.onmessage = (event: MessageEvent) => {
       const buffer = event.data as ArrayBuffer
@@ -198,7 +202,17 @@ export class Net {
             }
             // 配装必须在 Welcome 之后发：服务端是在 Hello 里才认识我这个
             // playerId 的，早一毫秒它只能把包丢掉。
-            socket.send(encodeLoadout(this.primaryId, this.traitMask, this.contract, this.extras, this.attachment, this.squad))
+            socket.send(
+              encodeLoadout(
+                this.primaryId,
+                this.traitMask,
+                this.contract,
+                this.extras,
+                this.attachment,
+                this.squad,
+                this.partyId,
+              ),
+            )
             this.handlers?.onWelcome(welcome)
             break
           }

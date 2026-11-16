@@ -416,6 +416,12 @@ interface PlayerState {
   team: number
   /** 是否选择了双人组队。 */
   squad: number
+  /** 大厅队伍 id：同 partyId 强制同队并共享出生点。 */
+  partyId: string
+  /** 队内槽位（0/1），决定共享出生点上的左右偏移。 */
+  teamSlot: number
+  /** 入场时抽到的出生点下标；队伍锚点用它，而不是玩家可能已经跑远的当前位置。 */
+  spawnIndex: number
   /** 倒地等待救援。 */
   downed: boolean
   /** 倒地流血结束的 tick；0 = 没在流血。 */
@@ -473,6 +479,8 @@ export class World {
 
   private readonly physics: PhysicsWorld
   private readonly players = new Map<number, Player>()
+  /** team -> 出生点下标。同队共享这个锚点；首个队员入场时确定。 */
+  private readonly teamSpawnIndex = new Map<number, number>()
   /** 碰撞体 handle → 玩家，射线打中之后要知道打的是谁。 */
   private readonly byCollider = new Map<number, Player>()
   private readonly monsters: MonsterEntity[] = []
@@ -1482,11 +1490,12 @@ export class World {
    * 被 receiveInput 当成"重发的旧包"丢掉 —— 客户端预测仍然能走（灵魂出窍），
    * 但服务端的身体不动、打不中、别人也看不到你在哪。
    */
-  private resumePlayer(existing: Player, socket: WebSocket, nickname: string): void {
+  private resumePlayer(existing: Player, socket: WebSocket, nickname: string, partyId = ''): void {
     const stale = existing.socket
     existing.socket = socket
     existing.detachedAt = 0
     existing.nickname = nickname
+    existing.partyId = partyId.slice(0, 24)
     // 旧队列里压着旧 seq 的包，必须先清空；否则它们会先被消费、把 ackSeq
     // 推高，新会话的 1..N 又会被丢掉。
     existing.queue.length = 0
@@ -1555,6 +1564,7 @@ export class World {
     socket: WebSocket,
     nickname: string,
     userId = '',
+    partyId = '',
   ): { id: number; spawn: Vec3; resumed: boolean } | null {
     // 同一账号回来就接管原角色：位置、血量、弹药、战利品、赏金全部还在。
     // 这是 15 分钟一局里"掉线不等于这趟白打"的最低保障。
@@ -1565,12 +1575,13 @@ export class World {
     if (userId !== '') {
       for (const existing of this.players.values()) {
         if (existing.userId !== userId) continue
-        this.resumePlayer(existing, socket, nickname)
+        this.resumePlayer(existing, socket, nickname, partyId)
         return { id: existing.id, spawn: existing.character.feet, resumed: true }
       }
     }
     if (this.players.size >= MAX_PLAYERS) return null
-    const spawn = this.pickSpawn()
+    const spawnEntry = this.pickSpawnEntry()
+    const spawn = spawnEntry.spawn
     const player: Player = {
       id: this.nextPlayerId++,
       nickname,
@@ -1619,6 +1630,9 @@ export class World {
       lastLoot: null,
       team: 0,
       squad: 0,
+      partyId: partyId.slice(0, 24),
+      teamSlot: 0,
+      spawnIndex: spawnEntry.index,
       downed: false,
       bleedDoneTick: 0,
       reviveTargetId: 0,
@@ -1633,8 +1647,12 @@ export class World {
     // 先让新角色的碰撞体进入物理世界，否则它第一 tick 会被射线/角色控制器忽略。
     this.physics.step()
     this.emptySince = 0
+    // partyId 在 Hello 里就到了：先编队再回 Welcome，第二名队员的 spawn
+    // 直接就是共享出生点，不会先落随机点再被快照纠正。
+    if (partyId) this.assignTeam(player)
     this.broadcastNames()
-    return { id: player.id, spawn, resumed: false }
+    // assignTeam 可能已经把角色 teleport 到队伍锚点；Welcome 必须发最终位置。
+    return { id: player.id, spawn: { ...player.character.feet }, resumed: false }
   }
 
   removePlayer(playerId: number, socket?: WebSocket): void {
@@ -1704,7 +1722,16 @@ export class World {
    * 真正开火之后才变成当前 tick）。重生时 resetLoadout 会把它还原，所以
    * 死了之后仍然可以在菜单外重新挑，只是那一局已经打出去的枪作数。
    */
-  receiveLoadout(playerId: number, weaponId: number, traits = 0, contract = 0, extras = 0, attachment = 0, squad = 0): void {
+  receiveLoadout(
+    playerId: number,
+    weaponId: number,
+    traits = 0,
+    contract = 0,
+    extras = 0,
+    attachment = 0,
+    squad = 0,
+    partyId = '',
+  ): void {
     const player = this.players.get(playerId)
     if (!player) return
     if (player.loadout.lastFireTick > 0) {
@@ -1749,6 +1776,7 @@ export class World {
     }
     // 组队偏好先于武器生效：它决定这个人和谁同队。
     player.squad = squad > 0 ? 1 : 0
+    player.partyId = partyId.slice(0, 24)
     this.assignTeam(player)
     const primary = isPrimaryChoice(weaponId) ? weaponId : DEFAULT_WEAPON_ID
     const attach = clampAttachment(attachment)
@@ -1856,27 +1884,87 @@ export class World {
     this.sendText(shooter, `${name}被打灭了`)
   }
 
-  /** 按选择把玩家编队：单人每人一队，双人两两一队。 */
+  /**
+   * 编队：partyId 优先，其次双人 squad 的相邻配对，单人各自一队。
+   *
+   * 同 partyId 的两人无视入场顺序与中间夹进来的路人，强制同队；队伍
+   * 出生点锚定首个队员抽到的 spawn 下标，第二个队员入场时直接落到同一
+   * 出生区（左右各偏 0.9m）。重生也读同一个锚点。
+   */
   private assignTeam(player: Player): void {
+    if (player.partyId) {
+      // 已经在队伍里：重发 Loadout 不能把 team 重新分配成"下一个空闲 id"，
+      // 否则第一次 Loadout 会把刚从 Hello 编好的 1 队改成 2 队。
+      if (player.team > 0 && player.team < 1000) {
+        this.joinTeam(player, player.team)
+        return
+      }
+      let team = 0
+      for (const other of this.players.values()) {
+        if (other.id === player.id || other.partyId !== player.partyId) continue
+        if (other.team > 0 && other.team < 1000) {
+          team = other.team
+          break
+        }
+      }
+      if (!team) {
+        const used = new Set<number>()
+        for (const other of this.players.values()) {
+          if (other.team > 0 && other.team < 1000) used.add(other.team)
+        }
+        team = 1
+        while (used.has(team) && team < 200) team++
+      }
+      this.joinTeam(player, team)
+      return
+    }
+
     if (player.squad === 0) {
       player.team = 1000 + player.id
       return
     }
+
     const counts = new Map<number, number>()
     for (const other of this.players.values()) {
-      if (other.id === player.id || other.squad === 0) continue
+      if (other.id === player.id || other.squad === 0 || other.partyId) continue
       if (other.team <= 0 || other.team >= 1000) continue
       counts.set(other.team, (counts.get(other.team) ?? 0) + 1)
     }
     for (const [team, n] of counts) {
       if (n < 2) {
-        player.team = team
+        this.joinTeam(player, team)
         return
       }
     }
+    // 不能只看非队伍的 counts：party 已经占了 1..n 里的某个 id，散人双人
+    // 若也从 1 开始就会和 party 撞队，变成"陌生人免友伤"。
+    const used = new Set<number>()
+    for (const other of this.players.values()) {
+      if (other.team > 0 && other.team < 1000) used.add(other.team)
+    }
     let next = 1
     for (const team of counts.keys()) next = Math.max(next, team + 1)
-    player.team = next
+    while (used.has(next) && next < 200) next++
+    this.joinTeam(player, next)
+  }
+
+  /** 把玩家放进 team，并保证同队共享出生点。重复调用保持原槽位。 */
+  private joinTeam(player: Player, team: number): void {
+    const sameTeam = player.team === team
+    player.team = team
+    if (!sameTeam) {
+      let slot = 0
+      for (const other of this.players.values()) {
+        if (other.id === player.id || other.team !== team) continue
+        slot++
+      }
+      player.teamSlot = Math.min(1, slot)
+    }
+    if (!this.teamSpawnIndex.has(team)) {
+      this.teamSpawnIndex.set(team, player.spawnIndex)
+    }
+    const spawn = this.teamSpawn(team, player.teamSlot)
+    if (spawn) player.character.teleport(spawn)
   }
 
   private hasLivingTeammate(victim: Player): boolean {
@@ -2091,7 +2179,7 @@ export class World {
         if (!player.alive) {
           this.respawn(player)
         } else {
-          player.character.teleport(this.pickSpawn())
+          player.character.teleport(this.spawnForPlayer(player))
         }
       }
     }
@@ -2965,7 +3053,7 @@ export class World {
   }
 
   private respawn(player: Player): void {
-    const spawn = this.pickSpawn()
+    const spawn = this.spawnForPlayer(player)
     player.health = player.maxHealth
     player.alive = true
     player.downed = false
@@ -3157,16 +3245,20 @@ export class World {
    * 同时带一点随机扰动：完全确定的出生顺序会让玩家能预测"下一个进房的人
    * 从哪来"。用较大的随机下限保证候选之间不会因为浮点相等而总是选 index 0。
    */
-  private pickSpawn(): Vec3 {
+  private pickSpawnEntry(): { spawn: Vec3; index: number } {
     const spawns = this.level.spawns
-    if (spawns.length === 0) return { x: 0, y: this.level.groundY, z: 0 }
+    if (spawns.length === 0) {
+      return { spawn: { x: 0, y: this.level.groundY, z: 0 }, index: 0 }
+    }
 
     const occupied: Vec3[] = []
     for (const player of this.players.values()) occupied.push(player.character.feet)
 
     let best = spawns[0]!
+    let bestIndex = 0
     let bestScore = -Infinity
-    for (const spawn of spawns) {
+    for (let i = 0; i < spawns.length; i++) {
+      const spawn = spawns[i]!
       let nearest = Infinity
       for (const other of occupied) {
         const d = Math.hypot(spawn.x - other.x, spawn.z - other.z)
@@ -3179,9 +3271,41 @@ export class World {
       if (score > bestScore) {
         bestScore = score
         best = spawn
+        bestIndex = i
       }
     }
-    return best
+    return { spawn: best, index: bestIndex }
+  }
+
+  private pickSpawn(): Vec3 {
+    return this.pickSpawnEntry().spawn
+  }
+
+  /**
+   * 同队共享出生点：锚点是首个队员入场时抽到的 spawn 下标，后续队员和
+   * 所有人重生都用它；两名队员在锚点左右各偏 0.9m，避免胶囊重叠。
+   */
+  private teamSpawn(team: number, slot: number): Vec3 | null {
+    if (team <= 0 || team >= 1000) return null
+    const index = this.teamSpawnIndex.get(team)
+    if (index === undefined) return null
+    const base = this.level.spawns[index]
+    if (!base) return null
+    const offset = (Math.min(1, Math.max(0, slot)) * 2 - 1) * 0.9
+    return { x: base.x + offset, y: base.y, z: base.z }
+  }
+
+  /** 重生/回合重开时的出生点：有队伍锚点就用锚点，否则抽一个并记住。 */
+  private spawnForPlayer(player: Player): Vec3 {
+    if (player.team > 0 && player.team < 1000) {
+      const anchored = this.teamSpawn(player.team, player.teamSlot)
+      if (anchored) return anchored
+    }
+    const entry = this.pickSpawnEntry()
+    if (player.team > 0 && player.team < 1000 && !this.teamSpawnIndex.has(player.team)) {
+      this.teamSpawnIndex.set(player.team, entry.index)
+    }
+    return entry.spawn
   }
 
   /** 给 /api/game/status 用的自述，避免外部读私有字段。 */
