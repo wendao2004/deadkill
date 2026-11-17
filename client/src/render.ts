@@ -964,6 +964,7 @@ export class Renderer {
       },
     })
     this.viewCamera.add(this.viewmodel.root)
+    this.viewCamera.add(this.viewmodel.armsRoot)
     this.muzzle = new PointLight(0xffd27a, 0, 9, 2)
     this.muzzle.position.set(0.18, -0.12, -0.55)
     this.viewCamera.add(this.muzzle)
@@ -2418,7 +2419,9 @@ export class Renderer {
       // QA 展示：把枪摆到画面中央、绕 y 转 30°，一眼看全机匣/瞄具/枪托。
       // 必须写在 viewmodel.update 之后 —— 它每帧都会覆盖 root 的位姿。
       // `?reload=` 时不覆盖：那一步要看的是换弹姿态本身，盖掉就等于没测。
-      this.viewmodel.root.position.set(0, -0.17, -0.62)
+      // ?vmdist= 把机位拉近做"近景模型检查"：默认 0.62m 是整体构图，
+      // 0.35~0.45 才看得清倒角、颗粒与边缘露白。
+      this.viewmodel.root.position.set(0, -0.17, -(qa.vmdist ?? 0.62))
       this.viewmodel.root.rotation.set(0.05, 0.52, -0.04)
     }
 

@@ -70,7 +70,10 @@ import {
   createSuppressorAttachment,
   type BuiltRifle,
   type WeaponMaterialSet,
+  type WeaponHands,
 } from './weapon-models.ts'
+import { createFirstPersonArms } from './first-person-arms.ts'
+import { applyModelDetail } from './model-detail.ts'
 
 /** render.ts 提供，用来复用共享的卡通材质与墨线壳，本模块不自己造材质。 */
 export interface ViewmodelKit {
@@ -168,6 +171,8 @@ export interface ViewmodelState {
 export interface Viewmodel {
   /** 武器的根节点，调用方 `camera.add(viewmodel.root)`。 */
   readonly root: Group
+  /** 独立的手/臂根节点：必须和 root 同级挂在相机下，不能挂在枪上。 */
+  readonly armsRoot: Group
   /**
    * 切换当前显示的武器根组（幂等）。四类模型在构造时就建好并缓存，
    * 这里只做"挂上/摘下"，不 new 任何几何。未知 id 回落到步枪。
@@ -515,6 +520,8 @@ function noise1(x: number): number {
  */
 interface WeaponRig {
   readonly group: Group
+  /** 第一人称手臂在枪局部空间的握点。 */
+  readonly hands: WeaponHands
   /** 枪托子组（刀、转轮手枪没有需要下摆的托，为 null）。 */
   readonly stock: Group | null
   readonly hipX: number
@@ -706,21 +713,35 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       map: kit.textures.metal,
     }),
     bladeEdge: kit.toon(0xf4f9ff, { hatch: 0, specular: 0.50, emissive: 0.08 }),
-    glove: kit.toon(0x7b5c47, {
+    glove: kit.toon(0x6f4c35, {
       hatch: 0.05,
-      specular: 0.04,
+      specular: 0.05,
       map: kit.textures.leather,
     }),
-    gloveDark: kit.toon(0x543f31, {
-      hatch: 0.05,
+    gloveDark: kit.toon(0x3d2c22, {
+      hatch: 0.06,
       specular: 0.03,
       map: kit.textures.leather,
     }),
-    sleeve: kit.toon(0x3c3833, { hatch: 0.10, specular: 0.02 }),
+    // 袖子的布是粗呢，不是皮：更暗、更哑，避免在暖色棚灯下变成一块浅棕木板。
+    sleeve: kit.toon(0x15140f, { hatch: 0.16, specular: 0.012 }),
   }
+  // 对象空间细节：枪/手会跟着相机动，世界空间噪声会在枪身上流动，
+  // 所以颗粒、积垢、边缘露白都按零件自身坐标算（见 model-detail.ts）。
+  applyModelDetail(mats.steel, { pattern: 'metal', scale: 240, grain: 0.30, cavity: 0.5, wear: 0.55 })
+  applyModelDetail(mats.darkSteel, { pattern: 'metal', scale: 260, grain: 0.26, cavity: 0.55, wear: 0.42 })
+  applyModelDetail(mats.wood, { pattern: 'wood', scale: 78, grain: 0.48, cavity: 0.30, wear: 0.16 })
+  applyModelDetail(mats.brass, { pattern: 'metal', scale: 300, grain: 0.22, cavity: 0.45, wear: 0.5, wearColor: 0xd8b04a })
+  applyModelDetail(mats.blade, { pattern: 'metal', scale: 320, grain: 0.18, cavity: 0.35, wear: 0.6 })
+  applyModelDetail(mats.glove, { pattern: 'leather', scale: 120, grain: 0.40, cavity: 0.42, wear: 0.14, wearColor: 0x8a6a4e })
+  applyModelDetail(mats.gloveDark, { pattern: 'leather', scale: 140, grain: 0.36, cavity: 0.5, wear: 0.12, wearColor: 0x6a4c38 })
+  applyModelDetail(mats.sleeve, { pattern: 'leather', scale: 200, grain: 0.30, cavity: 0.35, wear: 0.06 })
+
   // 写实档不再给枪身描边，但准星/照门必须保留一圈细线：它们只有几毫米宽，
   // 在暗墙/机匣上没有任何轮廓就真的"看不见"了。Renderer 只认这个标记。
   mats.sight.userData.isSight = true
+
+  const arms = createFirstPersonArms(mats)
 
   /** 武器模型自己持有的几何与克隆材质（刀光）。dispose 时逐个释放。 */
   const builtModels: { dispose(): void }[] = []
@@ -931,6 +952,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   /** 步枪系（1 / 6 / 4）共用一套腰射/开镜基准，只在 z 与枪口位置上按枪长微调。 */
   const rifleRig = (built: BuiltRifle, extra: Partial<WeaponRig>): WeaponRig => ({
     group: built.group,
+    hands: built.hands,
     stock: built.stock,
     parts: { hammer: built.hammer, lever: built.lever },
     hipX: RIFLE_HIP_X,
@@ -1022,6 +1044,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   inkModel(shotgun.group)
   register(2, {
     group: shotgun.group,
+    hands: shotgun.hands,
     stock: shotgun.stock,
     hipX: 0.19,
     hipY: -0.185,
@@ -1054,6 +1077,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   inkModel(shotgun2.group)
   register(3, {
     group: shotgun2.group,
+    hands: shotgun2.hands,
     stock: shotgun2.stock,
     hipX: 0.19,
     hipY: -0.193,
@@ -1084,6 +1108,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   inkModel(revolver.group)
   register(5, {
     group: revolver.group,
+    hands: revolver.hands,
     stock: null,
     hipX: 0.23,
     hipY: -0.245,
@@ -1115,6 +1140,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   inkModel(knife.group)
   register(10, {
     group: knife.group,
+    hands: knife.hands,
     stock: null,
     hipX: 0.19,
     hipY: -0.185,
@@ -1635,6 +1661,10 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
 
     camRoll = -MELEE_CAM_ROLL * punch
 
+    // 第一人称手/臂：手跟着枪上的握点，肘由解析 IK 求，前臂从画面下方进来。
+    // 枪隐藏（进镜筒）时整组手臂一起隐藏。
+    arms.update(rig.hands, rig.group, root.visible, phase, state.reloading)
+
     // ---- 枪口火光
     //
     // 只在前 55ms 可见，透明度和尺寸一起衰减。位置吃当前枪的 muzzleZ：
@@ -1788,6 +1818,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
 
   return {
     root,
+    armsRoot: arms.root,
     setWeapon,
     setAttachment,
     setBuild,
@@ -1805,6 +1836,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       for (const model of builtModels) model.dispose()
       builtModels.length = 0
       sightBeadMat.dispose()
+      arms.dispose()
       flashGeo.dispose()
       flashMat.dispose()
       smokeGeo.dispose()

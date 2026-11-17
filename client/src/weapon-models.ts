@@ -56,12 +56,27 @@ export interface WeaponMaterialSet {
   sleeve: Material
 }
 
+export interface HandAnchor {
+  x: number
+  y: number
+  z: number
+  rx?: number
+  ry?: number
+  rz?: number
+}
+
+export interface WeaponHands {
+  right: HandAnchor
+  left: HandAnchor | null
+}
+
 export interface BuiltRifle {
   group: Group
   stock: Group
   hammer: Mesh
   /** 杠杆子组，绕机匣下方的枢轴做射击循环。 */
   lever: Group
+  hands: WeaponHands
   dispose(): void
 }
 
@@ -69,6 +84,7 @@ export interface BuiltShotgun {
   group: Group
   stock: Group
   hammers: Mesh[]
+  hands: WeaponHands
   dispose(): void
 }
 
@@ -76,6 +92,7 @@ export interface BuiltRevolver {
   group: Group
   cylinder: Group
   hammer: Mesh
+  hands: WeaponHands
   dispose(): void
 }
 
@@ -83,6 +100,7 @@ export interface BuiltKnife {
   group: Group
   glow: Mesh
   glowMat: Material
+  hands: WeaponHands
   dispose(): void
 }
 
@@ -675,11 +693,11 @@ export function buildRifle(
   stockAsm.add(box(0.008, 0.012, 0.018, 0.0012, 2), 'steel', { y: -0.054, z: 0.198 })
   addScrew(stockAsm, 'brass', { x: 0.0208, y: -0.030, z: 0.090, ry: Math.PI / 2 }, 0.003, 0.008)
 
-  // 右手握在枪颈，但**挂在主组**而不是 stock 子组：开镜时整块枪托会隐藏
-  // （它应该在你脸颊后面），扣扳机的手必须留下，否则枪看起来像被拆开了。
-  addHand(asm, { x: 0.046, y: -0.032, z: 0.04, ry: Math.PI / 2, rz: 0.08 }, 1)
-  // 左手托护木下沿：掌在木料下方，手指向上包住，避免掌心穿进护木。
-  addHand(asm, { x: -0.004, y: -0.045, z: forendZ + 0.035, ry: -Math.PI / 2, rz: Math.PI }, -1)
+  // 手不再焊进枪的 Assembly：这里只给第一人称手臂一个握点。
+  const hands: WeaponHands = {
+    right: { x: 0.052, y: -0.055, z: 0.025, ry: Math.PI / 2, rz: 0.08 },
+    left: { x: -0.006, y: -0.060, z: forendZ + 0.025, ry: -Math.PI / 2, rz: Math.PI },
+  }
 
   /* ---- 击锤（独立 Mesh，viewmodel 绕 x 转） --------------------------- */
   const hammer = movingMesh(
@@ -700,6 +718,7 @@ export function buildRifle(
     stock,
     hammer,
     lever: leverGroup,
+    hands,
     dispose(): void {
       disposeGroup(group)
     },
@@ -900,9 +919,10 @@ export function buildShotgun(mats: WeaponMaterialSet): BuiltShotgun {
   sling.dispose()
   addScrew(stockAsm, 'brass', { x: 0.0198, y: -0.030, z: 0.085, ry: Math.PI / 2 }, 0.0028, 0.007)
 
-  // 右手握托颈（主组，理由同上）、左手托粗护木。
-  addHand(asm, { x: 0.046, y: -0.032, z: 0.02, ry: Math.PI / 2, rz: 0.08 }, 1)
-  addHand(asm, { x: -0.002, y: -0.054, z: -0.190, ry: -Math.PI / 2, rz: Math.PI }, -1)
+  const hands: WeaponHands = {
+    right: { x: 0.052, y: -0.052, z: 0.01, ry: Math.PI / 2, rz: 0.08 },
+    left: { x: -0.004, y: -0.065, z: -0.190, ry: -Math.PI / 2, rz: Math.PI },
+  }
 
   emit(asm, group, M)
   emit(stockAsm, stock, M)
@@ -911,6 +931,7 @@ export function buildShotgun(mats: WeaponMaterialSet): BuiltShotgun {
     group,
     stock,
     hammers: [hammerL, hammerR],
+    hands,
     dispose(): void {
       disposeGroup(group)
     },
@@ -1094,8 +1115,11 @@ export function buildRevolver(mats: WeaponMaterialSet): BuiltRevolver {
     z: 0.030,
   })
 
-  // 单手：握把上的右手，前臂从右下出画。
-  addHand(asm, { x: 0.030, y: -0.052, z: 0.080, ry: Math.PI / 2, rz: 0.12 }, 1)
+  // 单手：握把上的右手；左臂由第一人称手臂系统隐藏。
+  const hands: WeaponHands = {
+    right: { x: 0.032, y: -0.068, z: 0.080, ry: Math.PI / 2, rz: 0.12 },
+    left: null,
+  }
 
   emit(asm, group, M)
 
@@ -1103,6 +1127,7 @@ export function buildRevolver(mats: WeaponMaterialSet): BuiltRevolver {
     group,
     cylinder,
     hammer,
+    hands,
     dispose(): void {
       disposeGroup(group)
     },
@@ -1193,7 +1218,10 @@ export function buildKnife(mats: WeaponMaterialSet): BuiltKnife {
   group.add(glow)
 
   // 整把刀绕组的原点转 = 绕手腕转，挥砍不需要额外的枢轴节点。
-  addHand(asm, { x: 0.022, y: -0.012, z: 0.028, ry: Math.PI / 2, rz: 0.10 }, 1)
+  const hands: WeaponHands = {
+    right: { x: 0.024, y: -0.024, z: 0.028, ry: Math.PI / 2, rz: 0.10 },
+    left: null,
+  }
 
   emit(asm, group, M)
 
@@ -1201,6 +1229,7 @@ export function buildKnife(mats: WeaponMaterialSet): BuiltKnife {
     group,
     glow,
     glowMat,
+    hands,
     dispose(): void {
       disposeGroup(group, glowMat)
     },

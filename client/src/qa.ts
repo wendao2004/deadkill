@@ -47,6 +47,8 @@ export interface QaParams {
   wet: number | null
   /** 强制换弹进度 0..1，用于展示时间轴；null = 跟随玩家状态。 */
   reload: number | null
+  /** `?show=weapon` 的机位距离（米）。近景检查模型细节时用 0.35~0.45。 */
+  vmdist: number | null
   noaudio: boolean
   /** false = ?post=0，关闭画面风格层。 */
   post: boolean
@@ -145,6 +147,7 @@ export function parseQa(source: string): QaParams {
     renderScale: clamp(finite(params.get('scale')), 0.5, 1),
     wet: clamp(finite(params.get('wet')), 0, 1),
     reload: clamp(finite(params.get('reload')), 0, 1),
+    vmdist: finite(params.get('vmdist')),
     noaudio: flag(params, 'noaudio', false),
     post: flag(params, 'post', true),
     postFail: flag(params, 'postfail', false),
