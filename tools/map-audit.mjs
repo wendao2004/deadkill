@@ -62,6 +62,15 @@ function auditLevel(id, level) {
     }
   }
 
+  // hero 锚点必须落在某个 noRender 骨架附近，否则"模型在这、碰撞在别处"。
+  const heroOrphans = []
+  for (const hero of level.heroes ?? []) {
+    const near = level.boxes.some(
+      (b) => b.noRender === true && Math.hypot(b.x - hero.x, b.z - hero.z) < 5.5,
+    )
+    if (!near) heroOrphans.push(hero)
+  }
+
   const spawnBlocked = []
   for (const spawn of level.spawns) {
     for (const b of solid) {
@@ -82,6 +91,7 @@ function auditLevel(id, level) {
     overlapCount: allOverlaps.length,
     overlaps: allOverlaps.sort((x, y) => y.ratio - x.ratio).slice(0, 12),
     spawnBlocked,
+    heroOrphans,
   }
 }
 
@@ -99,19 +109,20 @@ lines.push('')
 lines.push('> 由 `pnpm qa:maps` 生成（`tools/map-audit.mjs`）。**不要手改**：改关卡数据后重跑。')
 lines.push('> 判定规则见脚本头部注释；`?colliders=1` 的线框叠图用来人工复核。')
 lines.push('')
-lines.push('| 地图 | 盒刷 | 实体 | 只碰不画 | 画了不碰 | 埋地 | 悬空 | 重叠 | 出生点贴脸 |')
+lines.push('| 地图 | 盒刷 | 实体 | 只碰不画 | 画了不碰 | 埋地 | 悬空 | 重叠 | hero 脱节 | 出生点贴脸 |')
 lines.push('|---|---|---|---|---|---|---|---|---|')
 for (const r of results) {
   lines.push(
     `| ${r.name} | ${r.total} | ${r.solid} | ${r.hidden.length} | ${r.ghost.length} | ` +
-      `${r.buried.length} | ${r.floating.length} | ${r.overlapCount} | ${r.spawnBlocked.length} |`,
+      `${r.buried.length} | ${r.floating.length} | ${r.overlapCount} | ${r.heroOrphans.length} | ${r.spawnBlocked.length} |`,
   )
 }
 lines.push('')
 
 for (const r of results) {
   const issues =
-    r.hidden.length + r.ghost.length + r.buried.length + r.floating.length + r.overlapCount + r.spawnBlocked.length
+    r.hidden.length + r.ghost.length + r.buried.length + r.floating.length + r.overlapCount +
+    r.heroOrphans.length + r.spawnBlocked.length
   if (issues === 0) {
     lines.push(`## ${r.name} — 干净`)
     lines.push('')
@@ -133,6 +144,12 @@ for (const r of results) {
     lines.push('')
     for (const b of r.ghost.slice(0, 40)) lines.push(`- ${fmt(b)}`)
     if (r.ghost.length > 40) lines.push(`- …另有 ${r.ghost.length - 40} 条，见脚本输出`)
+    lines.push('')
+  }
+  if (r.heroOrphans.length > 0) {
+    lines.push('### hero 锚点附近没有隐形骨架（模型与碰撞脱节）')
+    lines.push('')
+    for (const h of r.heroOrphans) lines.push(`- ${h.asset} @ (${h.x.toFixed(1)}, ${h.z.toFixed(1)})`)
     lines.push('')
   }
   if (r.spawnBlocked.length > 0) {
@@ -168,7 +185,8 @@ for (const r of results) {
 
 const totalIssues = results.reduce(
   (sum, r) =>
-    sum + r.hidden.length + r.ghost.length + r.buried.length + r.floating.length + r.overlapCount + r.spawnBlocked.length,
+    sum + r.hidden.length + r.ghost.length + r.buried.length + r.floating.length + r.overlapCount +
+    r.heroOrphans.length + r.spawnBlocked.length,
   0,
 )
 lines.push('---')
@@ -186,6 +204,6 @@ console.log(`map-audit: ${outPath}`)
 for (const r of results) {
   console.log(
     `  ${r.name}: hidden=${r.hidden.length} ghost=${r.ghost.length} buried=${r.buried.length} ` +
-      `floating=${r.floating.length} overlap=${r.overlapCount} spawn=${r.spawnBlocked.length}`,
+      `floating=${r.floating.length} overlap=${r.overlapCount} heroOrphan=${r.heroOrphans.length} spawn=${r.spawnBlocked.length}`,
   )
 }
