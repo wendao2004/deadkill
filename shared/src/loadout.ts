@@ -11,6 +11,7 @@
  */
 
 import { attachmentOf, clampAttachment, ATTACHMENT_NONE } from './attachments.ts'
+import { effectiveWeaponSpec, sanitizeBuild, type WeaponBuild } from './weapon-build.ts'
 import {
   DEFAULT_WEAPON_ID,
   DEFAULT_SLOT_ORDER,
@@ -34,20 +35,32 @@ export interface LoadoutState {
   switchDoneTick: number
   /** 上一次开火的 tick。 */
   lastFireTick: number
-  /** 主武器配件 id（见 shared/src/attachments.ts）。 */
+  /** 旧的一件式配件 id（见 shared/src/attachments.ts）。保留给旧存档/协议。 */
   attachment: number
+  /** 塔科夫式多槽位 build；未提供时为原厂。 */
+  build: WeaponBuild
+  /** 主武器的有效数值缓存（build 变化时重建）。 */
+  primarySpec: WeaponSpec
 }
 
 /** 一套全新的配装（出生、重生都用它）。 */
-export function createLoadout(primaryId: number = DEFAULT_WEAPON_ID, attachment = ATTACHMENT_NONE): LoadoutState {
+export function createLoadout(
+  primaryId: number = DEFAULT_WEAPON_ID,
+  attachment = ATTACHMENT_NONE,
+  build?: WeaponBuild,
+): LoadoutState {
   // 经过 clampAttachment：配件系统收起时它会一律回落成"不装"，
   // 旧存档里的 1..4 不会绕过总开关继续生效。
+  const safeBuild = sanitizeBuild(primaryId, build?.slots)
+  const primarySpec = effectiveWeaponSpec(WEAPONS[primaryId]!, safeBuild)
   const state: LoadoutState = {
     primaryId,
     attachment: clampAttachment(attachment),
+    build: safeBuild,
+    primarySpec,
     currentSlot: 0,
-    ammoBySlot: filledAmmo(primaryId),
-    reserveBySlot: filledReserve(primaryId),
+    ammoBySlot: filledAmmo(primaryId, safeBuild),
+    reserveBySlot: filledReserve(primaryId, safeBuild),
     switchDoneTick: 0,
     // 必须显式设成"很久以前"，不能用 0：射速判定是
     // `tick - lastFireTick >= fireIntervalMs/TICK_MS`，用 0 等于让每个新玩家
@@ -55,36 +68,28 @@ export function createLoadout(primaryId: number = DEFAULT_WEAPON_ID, attachment 
     // 遇敌时表现为"按了左键没反应"。
     lastFireTick: -1e9,
   }
-  // 加长弹仓：开局就把弹匣和备弹一起按新容量填满。
-  if (attachmentOf(state.attachment).magazineBonus > 0) {
-    for (let slot = 0; slot < state.ammoBySlot.length; slot++) {
-      const spec = WEAPONS[slotWeaponId(state, slot)]!
-      const bonus = slot === 0 ? attachmentOf(state.attachment).magazineBonus : 0
-      if (bonus > 0) {
-        state.ammoBySlot[slot] = spec.magazine + bonus
-        state.reserveBySlot[slot] = (state.reserveBySlot[slot] ?? 0) + bonus
-      }
-    }
-  }
   return state
 }
 
 /** 每个槽位满弹时的弹药表。 */
 /** 这个槽位当前的有效弹匣容量（含配件加成）。 */
 export function magazineCap(state: LoadoutState, slot = state.currentSlot): number {
-  const spec = WEAPONS[slotWeaponId(state, slot)]!
-  const bonus = slot === 0 ? attachmentOf(state.attachment).magazineBonus : 0
-  return spec.magazine + bonus
+  if (slot === 0) return state.primarySpec.magazine
+  return WEAPONS[slotWeaponId(state, slot)]!.magazine
 }
 
-export function filledAmmo(primaryId: number): number[] {
-  return DEFAULT_SLOT_ORDER.map((_, slot) => WEAPONS[weaponForSlot(primaryId, slot)]!.magazine)
+export function filledAmmo(primaryId: number, build?: WeaponBuild): number[] {
+  const primary = effectiveWeaponSpec(WEAPONS[primaryId]!, sanitizeBuild(primaryId, build?.slots))
+  return DEFAULT_SLOT_ORDER.map((_, slot) =>
+    slot === 0 ? primary.magazine : WEAPONS[weaponForSlot(primaryId, slot)]!.magazine,
+  )
 }
 
 /** 每个槽位出生时的备弹表；刀没有备弹。 */
-export function filledReserve(primaryId: number): number[] {
+export function filledReserve(primaryId: number, build?: WeaponBuild): number[] {
+  const primary = effectiveWeaponSpec(WEAPONS[primaryId]!, sanitizeBuild(primaryId, build?.slots))
   return DEFAULT_SLOT_ORDER.map((_, slot) => {
-    const spec = WEAPONS[weaponForSlot(primaryId, slot)]!
+    const spec = slot === 0 ? primary : WEAPONS[weaponForSlot(primaryId, slot)]!
     if (spec.kind === 'knife') return 0
     return spec.reserve ?? spec.magazine * 4
   })
@@ -97,6 +102,7 @@ export function slotWeaponId(state: LoadoutState, slot: number): number {
 
 /** 当前手上的武器。 */
 export function heldWeapon(state: LoadoutState): WeaponSpec {
+  if (state.currentSlot === 0 && state.primarySpec) return state.primarySpec
   return WEAPONS[slotWeaponId(state, state.currentSlot)]!
 }
 
@@ -202,6 +208,6 @@ export function addReserve(state: LoadoutState, rounds: number): void {
 export function resetLoadout(state: LoadoutState): void {
   state.currentSlot = 0
   state.switchDoneTick = 0
-  state.ammoBySlot = filledAmmo(state.primaryId)
-  state.reserveBySlot = filledReserve(state.primaryId)
+  state.ammoBySlot = filledAmmo(state.primaryId, state.build)
+  state.reserveBySlot = filledReserve(state.primaryId, state.build)
 }

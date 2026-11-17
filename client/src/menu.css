@@ -4272,3 +4272,166 @@
 }
 
 .dk-steps__next[hidden] { display: none; }
+
+/* ---- 军械库工作台：列表 / 3D 枪模 / 改枪与数值 ---- */
+
+.dk-arsenal {
+  grid-template-columns: minmax(210px, 0.62fr) minmax(0, 1.15fr) minmax(330px, 0.9fr);
+  align-items: stretch;
+}
+
+.dk-preview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.dk-preview__host {
+  position: relative;
+  flex: 1;
+  min-height: 380px;
+  overflow: hidden;
+  border: 1px solid rgba(216, 207, 186, 0.1);
+  background:
+    radial-gradient(ellipse at 50% 62%, rgba(217, 154, 74, 0.13), rgba(4, 6, 8, 0) 58%),
+    linear-gradient(180deg, rgba(10, 13, 17, 0.35), rgba(4, 6, 8, 0.82));
+}
+
+.dk-preview__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.dk-preview__canvas:active { cursor: grabbing; }
+
+.dk-preview__hint {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  margin: 0;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  color: rgba(216, 207, 186, 0.45);
+}
+
+.dk-preview__fail {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.8;
+  color: var(--ash);
+}
+
+.dk-arsenal__detail {
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 150px);
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.dk-build { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
+
+.dk-build__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(216, 207, 186, 0.12);
+}
+
+.dk-build__title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  color: var(--bone);
+}
+
+.dk-build__meta {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  color: var(--ash);
+}
+
+.dk-build__slot {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 7px;
+  align-items: baseline;
+}
+
+.dk-build__label {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: var(--ash);
+}
+
+.dk-build__chips { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.dk-build__chip {
+  padding: 3px 7px;
+  border: 1px solid rgba(216, 207, 186, 0.16);
+  background: transparent;
+  color: rgba(216, 207, 186, 0.72);
+  font-family: var(--font-ui);
+  font-size: 9.5px;
+  cursor: pointer;
+  transition: border-color 100ms ease, color 100ms ease, background 100ms ease;
+}
+
+.dk-build__chip:hover,
+.dk-build__chip:focus-visible {
+  outline: none;
+  border-color: var(--amber);
+  color: var(--bone);
+}
+
+.dk-build__chip.is-selected {
+  border-color: var(--amber);
+  background: rgba(217, 154, 74, 0.16);
+  color: var(--amber);
+}
+
+.dk-build__none { font-family: var(--font-mono); font-size: 8.5px; color: rgba(141, 133, 120, 0.55); }
+
+.dk-build__note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  color: var(--ash);
+}
+
+@media (max-width: 1200px) {
+  .dk-arsenal { grid-template-columns: minmax(190px, 0.6fr) minmax(0, 1.2fr); }
+  .dk-arsenal__detail { grid-column: 1 / -1; position: static; max-height: none; }
+}
+
+@media (max-width: 860px) {
+  .dk-arsenal { grid-template-columns: minmax(0, 1fr); }
+  .dk-preview__host { min-height: 300px; }
+}
+
+/* 军械库三列不要互相拉高：列表可以长、右栏自己滚、中间的枪模钉在视口里。 */
+.dk-arsenal { align-items: start; }
+.dk-preview {
+  position: sticky;
+  top: 0;
+  height: clamp(320px, 56vh, 560px);
+}
+.dk-preview__host { flex: 1; min-height: 0; }

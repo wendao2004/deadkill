@@ -164,7 +164,9 @@ import {
   type MonsterState,
   type MonsterSenses,
   type Vec3,
+  type WeaponBuild,
   type WeaponSpec,
+  sanitizeBuild,
 } from '@dk/shared'
 import type { Collider, RigidBody, World as PhysicsWorld } from '@dimforge/rapier3d-compat'
 import { Capsule, ColliderDesc, Ray, RigidBodyDesc } from '@dimforge/rapier3d-compat'
@@ -1731,6 +1733,7 @@ export class World {
     attachment = 0,
     squad = 0,
     partyId = '',
+    build?: WeaponBuild,
   ): void {
     const player = this.players.get(playerId)
     if (!player) return
@@ -1780,8 +1783,16 @@ export class World {
     this.assignTeam(player)
     const primary = isPrimaryChoice(weaponId) ? weaponId : DEFAULT_WEAPON_ID
     const attach = clampAttachment(attachment)
-    if (primary === player.loadout.primaryId && attach === player.loadout.attachment) return
-    player.loadout = createLoadout(primary, attach)
+    const nextBuild = sanitizeBuild(primary, build?.slots)
+    const sameBuild =
+      nextBuild.weaponId === player.loadout.build.weaponId &&
+      ['sight', 'muzzle', 'magazine', 'stock'].every(
+        (slot) =>
+          (nextBuild.slots[slot as 'sight' | 'muzzle' | 'magazine' | 'stock'] ?? 0) ===
+          (player.loadout.build.slots[slot as 'sight' | 'muzzle' | 'magazine' | 'stock'] ?? 0),
+      )
+    if (primary === player.loadout.primaryId && attach === player.loadout.attachment && sameBuild) return
+    player.loadout = createLoadout(primary, attach, nextBuild)
     player.reloading = false
   }
 

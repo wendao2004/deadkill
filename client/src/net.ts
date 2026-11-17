@@ -24,6 +24,7 @@ import {
   type LootPacket,
   type NameEntry,
   type ObjectivePacket,
+  type WeaponBuild,
   type PlayerInput,
   type Snapshot,
   type Vec3,
@@ -146,6 +147,8 @@ export class Net {
   private squad = 0
   /** 队伍 id：同 party 的玩家由服务端强制编入同一队并共享出生点。 */
   private partyId = ''
+  /** 主武器多槽位 build；服务端会重新清洗再算有效数值。 */
+  private build: WeaponBuild | undefined
   /** 已经发给服务端的最新输入序号，重连时用来判断是否要丢弃旧输入。 */
   lastSeq = 0
   closed = false
@@ -166,6 +169,7 @@ export class Net {
     attachment: number,
     squad: number,
     partyId: string,
+    build: WeaponBuild | undefined,
     handlers: NetHandlers,
   ): void {
     this.handlers = handlers
@@ -177,6 +181,7 @@ export class Net {
     this.attachment = attachment
     this.squad = squad
     this.partyId = partyId
+    this.build = build
     const socket = new WebSocket(wsUrl(matchId))
     // 必须显式设成 arraybuffer：默认是 blob，而 blob 要先 await arrayBuffer()
     // 才能解析，等于给每个快照加一次微任务延迟。
@@ -211,6 +216,7 @@ export class Net {
                 this.attachment,
                 this.squad,
                 this.partyId,
+                this.build,
               ),
             )
             this.handlers?.onWelcome(welcome)

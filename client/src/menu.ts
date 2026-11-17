@@ -50,11 +50,20 @@ import {
   type TraitSpec,
   type WeaponKind,
   type WeaponSpec,
+  type WeaponBuild,
+  type WeaponSlotKey,
+  type WeaponAttachment,
+  WEAPON_SLOT_KEYS,
+  attachmentsForSlot,
+  buildStats,
+  effectiveWeaponSpec,
+  sanitizeBuild,
 } from '@dk/shared'
 
 
 import { rememberLevelId } from './level-choice.ts'
 import { traitGlyph } from './traits.ts'
+import { WeaponPreview } from './weapon-preview.ts'
 import {
   loadSavedSettings,
   saveSettings,
@@ -119,6 +128,8 @@ export interface MenuConfig {
   squad?: number
   /** 大厅队伍 id；同 partyId 的玩家由服务端强制同队并共享出生点。 */
   partyId?: string
+  /** 主武器多槽位 build（塔科夫式工作台）。 */
+  build?: WeaponBuild
   /**
    * 金币余额。**可选**：main.ts 还没接这条线，必填会让它当场编译不过。
    *
@@ -195,6 +206,7 @@ const KEY_TRAIT_OWNED = 'dk.traitOwned'
 const KEY_COINS = 'dk.coins'
 const KEY_FRIENDS = 'dk.friends'
 const KEY_FRIEND_CODE = 'dk.friendCode'
+const KEY_BUILDS = 'dk.builds'
 
 /** Safari 隐私模式 / 被策略禁用时 localStorage 会直接抛，所以每一次访问都要兜住。 */
 function readRaw(key: string): string | null {
@@ -324,6 +336,51 @@ export function saveConfig(config: Partial<MenuConfig>): void {
   if (config.squad !== undefined) writeRaw(KEY_SQUAD, config.squad ? '1' : '0')
   // 金币不进配装包也照样落盘：大厅一刷新，余额和等级都还在。
   if (config.coins !== undefined) writeRaw(KEY_COINS, String(normalizeCoins(config.coins)))
+}
+
+// ---------------------------------------------------------------- 枪械 build
+
+/** 每把武器一套本机 build；服务端只收清洗后的槽位，不信 localStorage。 */
+function loadBuilds(): Record<string, WeaponBuild> {
+  const raw = readRaw(KEY_BUILDS)
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') return {}
+    const out: Record<string, WeaponBuild> = {}
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const weaponId = Number(key)
+      if (!Number.isInteger(weaponId)) continue
+      const record = value as { slots?: unknown }
+      const slots: Partial<Record<WeaponSlotKey, number>> = {}
+      if (record && typeof record.slots === 'object' && record.slots !== null) {
+        for (const [slot, id] of Object.entries(record.slots as Record<string, unknown>)) {
+          if (!WEAPON_SLOT_KEYS.includes(slot as WeaponSlotKey)) continue
+          if (typeof id !== 'number') continue
+          slots[slot as WeaponSlotKey] = id
+        }
+      }
+      out[key] = sanitizeBuild(weaponId, slots)
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function loadBuildFor(weaponId: number): WeaponBuild {
+  const saved = loadBuilds()[String(weaponId)]
+  return saved ? sanitizeBuild(weaponId, saved.slots) : { weaponId, slots: {} }
+}
+
+function writeBuild(build: WeaponBuild): void {
+  try {
+    const all = loadBuilds()
+    all[String(build.weaponId)] = sanitizeBuild(build.weaponId, build.slots)
+    writeRaw(KEY_BUILDS, JSON.stringify(all))
+  } catch {
+    // 存不下只影响下次打开工作台，不影响本局配装。
+  }
 }
 
 // ---------------------------------------------------------------- 好友
@@ -1057,6 +1114,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     traits: clampSelection(options.initial?.traits ?? saved.traits ?? 0),
     coins: normalizeCoins(options.initial?.coins ?? saved.coins ?? 0),
   }
+  config.build = options.initial?.build ?? loadBuildFor(config.primaryId)
   // 好友码是本机身份：服务端只做在线目录，不建账号。首次生成后一直复用。
   let friendCode = readRaw(KEY_FRIEND_CODE) ?? ''
   if (!/^[a-z0-9-]{4,24}$/.test(friendCode)) {
@@ -1285,6 +1343,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   let profileNameEl: HTMLElement | null = null
   let functionTitleEl: HTMLElement | null = null
   let functionMetaEl: HTMLElement | null = null
+  let arsenalPreview: WeaponPreview | null = null
+  let arsenalPreviewHost: HTMLElement | null = null
+  let arsenalWeaponId = DEFAULT_WEAPON_ID
+  let arsenalBuild: WeaponBuild = { weaponId: DEFAULT_WEAPON_ID, slots: {} }
   const shelterButtons = new Map<PaneId, HTMLButtonElement>()
   /** 构造期就会走到 refreshRooms（房间面板自己拉一次列表），必须先声明。 */
   let disposed = false
@@ -1407,6 +1469,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   function pickPrimary(id: number): void {
     if (!isPrimaryChoice(id) || id === config.primaryId) return
     config.primaryId = id
+    config.build = loadBuildFor(id)
     // 立刻落盘而不是等按下「出击」：玩家换完枪直接刷新页面，下次进来还是这把。
     saveConfig(config)
     syncPrimary()
@@ -1473,6 +1536,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     host.classList.toggle('is-immersive', !next)
     if (next) {
       host.classList.remove('is-exited', 'is-shelter')
+      arsenalPreview?.setActive(false)
       updateHomeMeta()
       const first = host.querySelector<HTMLButtonElement>('.dk-home__item')
       requestAnimationFrame(() => first?.focus({ preventScroll: true }))
@@ -2833,7 +2897,52 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     return panel
   }
 
-  // ---------------------------------------------------------------- 好友
+  // ---------------------------------------------------------------- 枪械 build
+
+/** 每把武器一套本机 build；服务端只收清洗后的槽位，不信 localStorage。 */
+function loadBuilds(): Record<string, WeaponBuild> {
+  const raw = readRaw(KEY_BUILDS)
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') return {}
+    const out: Record<string, WeaponBuild> = {}
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const weaponId = Number(key)
+      if (!Number.isInteger(weaponId)) continue
+      const record = value as { slots?: unknown }
+      const slots: Partial<Record<WeaponSlotKey, number>> = {}
+      if (record && typeof record.slots === 'object' && record.slots !== null) {
+        for (const [slot, id] of Object.entries(record.slots as Record<string, unknown>)) {
+          if (!WEAPON_SLOT_KEYS.includes(slot as WeaponSlotKey)) continue
+          if (typeof id !== 'number') continue
+          slots[slot as WeaponSlotKey] = id
+        }
+      }
+      out[key] = sanitizeBuild(weaponId, slots)
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function loadBuildFor(weaponId: number): WeaponBuild {
+  const saved = loadBuilds()[String(weaponId)]
+  return saved ? sanitizeBuild(weaponId, saved.slots) : { weaponId, slots: {} }
+}
+
+function writeBuild(build: WeaponBuild): void {
+  try {
+    const all = loadBuilds()
+    all[String(build.weaponId)] = sanitizeBuild(build.weaponId, build.slots)
+    writeRaw(KEY_BUILDS, JSON.stringify(all))
+  } catch {
+    // 存不下只影响下次打开工作台，不影响本局配装。
+  }
+}
+
+// ---------------------------------------------------------------- 好友
 
   function safeLevelName(id: string): string {
     return LEVEL_IDS.includes(id) ? getLevel(id).name : '未知猎场'
@@ -3150,6 +3259,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     // 队伍随配装进 Loadout：服务端据此强制同队并共享出生点。
     config.partyId = party?.id
     config.squad = party ? 1 : 0
+    config.build = sanitizeBuild(config.primaryId, config.build?.slots)
     if (party && party.leader === friendCode) void launchParty()
     if (cta) {
       cta.disabled = true
@@ -3257,6 +3367,27 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   // ---------------------------------------------------------------- 军械库
 
+  const SLOT_LABELS: Record<WeaponSlotKey, [string, string]> = {
+    sight: ['瞄具', 'SIGHT'],
+    muzzle: ['枪口', 'MUZZLE'],
+    magazine: ['供弹', 'MAGAZINE'],
+    stock: ['枪托', 'STOCK'],
+  }
+
+  function ensureArsenalPreview(): void {
+    if (arsenalPreview || !arsenalPreviewHost) return
+    try {
+      arsenalPreview = new WeaponPreview(arsenalPreviewHost)
+      arsenalPreview.setWeapon(arsenalWeaponId, arsenalBuild)
+    } catch (error) {
+      arsenalPreviewHost.classList.add('is-failed')
+      arsenalPreviewHost.appendChild(
+        mk('p', 'dk-preview__fail', '这台设备无法创建第二个 WebGL 上下文 · 枪模展示不可用'),
+      )
+      console.warn('weapon preview unavailable', error)
+    }
+  }
+
   function buildArsenal(): void {
     const pane = panes.get('arsenal')
     if (!pane) return
@@ -3283,16 +3414,17 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
     for (const spec of specs) {
       const row = mkButton('dk-wrow')
+      row.dataset.weaponId = String(spec.id)
       const top = mk('span', 'dk-wrow__top')
       top.appendChild(mk('span', 'dk-wrow__name', spec.name))
       top.appendChild(mk('span', 'dk-wrow__class', spec.pellets > 1 ? '霰弹' : '单发'))
       row.appendChild(top)
 
       const bars = mk('span', 'dk-wrow__bars')
-      const metrics: Array<[string, number, number]> = [
-        ['伤害', (spec.damage * Math.max(1, spec.pellets)) / maxDamage, 0],
-        ['射速', 60000 / spec.fireIntervalMs / maxRpm, 1],
-        ['射程', spec.effectiveRange / maxRange, 2],
+      const metrics: Array<[string, number]> = [
+        ['伤害', (spec.damage * Math.max(1, spec.pellets)) / maxDamage],
+        ['射速', 60000 / spec.fireIntervalMs / maxRpm],
+        ['射程', spec.effectiveRange / maxRange],
       ]
       for (const [label, ratio] of metrics) {
         const barRow = mk('span', 'dk-wbar')
@@ -3314,6 +3446,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
         activeRow = row
         row.classList.add('is-selected')
         row.setAttribute('aria-pressed', 'true')
+        arsenalWeaponId = spec.id
+        arsenalBuild = loadBuildFor(spec.id)
         showDetail(spec)
       })
       rows.appendChild(row)
@@ -3321,11 +3455,26 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     listPanel.appendChild(rows)
     grid.appendChild(listPanel)
 
+    // ---- 中列：3D 枪模 ----
+    const previewPanel = mk('div', 'dk-panel dk-preview')
+    const previewHead = mk('div', 'dk-section-head')
+    previewHead.appendChild(mk('h2', 'dk-section-head__cn', '枪模'))
+    previewHead.appendChild(mk('span', 'dk-section-head__en', 'PREVIEW'))
+    previewHead.appendChild(mk('span', 'dk-section-head__rule'))
+    previewPanel.appendChild(previewHead)
+    arsenalPreviewHost = mk('div', 'dk-preview__host')
+    arsenalPreviewHost.appendChild(mk('p', 'dk-preview__hint', '拖动旋转 · 滚轮缩放'))
+    previewPanel.appendChild(arsenalPreviewHost)
+    grid.appendChild(previewPanel)
+
+    // ---- 右列：改枪台 + 数值 ----
     const detailPanel = mk('div', 'dk-panel dk-arsenal__detail')
     const detailTitle = mk('h3', 'dk-detail__title')
     const detailSub = mk('p', 'dk-detail__sub')
     detailPanel.appendChild(detailTitle)
     detailPanel.appendChild(detailSub)
+    const buildPanel = mk('div', 'dk-build')
+    detailPanel.appendChild(buildPanel)
     const detailBody = mk('dl', 'dk-detail__stats')
     const valueNodes = new Map<string, HTMLElement>()
     const fields: Array<[string, string]> = [
@@ -3337,7 +3486,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       ['reloadMs', '换弹时间'],
       ['spread', '腰射散布'],
       ['adsSpread', '开镜散布'],
+      ['adsZoom', '开镜倍率'],
       ['headMultiplier', '爆头倍率'],
+      ['ergonomics', '人机'],
+      ['weight', '配件重量'],
     ]
     for (const [key, label] of fields) {
       const row = mk('div', 'dk-stat')
@@ -3351,28 +3503,77 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     grid.appendChild(detailPanel)
     pane.appendChild(grid)
 
-    function showDetail(spec: (typeof specs)[number]): void {
+    function renderBuild(spec: WeaponSpec): void {
+      buildPanel.replaceChildren()
+      const buildHead = mk('div', 'dk-build__head')
+      buildHead.appendChild(mk('span', 'dk-build__title', '改 枪 台'))
+      buildHead.appendChild(mk('span', 'dk-build__meta', 'CLICK TO MOUNT'))
+      buildPanel.appendChild(buildHead)
+
+      for (const slot of WEAPON_SLOT_KEYS) {
+        const options = attachmentsForSlot(spec.id, slot)
+        const row = mk('div', 'dk-build__slot')
+        const label = SLOT_LABELS[slot]
+        row.appendChild(mk('span', 'dk-build__label', label[0] + ' · ' + label[1]))
+        const chips = mk('div', 'dk-build__chips')
+        if (options.length === 0) {
+          chips.appendChild(mk('span', 'dk-build__none', '无接口'))
+        } else {
+          const current = arsenalBuild.slots[slot] ?? options[0]!.id
+          for (const attachment of options) {
+            const chip = mkButton('dk-build__chip', attachment.name)
+            chip.title = attachment.desc
+            if (current === attachment.id) chip.classList.add('is-selected')
+            chip.addEventListener('click', () => {
+              arsenalBuild = sanitizeBuild(spec.id, { ...arsenalBuild.slots, [slot]: attachment.id })
+              writeBuild(arsenalBuild)
+              if (config.primaryId === spec.id) config.build = arsenalBuild
+              if (arsenalPreview) arsenalPreview.setWeapon(spec.id, arsenalBuild)
+              showDetail(spec)
+            })
+            chips.appendChild(chip)
+          }
+        }
+        row.appendChild(chips)
+        buildPanel.appendChild(row)
+      }
+
+      const stats = buildStats(arsenalBuild)
+      const note = mk('p', 'dk-build__note')
+      note.textContent =
+        `人机 ${stats.ergonomics >= 0 ? '+' : ''}${stats.ergonomics} · ` +
+        `重量 +${stats.weightKg.toFixed(2)} kg · 镜 ${stats.adsZoomScale.toFixed(2)}×`
+      buildPanel.appendChild(note)
+    }
+
+    function showDetail(spec: WeaponSpec): void {
+      const effective = effectiveWeaponSpec(spec, arsenalBuild)
+      const stats = buildStats(arsenalBuild)
       detailTitle.textContent = spec.name
       detailSub.textContent =
         (spec.pellets > 1 ? '霰弹 · ' + spec.pellets + ' 颗弹丸' : '单发') +
-        ' · 射程 ' +
-        spec.effectiveRange +
-        ' 米'
+        ' · 射程 ' + effective.effectiveRange + ' 米 · 人机 ' +
+        (stats.ergonomics >= 0 ? '+' : '') + stats.ergonomics
       const entries: Array<[string, string]> = [
-        ['damage', String(spec.damage)],
-        ['pellets', String(spec.pellets)],
-        ['fireIntervalMs', spec.fireIntervalMs + ' ms'],
-        ['effectiveRange', spec.effectiveRange + ' m'],
-        ['magazine', String(spec.magazine)],
-        ['reloadMs', spec.reloadMs + ' ms'],
-        ['spread', spec.spread.toFixed(4) + ' rad'],
-        ['adsSpread', spec.adsSpread.toFixed(4) + ' rad'],
-        ['headMultiplier', '×' + spec.headMultiplier.toFixed(2)],
+        ['damage', String(effective.damage)],
+        ['pellets', String(effective.pellets)],
+        ['fireIntervalMs', effective.fireIntervalMs + ' ms'],
+        ['effectiveRange', effective.effectiveRange + ' m'],
+        ['magazine', String(effective.magazine)],
+        ['reloadMs', effective.reloadMs + ' ms'],
+        ['spread', effective.spread.toFixed(4) + ' rad'],
+        ['adsSpread', effective.adsSpread.toFixed(4) + ' rad'],
+        ['adsZoom', (effective.adsZoom ?? 1).toFixed(2) + '×'],
+        ['headMultiplier', '×' + effective.headMultiplier.toFixed(2)],
+        ['ergonomics', (stats.ergonomics >= 0 ? '+' : '') + stats.ergonomics],
+        ['weight', '+' + stats.weightKg.toFixed(2) + ' kg'],
       ]
       for (const [key, text] of entries) {
         const node = valueNodes.get(key)
         if (node) node.textContent = text
       }
+      renderBuild(spec)
+      arsenalPreview?.setWeapon(spec.id, arsenalBuild)
     }
 
     const first = rows.querySelector('.dk-wrow')
@@ -3789,6 +3990,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     next.classList.add('is-active', 'is-entering')
 
     activePane = id
+    if (id === 'arsenal') ensureArsenalPreview()
+    arsenalPreview?.setActive(id === 'arsenal')
     moveInk()
   }
 
@@ -4045,7 +4248,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       if (disposed || visible === next) return
       visible = next
       host.setAttribute('aria-hidden', next ? 'false' : 'true')
-      if (!next) cancelActiveKeyCapture()
+      if (!next) {
+        cancelActiveKeyCapture()
+        arsenalPreview?.setActive(false)
+      }
       if (next) {
         // 撤回还没播完的揭开：启动失败退回菜单时，整层必须立刻能点。
         // 这段逻辑必须和 setVisible 的早退解耦：移动端阻断发生在菜单仍可见时。
@@ -4105,6 +4311,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
         window.clearInterval(partyTimer)
         partyTimer = 0
       }
+      arsenalPreview?.dispose()
+      arsenalPreview = null
       window.removeEventListener('resize', onHostResize)
       host.removeEventListener('pointerover', onSfxOver, true)
       host.removeEventListener('pointerout', onSfxOut, true)

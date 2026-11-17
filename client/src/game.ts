@@ -66,6 +66,10 @@ import {
   type PlayerSnapshot,
   type Snapshot,
   type Vec3,
+  type WeaponBuild,
+  buildStats,
+  effectiveWeaponSpec,
+  sanitizeBuild,
 } from '@dk/shared'
 
 import type { World as PhysicsWorld } from '@dimforge/rapier3d-compat'
@@ -228,6 +232,8 @@ export interface GameOptions {
   squad?: number
   /** 队伍 id：同 party 的玩家强制同队并共享出生点。 */
   partyId?: string
+  /** 主武器多槽位 build（塔科夫式工作台）。 */
+  build?: WeaponBuild
   /**
    * 某条天赋刚起了作用。HUD 那颗徽记会闪一下 —— 天赋是看不见的数值加成，
    * 不给这一下反馈，玩家永远不知道自己买的天赋到底生效没有。
@@ -458,9 +464,11 @@ export class Game {
    * 只改 clamp 的实现，而不用把散在四条链路里的读取点再找一遍。
    */
   private readonly attachment: number
+  private readonly build: WeaponBuild | undefined
 
   constructor(private readonly options: GameOptions) {
     this.attachment = clampAttachment(options.attachment ?? 0)
+    this.build = options.build ? sanitizeBuild(options.build.weaponId, options.build.slots) : undefined
     this.kernel = new Kernel<ClientContext>({
       hz: 60,
       // 上限不是一个"性能参数"，而是协议参数：一包最多 8 条输入，
@@ -478,6 +486,7 @@ export class Game {
     // 配件外观在渲染器建好后立刻生效：它只影响枪模上的镜筒/消音器，
     // 数值效果在服务端与 updateCamera 里各自处理。
     this.renderer.setWeaponAttachment(this.attachment)
+    this.renderer.setWeaponBuild(this.build)
     // 反馈层挂 body 而不是 #app：镜筒 #scope 是 fixed 层（z-index 5），
     // #app 会形成自己的层叠上下文，挂在里面的命中标记/击杀播报会被镜筒
     // 一起吃掉。body 直属 + z-index 8 让它稳定压在镜筒之上。
@@ -625,6 +634,7 @@ export class Game {
       this.attachment,
       this.options.squad ?? 0,
       this.options.partyId ?? '',
+      this.options.build,
       {
       onWelcome: (info) => {
         this.myId = info.playerId
@@ -1760,7 +1770,7 @@ export class Game {
       spec?.kind === 'sniper' ? 1.45 : spec?.kind === 'shotgun' ? 1.5 : spec?.kind === 'revolver' ? 0.8 : 1
     if (spec?.kind === 'revolver') this.options.onTraitFx?.(Trait.Ambidextrous)
     if (this.input.ads) this.options.onTraitFx?.(Trait.IronGrip)
-    this.renderer.onLocalShot(kick * attachmentOf(this.attachment).recoilScale)
+    this.renderer.onLocalShot(kick * (this.build ? buildStats(this.build).recoilScale : attachmentOf(this.attachment).recoilScale))
     // 左轮吐轮：每发转 60°，棘轮声必须跟着枪机走，而不是跟着键盘。
     if (spec?.kind === 'revolver') this.audio.cylinderRatchet(false)
     // 最后一发：枪机空仓的机构声。它和"扣空扳机"的 dryFire 是两件事。
@@ -1786,7 +1796,8 @@ export class Game {
     this.audio.shot(
       meNow?.weaponId ?? 1,
       0,
-      (WEAPONS[meNow?.weaponId ?? 1]?.loudness ?? 1) * attachmentOf(this.attachment).soundScale,
+      (WEAPONS[meNow?.weaponId ?? 1]?.loudness ?? 1) *
+        (this.build ? buildStats(this.build).loudnessScale : attachmentOf(this.attachment).soundScale),
     )
   }
 
@@ -2403,7 +2414,9 @@ export class Game {
       this.heldSlot,
       this.switchProgress(),
       this.meleeProgress(),
-      (WEAPONS[this.heldWeapon]?.adsZoom ?? 1) * attachmentOf(this.attachment).zoomScale,
+      this.build
+        ? effectiveWeaponSpec(WEAPONS[this.heldWeapon]!, this.build).adsZoom ?? 1
+        : (WEAPONS[this.heldWeapon]?.adsZoom ?? 1) * attachmentOf(this.attachment).zoomScale,
       this.wallBlock,
     )
     // 指南针/撤离方位必须每帧跟着 yaw 走，不能等 1Hz 的目标包。

@@ -48,7 +48,7 @@ import {
   ShaderMaterial,
 } from 'three'
 import type { Material, Texture } from 'three'
-import { ATTACHMENT_SCOPE, ATTACHMENT_SUPPRESSOR, wrapAngle } from '@dk/shared'
+import { ATTACHMENT_SCOPE, ATTACHMENT_SUPPRESSOR, buildFlags, wrapAngle, type WeaponBuild } from '@dk/shared'
 import { mergeAll, ring, tubeZ } from './weapon-kit.ts'
 import { Spring, impulseForPeak } from './feel.ts'
 import {
@@ -175,6 +175,8 @@ export interface Viewmodel {
   setWeapon(weaponId: number): void
   /** 按出击前选择的配件显示/隐藏镜筒与消音器外观。 */
   setAttachment(attachment: number): void
+  /** 按多槽位 build 显示镜筒/消音器（可同时存在）。 */
+  setBuild(build?: WeaponBuild): void
   /** 每帧调用。dt 秒。 */
   update(state: ViewmodelState, dt: number): void
   /**
@@ -1776,10 +1778,19 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     }
   }
 
+  const setBuild = (build?: WeaponBuild): void => {
+    const flags = buildFlags(build)
+    for (const rig of rigs.values()) {
+      if (rig.scopeAtt) rig.scopeAtt.visible = flags.scope
+      if (rig.suppAtt) rig.suppAtt.visible = flags.suppressor
+    }
+  }
+
   return {
     root,
     setWeapon,
     setAttachment,
+    setBuild,
     update,
     kick: kickWeapon,
     flash: triggerFlash,

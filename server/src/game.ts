@@ -555,6 +555,7 @@ function handleConnection(
           loadout.attachment,
           loadout.squad,
           loadout.partyId ?? '',
+          loadout.build,
         )
       } catch {
         socket.close(4003, '选枪包解析失败')

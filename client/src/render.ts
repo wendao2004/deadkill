@@ -106,6 +106,7 @@ import { createAtmosphere, type Atmosphere } from './atmosphere.ts'
 import { createEnvironmentProbe, type EnvironmentProbe } from './environment.ts'
 import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './shadows.ts'
 import { createViewmodel, type Viewmodel, type ViewmodelKit, type ViewmodelState } from './viewmodel.ts'
+import type { WeaponBuild } from '@dk/shared'
 import { CAMERA_FEEL, Spring, angleDelta, approach, clamp, clamp01, hashNoise } from './feel.ts'
 
 import {
@@ -2546,6 +2547,11 @@ export class Renderer {
   /** 按本局选择的配件显示镜筒/消音器外观。 */
   setWeaponAttachment(attachment: number): void {
     this.viewmodel.setAttachment(attachment)
+  }
+
+  /** 多槽位 build：镜与消音器可以同时显示。 */
+  setWeaponBuild(build?: WeaponBuild): void {
+    this.viewmodel.setBuild(build)
   }
 
   onLocalShot(kick = 1, muzzle = true): void {

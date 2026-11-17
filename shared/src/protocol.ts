@@ -18,6 +18,14 @@ import {
   quantizeAngle,
   type Vec3,
 } from './math.ts'
+import {
+  SLOT_CODE,
+  buildEntries,
+  buildFromEntries,
+  slotFromCode,
+  type WeaponBuild,
+  type WeaponSlotKey,
+} from './weapon-build.ts'
 import { MAX_INPUTS_PER_PACKET, PROTOCOL_VERSION } from './constants.ts'
 
 // ---------------------------------------------------------------- 消息类型
@@ -221,6 +229,8 @@ export interface LoadoutRequest {
    * 出生点；没有 partyId 时才退回 squad 的相邻配对。
    */
   partyId?: string
+  /** 塔科夫式多槽位 build；服务端会按武器/槽位重新清洗。 */
+  build?: WeaponBuild
 }
 
 export function encodeLoadout(
@@ -231,10 +241,15 @@ export function encodeLoadout(
   attachment = 0,
   squad = 0,
   partyId = '',
+  build?: WeaponBuild,
 ): ArrayBuffer {
   const bytes = partyId ? new TextEncoder().encode(partyId.slice(0, 24)) : new Uint8Array(0)
-  const extra = bytes.length > 0 ? 1 + bytes.length : 0
-  const buffer = new ArrayBuffer(LOADOUT_SIZE + extra)
+  const entries = buildEntries(build).slice(0, 8)
+  // 没有 party 但有 build 时也要写一个 0 长度字节：解码端靠它知道
+  // “party 段结束，后面是 build”，否则两种可选段会互相吞字节。
+  const partyPart = bytes.length > 0 || entries.length > 0 ? 1 + bytes.length : 0
+  const buildPart = entries.length > 0 ? 1 + entries.length * 3 : 0
+  const buffer = new ArrayBuffer(LOADOUT_SIZE + partyPart + buildPart)
   const view = new DataView(buffer)
   view.setUint8(0, Msg.Loadout)
   view.setUint16(1, weaponId & 0xffff, true)
@@ -243,9 +258,20 @@ export function encodeLoadout(
   view.setUint8(8, extras & 0xff)
   view.setUint8(9, attachment & 0xff)
   view.setUint8(10, squad & 0xff)
-  if (bytes.length > 0) {
-    view.setUint8(LOADOUT_SIZE, bytes.length)
-    new Uint8Array(buffer, LOADOUT_SIZE + 1).set(bytes)
+  let offset = LOADOUT_SIZE
+  if (partyPart > 0) {
+    view.setUint8(offset, bytes.length)
+    new Uint8Array(buffer, offset + 1, bytes.length).set(bytes)
+    offset += partyPart
+  }
+  if (entries.length > 0) {
+    view.setUint8(offset, entries.length)
+    offset++
+    for (const entry of entries) {
+      view.setUint8(offset, SLOT_CODE[entry.slot])
+      view.setUint16(offset + 1, entry.id & 0xffff, true)
+      offset += 3
+    }
   }
   return buffer
 }
@@ -258,12 +284,29 @@ export function decodeLoadout(buffer: ArrayBuffer): LoadoutRequest {
   const extras = buffer.byteLength > 8 ? view.getUint8(8) : 0
   const attachment = buffer.byteLength > 9 ? view.getUint8(9) : 0
   const squad = buffer.byteLength > 10 ? view.getUint8(10) : 0
+  let offset = LOADOUT_SIZE
   let partyId = ''
-  if (buffer.byteLength > LOADOUT_SIZE) {
-    const len = view.getUint8(LOADOUT_SIZE)
-    if (buffer.byteLength >= LOADOUT_SIZE + 1 + len) {
-      partyId = new TextDecoder().decode(new Uint8Array(buffer, LOADOUT_SIZE + 1, len))
+  if (offset < buffer.byteLength) {
+    const len = view.getUint8(offset)
+    offset++
+    if (len > 0 && offset + len <= buffer.byteLength) {
+      partyId = new TextDecoder().decode(new Uint8Array(buffer, offset, len))
     }
+    offset += len
+  }
+  let build: WeaponBuild | undefined
+  if (offset < buffer.byteLength) {
+    const count = view.getUint8(offset)
+    offset++
+    const entries: Array<{ slot: WeaponSlotKey; id: number }> = []
+    for (let i = 0; i < count; i++) {
+      if (offset + 3 > buffer.byteLength) break
+      const slot = slotFromCode(view.getUint8(offset))
+      const id = view.getUint16(offset + 1, true)
+      offset += 3
+      if (slot) entries.push({ slot, id })
+    }
+    build = buildFromEntries(view.getUint16(1, true), entries)
   }
   return {
     weaponId: view.getUint16(1, true),
@@ -273,6 +316,7 @@ export function decodeLoadout(buffer: ArrayBuffer): LoadoutRequest {
     attachment,
     squad,
     partyId,
+    build,
   }
 }
 
