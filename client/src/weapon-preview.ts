@@ -27,9 +27,10 @@ import {
   WebGLRenderer,
 } from 'three'
 import {
-  buildFlags,
+  attachmentById, buildFlags,
   type WeaponBuild,
 } from '@dk/shared'
+import { createMagazineTube, createMuzzleBrake, createScope4x, createStockVariant } from './parts/attachments.ts'
 import {
   buildKnife,
   buildRevolver,
@@ -200,21 +201,21 @@ export class WeaponPreview {
 
     if (weaponId === 1) {
       const built = buildRifle(
-        { barrelLen: 0.62, forendLen: 0.34, sightBack: 0, scope: flags.scope, suppressor: flags.suppressor },
+        { barrelLen: 0.62, forendLen: 0.34, sightBack: 0, scope: false, suppressor: false },
         this.materials,
       )
       group = built.group
       dispose = () => built.dispose()
     } else if (weaponId === 6) {
       const built = buildRifle(
-        { barrelLen: 0.56, forendLen: 0.30, sightBack: 0.06, scope: flags.scope, suppressor: true },
+        { barrelLen: 0.56, forendLen: 0.30, sightBack: 0.06, scope: false, suppressor: false },
         this.materials,
       )
       group = built.group
       dispose = () => built.dispose()
     } else if (weaponId === 4) {
       const built = buildRifle(
-        { barrelLen: 0.74, forendLen: 0.40, sightBack: 0, scope: flags.scope, suppressor: flags.suppressor },
+        { barrelLen: 0.74, forendLen: 0.40, sightBack: 0, scope: false, suppressor: false },
         this.materials,
       )
       group = built.group
@@ -234,6 +235,36 @@ export class WeaponPreview {
     }
 
     if (!group) return
+
+    // 军械库与局内共用 `parts/attachments.ts` 的同一批 builder：
+    // 工作台里看到的件，就是进局后手里的那件。buildRifle 的内置配件
+    // 已经通过 scope:false / suppressor:false 关掉，避免出现两套模型。
+    const barrelOf: Record<number, number> = { 1: 0.62, 6: 0.56, 4: 0.74 }
+    const forendOf: Record<number, number> = { 1: 0.34, 6: 0.30, 4: 0.40 }
+    if (barrelOf[weaponId] !== undefined && group) {
+      const slots = (build as WeaponBuild | null | undefined)?.slots ?? {}
+      const modelOf = (key: 'sight' | 'muzzle' | 'magazine' | 'stock'): string | null => {
+        const id = slots[key]
+        return id ? (attachmentById(id)?.model ?? null) : null
+      }
+      const muzzleZ = -0.31 - barrelOf[weaponId]!
+      if (modelOf('muzzle') === 'brake') group.add(createMuzzleBrake(this.materials, muzzleZ))
+      if (modelOf('magazine') === 'extended' || modelOf('magazine') === 'quick') {
+        group.add(
+          createMagazineTube(this.materials, {
+            forendZ: -0.15 - forendOf[weaponId]! / 2,
+            muzzleZ,
+            extension: modelOf('magazine') === 'extended' ? 0.07 : 0.03,
+          }),
+        )
+      }
+      const stockModel = modelOf('stock')
+      if (stockModel === 'heavy' || stockModel === 'light') {
+        group.add(createStockVariant(this.materials, stockModel))
+      }
+      if (modelOf('sight') === 'scope4') group.add(createScope4x(this.materials))
+    }
+
     // 模型局部坐标可能从枪托到枪口偏在一侧；**先缩放、再按缩放后的包围盒
     // 居中**。反过来（先减 center 再 scale）会把偏移也乘上缩放，枪会被甩出画面。
     group.updateMatrixWorld(true)
