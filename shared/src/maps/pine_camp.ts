@@ -116,6 +116,41 @@ const heroes: HeroAnchor[] = [
   { asset: 'pine_dead', x: 2, z: -76, scale: 1.2 },
 ]
 
+/**
+ * 可穿过的大件补碰撞。
+ *
+ * heroes 只管"看起来是什么"，碰撞得在同一份数据里显式写出来，否则玩家会
+ * 直接穿过一堆原木、一根灯柱或一块一人高的岩石 —— 这就是审计脚本里
+ * `heroOrphan` 的来源。木屋不在此表里：它们的墙体在 zone_pine 里已经是
+ * `noRender` 骨架，重复加会得到两套碰撞。
+ *
+ * 篝火是纯装饰（踩过去无所谓），刻意不给碰撞。
+ */
+const PROP_COLLIDERS: Record<string, { hx: number; hy: number; hz: number; material: 'wood' | 'stone' | 'metal' | 'foliage' }> = {
+  log_pile: { hx: 1.35, hy: 0.55, hz: 0.75, material: 'wood' },
+  rock_a: { hx: 1.05, hy: 0.85, hz: 1.05, material: 'stone' },
+  stump: { hx: 0.45, hy: 0.34, hz: 0.45, material: 'wood' },
+  lantern_post: { hx: 0.13, hy: 1.75, hz: 0.13, material: 'metal' },
+  pine_dead: { hx: 0.28, hy: 2.3, hz: 0.28, material: 'foliage' },
+}
+
+for (const hero of heroes) {
+  const spec = PROP_COLLIDERS[hero.asset]
+  if (!spec) continue
+  const scale = hero.scale ?? 1
+  boxes.list.push({
+    x: hero.x,
+    y: spec.hy * scale,
+    z: hero.z,
+    hx: spec.hx * scale,
+    hy: spec.hy * scale,
+    hz: spec.hz * scale,
+    rotY: hero.rotY,
+    noRender: true,
+    material: spec.material,
+  })
+}
+
 export const LEVEL_PINE_CAMP: LevelDef = {
   id: 'pine-camp-night',
   name: '松林营地（夜）',
