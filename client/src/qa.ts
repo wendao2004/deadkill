@@ -54,6 +54,8 @@ export interface QaParams {
    * 只影响外观，不改数值（数值仍由服务端按真实 build 算）。
    */
   build: string | null
+  /** `?colliders=1`：把参与碰撞的盒刷画成线框（含 noRender 隐形骨架）。 */
+  colliders: boolean
   noaudio: boolean
   /** false = ?post=0，关闭画面风格层。 */
   post: boolean
@@ -154,6 +156,7 @@ export function parseQa(source: string): QaParams {
     reload: clamp(finite(params.get('reload')), 0, 1),
     vmdist: finite(params.get('vmdist')),
     build: params.get('build'),
+    colliders: flag(params, 'colliders', false),
     noaudio: flag(params, 'noaudio', false),
     post: flag(params, 'post', true),
     postFail: flag(params, 'postfail', false),

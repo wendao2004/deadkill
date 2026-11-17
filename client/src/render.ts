@@ -2023,6 +2023,36 @@ export class Renderer {
     return mat
   }
 
+  /**
+   * `?colliders=1`：把所有参与碰撞的盒刷画成线框。
+   *
+   * 青色 = 看得见也摸得着；橙色 = `noRender` 的隐形骨架（只碰不画）。
+   * 空气墙的诊断全靠这张叠图：线框圈到了、画面里却没有对应几何，
+   * 那就是玩家撞到的那道"看不见的墙"。
+   *
+   * 只存在于 QA 模式，不参与正常运行；depthTest=false 保证被墙体挡住时
+   * 也能看见线框，否则叠图会退化成"只能看到外面一层"。
+   */
+  private buildColliderOverlay(level: LevelDef): void {
+    const solid = new LineBasicMaterial({ color: 0x3ad1ff, depthTest: false, transparent: true, opacity: 0.85 })
+    const hidden = new LineBasicMaterial({ color: 0xff8a3d, depthTest: false, transparent: true, opacity: 0.95 })
+    this.disposables.push(solid, hidden)
+    const group = new Group()
+    group.name = 'collider-overlay'
+    for (const brush of level.boxes) {
+      if (brush.noCollide) continue
+      const box = new BoxGeometry(brush.hx * 2, brush.hy * 2, brush.hz * 2)
+      const edges = new EdgesGeometry(box)
+      box.dispose()
+      const line = new LineSegments(edges, brush.noRender ? hidden : solid)
+      line.position.set(brush.x, brush.y, brush.z)
+      line.rotation.y = brush.rotY ?? 0
+      line.renderOrder = 20
+      group.add(line)
+    }
+    this.levelGroup.add(group)
+  }
+
   private buildLevel(level: LevelDef): void {
 
     // 地面：与物理共用同一份高度网格（shared/terrain.ts）。建筑/出生点/
@@ -2057,6 +2087,7 @@ export class Renderer {
     ground.castShadow = false
     this.levelGroup.add(ground)
     this.disposables.push(groundGeo)
+    if (qa.colliders) this.buildColliderOverlay(level)
 
     // 关卡盒子按材质合批（把世界变换烘进顶点）。
     //
