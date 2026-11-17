@@ -213,7 +213,7 @@ export function createScope4x(mats: WeaponMaterialSet): Group {
   const z = -0.42
   const len = 0.34
 
-  const tube = tubeZ(0.0175, 0.0175, len, 16, 0.0004)
+  const tube = tubeZ(0.0175, 0.0175, len, 12, 0.0004)
   asm.add(tube, 'darkSteel', { y: SIGHT_Y, z })
   tube.dispose()
 
@@ -225,7 +225,7 @@ export function createScope4x(mats: WeaponMaterialSet): Group {
       [0.048, 0.0235],
       [0.052, 0.0228],
     ],
-    18,
+    14,
   )
   asm.add(objective, 'darkSteel', { y: SIGHT_Y, z: z - len / 2 - 0.026 })
   objective.dispose()
@@ -237,7 +237,7 @@ export function createScope4x(mats: WeaponMaterialSet): Group {
       [0.034, 0.0212],
       [0.038, 0.0203],
     ],
-    18,
+    14,
   )
   asm.add(eyepiece, 'darkSteel', { y: SIGHT_Y, z: z + len / 2 + 0.019 })
   eyepiece.dispose()
@@ -254,7 +254,7 @@ export function createScope4x(mats: WeaponMaterialSet): Group {
 
   // 镜环 + 底座：两圈卡箍压在枪身导轨上。
   for (const dz of [-0.105, 0.105]) {
-    const ringGeo = ring(0.0215, 0.0035, 16, 8)
+    const ringGeo = ring(0.0215, 0.0035, 12, 6)
     asm.add(ringGeo, 'steel', { y: SIGHT_Y, z: z + dz, rx: Math.PI / 2 })
     ringGeo.dispose()
     asm.add(box(0.026, 0.026, 0.014, 0.002, 2), 'darkSteel', { y: SIGHT_Y - 0.026, z: z + dz })
