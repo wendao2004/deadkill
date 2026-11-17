@@ -63,8 +63,13 @@ function auditLevel(id, level) {
   }
 
   // hero 锚点必须落在某个 noRender 骨架附近，否则"模型在这、碰撞在别处"。
+  // 装饰件与"装在高处"的资产不该有地面碰撞：风向标、篝火、桁架上的信号灯。
+  // 前者永远踩不到，后者玩家够不着 —— 把它们算成问题只会让清单失去信噪比。
+  const DECOR = new Set(['bonfire', 'weather_vane'])
   const heroOrphans = []
   for (const hero of level.heroes ?? []) {
+    if (DECOR.has(hero.asset)) continue
+    if ((hero.y ?? 0) > 2.5) continue
     const near = level.boxes.some(
       (b) => b.noRender === true && Math.hypot(b.x - hero.x, b.z - hero.z) < 5.5,
     )
@@ -79,6 +84,12 @@ function auditLevel(id, level) {
     }
   }
 
+  // 只有"两个都够大"的重叠才值得看一眼。经验上它们绝大多数是刻意叠放
+  // （塔身+塔顶、界碑石堆、双层台地），所以**不进总数**，只作为线索列出。
+  const bigOverlaps = allOverlaps.filter(
+    (o) => Math.min(o.a.hx, o.a.hz) >= 1.5 && Math.min(o.b.hx, o.b.hz) >= 1.5,
+  )
+
   return {
     id,
     name: level.name ?? id,
@@ -89,6 +100,8 @@ function auditLevel(id, level) {
     buried,
     floating,
     overlapCount: allOverlaps.length,
+    bigOverlapCount: bigOverlaps.length,
+    bigOverlaps: bigOverlaps.sort((x, y) => y.ratio - x.ratio).slice(0, 8),
     overlaps: allOverlaps.sort((x, y) => y.ratio - x.ratio).slice(0, 12),
     spawnBlocked,
     heroOrphans,
@@ -170,6 +183,15 @@ for (const r of results) {
     lines.push('### 悬空 >0.5m')
     lines.push('')
     for (const b of r.floating) lines.push(`- ${fmt(b)}`)
+    lines.push('')
+  }
+  if (r.bigOverlapCount > 0) {
+    lines.push('### 大件叠放（两个都够大；多数是刻意，如塔顶盖、界碑石堆 —— 需看图判断）')
+    lines.push('')
+    for (const o of r.bigOverlaps) {
+      lines.push(`- ${(o.ratio * 100).toFixed(0)}%  ${fmt(o.a)}`)
+      lines.push(`  ↔ ${fmt(o.b)}`)
+    }
     lines.push('')
   }
   if (r.overlapCount > 0) {
