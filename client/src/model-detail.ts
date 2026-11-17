@@ -52,18 +52,23 @@ const CACHE_KEY = 'model-detail-v1'
 const VERTEX_DECL = `
 varying vec3 vMD_pos;
 varying vec3 vMD_nrm;
+varying vec3 vMD_nrmV;
 varying vec3 vMD_view;
 `
 
 const VERTEX_BODY = `
   vMD_pos = position;
   vMD_nrm = normal;
+  // 片元里没有 modelViewMatrix（它只存在于顶点着色器），法线的视图空间
+  // 变换必须在这里用 normalMatrix 算好再传下去。
+  vMD_nrmV = normalize(normalMatrix * normal);
   vMD_view = -(modelViewMatrix * vec4(position, 1.0)).xyz;
 `
 
 const FRAGMENT_DECL = `
 varying vec3 vMD_pos;
 varying vec3 vMD_nrm;
+varying vec3 vMD_nrmV;
 varying vec3 vMD_view;
 uniform float uDetailScale;
 uniform float uDetailGrain;
@@ -176,8 +181,7 @@ export function applyModelDetail<T>(material: T, options?: ModelDetailOptions): 
 
   // 3) 磨亮：菲涅尔边缘 × 噪声，把倒角推向金属色（用过的东西才有露白）。
   vec3 viewDir = normalize(vMD_view);
-  vec3 nrmV = normalize((modelViewMatrix * vec4(vMD_nrm, 0.0)).xyz);
-  float fresnel = pow(1.0 - clamp(abs(dot(nrmV, viewDir)), 0.0, 1.0), 2.4);
+  float fresnel = pow(1.0 - clamp(abs(dot(normalize(vMD_nrmV), viewDir)), 0.0, 1.0), 2.4);
   float wearMask = clamp(fresnel * (0.45 + 0.75 * smoothstep(0.45, 0.9, streak)) * uDetailWear, 0.0, 0.85);
   diffuseColor.rgb = mix(diffuseColor.rgb, uDetailWearColor, wearMask);
 }

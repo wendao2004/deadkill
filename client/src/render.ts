@@ -115,6 +115,7 @@ import {
   buildTerrainGrid,
   SCOPE_MIN_ZOOM,
   WEAPONS,
+  WEAPON_ATTACHMENTS,
   StateFlags,
   VAULT_TIME,
   type BoxBrush,
@@ -526,6 +527,29 @@ function canopyGeometry(brush: BoxBrush): BufferGeometry {
   geo.rotateY((Math.sin(seed) * 0.5 + 0.5) * Math.PI + (brush.rotY ?? 0))
   geo.translate(brush.x, brush.y, brush.z)
   return geo
+}
+
+/** 把 `?build=brake,scope4` 这类清单翻译成一套只用于外观的 WeaponBuild。 */
+function forcedBuild(list: string): WeaponBuild {
+  const slotOf: Record<string, 'muzzle' | 'sight' | 'magazine' | 'stock'> = {
+    brake: 'muzzle',
+    suppressor: 'muzzle',
+    scope2: 'sight',
+    scope4: 'sight',
+    iron: 'sight',
+    extended: 'magazine',
+    quick: 'magazine',
+    heavy: 'stock',
+    light: 'stock',
+  }
+  const slots: Partial<Record<'muzzle' | 'sight' | 'magazine' | 'stock', number>> = {}
+  for (const name of list.split(',')) {
+    const slot = slotOf[name.trim()]
+    if (!slot) continue
+    const found = WEAPON_ATTACHMENTS.find((entry) => entry.model === name.trim() && entry.slot === slot)
+    if (found) slots[slot] = found.id
+  }
+  return { weaponId: 1, slots }
 }
 
 export class Renderer {
@@ -1078,6 +1102,9 @@ export class Renderer {
     this.showcase = mode
     // 每次切回正常游戏都要把世界恢复；只有 weapon 需要关掉它。
     this.scene.visible = mode !== 'weapon'
+    // 展示模式只照一把枪，画面里 95% 是纯黑，自动曝光会把整把枪压成剪影。
+    // 这里直接给一档固定曝光，让近景能看清倒角/配件接缝。
+    this.post.setSettings({ exposure: mode === 'weapon' ? 2.6 : 1.22 })
     if (mode === 'mats') this.buildMaterialShowcase(overrideCamera)
     else if (mode === 'fx') this.buildEffectShowcase(overrideCamera)
   }
@@ -2552,9 +2579,9 @@ export class Renderer {
     this.viewmodel.setAttachment(attachment)
   }
 
-  /** 多槽位 build：镜与消音器可以同时显示。 */
+  /** 多槽位 build：四槽的每个变体都切到自己的独立模型。 */
   setWeaponBuild(build?: WeaponBuild): void {
-    this.viewmodel.setBuild(build)
+    this.viewmodel.setBuild(qa.build !== null ? forcedBuild(qa.build) : build)
   }
 
   onLocalShot(kick = 1, muzzle = true): void {

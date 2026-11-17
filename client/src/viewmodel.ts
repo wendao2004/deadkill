@@ -48,7 +48,7 @@ import {
   ShaderMaterial,
 } from 'three'
 import type { Material, Texture } from 'three'
-import { ATTACHMENT_SCOPE, ATTACHMENT_SUPPRESSOR, buildFlags, wrapAngle, type WeaponBuild } from '@dk/shared'
+import { ATTACHMENT_SCOPE, ATTACHMENT_SUPPRESSOR, attachmentById, buildFlags, wrapAngle, type WeaponBuild } from '@dk/shared'
 import { mergeAll, ring, tubeZ } from './weapon-kit.ts'
 import { Spring, impulseForPeak } from './feel.ts'
 import {
@@ -73,6 +73,7 @@ import {
   type WeaponHands,
 } from './weapon-models.ts'
 import { createFirstPersonArms } from './first-person-arms.ts'
+import { createMagazineTube, createMuzzleBrake, createScope4x, createStockVariant, disposePart } from './parts/attachments.ts'
 import { applyModelDetail } from './model-detail.ts'
 
 /** render.ts 提供，用来复用共享的卡通材质与墨线壳，本模块不自己造材质。 */
@@ -553,7 +554,16 @@ interface WeaponRig {
   readonly eject: { x: number; y: number; z: number; vx: number; vy: number; vz: number } | null
   /** 本局配件外观（默认隐藏，按出击前选择显示）。 */
   scopeAtt?: Group | null
+  /** 4× 镜：与 2× 共用同一条瞄准线，换的是镜筒本身。 */
+  scope4?: Group | null
   suppAtt?: Group | null
+  /** 制退器（枪口槽的第三个变体）。 */
+  brake?: Group | null
+  /** 加长/快装弹仓：挂在机匣上，不随 ADS 隐藏。 */
+  magExt?: Group | null
+  /** 枪托变体：挂在 stock 子组下，随开镜一起收起。 */
+  stockHeavy?: Group | null
+  stockLight?: Group | null
   /** 刀专用：刀光面片与自己的材质（不是刀为 null）。 */
   readonly glow: Mesh | null
   readonly glowMat: Material | null
@@ -935,18 +945,54 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     rigs.set(id, rig)
   }
 
-  /** 给步枪挂上可拆卸配件外观（默认隐藏）。 */
-  const attachAccessories = (id: number, withScope: boolean): void => {
+  /** 配件的释放列表：几何归配件自己，材质是共享的（render.ts 管）。 */
+  const partGroups: Group[] = []
+
+  /**
+   * 给步枪挂上可拆卸配件外观（全部默认隐藏）。
+   *
+   * 每件配件都是**独立模型**：只在构造时建一次、之后切 visible。
+   * 军械库工作台用的是同一批 builder（`parts/attachments.ts`），
+   * 所以工作台里看到的件和局内手里的是同一套几何。
+   */
+  const attachAccessories = (id: number, withScope: boolean, forendLen = 0.32): void => {
     const rig = rigs.get(id)
     if (!rig) return
     if (withScope) {
       rig.scopeAtt = createScopeAttachment(mats)
       rig.scopeAtt.visible = false
       rig.group.add(rig.scopeAtt)
+      rig.scope4 = createScope4x(mats)
+      rig.scope4.visible = false
+      rig.group.add(rig.scope4)
     }
     rig.suppAtt = createSuppressorAttachment(mats, rig.muzzleZ)
     rig.suppAtt.visible = false
     rig.group.add(rig.suppAtt)
+
+    rig.brake = createMuzzleBrake(mats, rig.muzzleZ)
+    rig.brake.visible = false
+    rig.group.add(rig.brake)
+
+    const forendZ = -0.15 - forendLen / 2
+    rig.magExt = createMagazineTube(mats, { forendZ, muzzleZ: rig.muzzleZ, extension: 0.07 })
+    rig.magExt.visible = false
+    rig.group.add(rig.magExt)
+
+    // 枪托件挂在 stock 子组上：开镜时整块枪托会收起，配件必须跟着走，
+    // 否则会出现"枪托没了、颊托还浮在脸前"。
+    if (rig.stock) {
+      rig.stockHeavy = createStockVariant(mats, 'heavy')
+      rig.stockHeavy.visible = false
+      rig.stock.add(rig.stockHeavy)
+      rig.stockLight = createStockVariant(mats, 'light')
+      rig.stockLight.visible = false
+      rig.stock.add(rig.stockLight)
+    }
+
+    for (const group of [rig.brake, rig.magExt, rig.stockHeavy, rig.stockLight, rig.scope4]) {
+      if (group) partGroups.push(group)
+    }
   }
 
   /** 步枪系（1 / 6 / 4）共用一套腰射/开镜基准，只在 z 与枪口位置上按枪长微调。 */
@@ -992,7 +1038,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       reloadTimeline: LEVER_RELOAD,
     }),
   )
-  attachAccessories(1, true)
+  attachAccessories(1, true, 0.34)
 
   // 消音卡宾：枪管与护木都短一截，消音器从枪口再伸出 19cm。
   const carbine = buildRifle(
@@ -1011,7 +1057,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       reloadTimeline: LEVER_RELOAD,
     }),
   )
-  attachAccessories(6, true)
+  attachAccessories(6, true, 0.30)
 
   // 神射手：最长枪管 + 光学镜；整把枪往前推 4cm、往右让 1cm，长枪身别顶脸。
   const sniper = buildRifle(
@@ -1037,7 +1083,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     }),
   )
   // 神射手自带光学镜，只补消音器外观。
-  attachAccessories(4, false)
+  attachAccessories(4, false, 0.34)
 
   const shotgun = buildShotgun(mats)
   builtModels.push(shotgun)
@@ -1798,21 +1844,43 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     puff.mat.uniforms.uOpacity!.value = 0.3
   }
 
-  /** 按出击前选择的配件切换所有枪的配件外观。 */
+  /** 旧的四选一通道：只认识镜/消音器，其余新件一律隐藏。 */
   const setAttachment = (attachment: number): void => {
     const scopeOn = attachment === ATTACHMENT_SCOPE
     const suppOn = attachment === ATTACHMENT_SUPPRESSOR
     for (const rig of rigs.values()) {
       if (rig.scopeAtt) rig.scopeAtt.visible = scopeOn
       if (rig.suppAtt) rig.suppAtt.visible = suppOn
+      if (rig.scope4) rig.scope4.visible = false
+      if (rig.brake) rig.brake.visible = false
+      if (rig.magExt) rig.magExt.visible = false
+      if (rig.stockHeavy) rig.stockHeavy.visible = false
+      if (rig.stockLight) rig.stockLight.visible = false
     }
   }
 
+  /**
+   * 塔科夫式四槽：按 `model` 变体切**独立模型**，不只切数值。
+   *
+   * 2× 镜与 4× 镜互斥（同一条瞄准线，只能有一个）；加固托与轻量托也是。
+   */
   const setBuild = (build?: WeaponBuild): void => {
     const flags = buildFlags(build)
+    const slots = build?.slots ?? {}
+    const sight = slots.sight ? attachmentById(slots.sight) : null
+    const muzzle = slots.muzzle ? attachmentById(slots.muzzle) : null
+    const stock = slots.stock ? attachmentById(slots.stock) : null
+    const scope4 = sight?.model === 'scope4'
+    const brake = muzzle?.model === 'brake'
+    const light = stock?.model === 'light'
     for (const rig of rigs.values()) {
-      if (rig.scopeAtt) rig.scopeAtt.visible = flags.scope
+      if (rig.scopeAtt) rig.scopeAtt.visible = flags.scope && !scope4
+      if (rig.scope4) rig.scope4.visible = scope4
       if (rig.suppAtt) rig.suppAtt.visible = flags.suppressor
+      if (rig.brake) rig.brake.visible = brake
+      if (rig.magExt) rig.magExt.visible = flags.extendedMagazine
+      if (rig.stockHeavy) rig.stockHeavy.visible = flags.heavyStock
+      if (rig.stockLight) rig.stockLight.visible = light
     }
   }
 
@@ -1836,6 +1904,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       for (const model of builtModels) model.dispose()
       builtModels.length = 0
       sightBeadMat.dispose()
+      for (const group of partGroups) disposePart(group)
+      partGroups.length = 0
       arms.dispose()
       flashGeo.dispose()
       flashMat.dispose()

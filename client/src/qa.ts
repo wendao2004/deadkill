@@ -49,6 +49,11 @@ export interface QaParams {
   reload: number | null
   /** `?show=weapon` 的机位距离（米）。近景检查模型细节时用 0.35~0.45。 */
   vmdist: number | null
+  /**
+   * `?build=brake,scope4,heavy`：强制一套配件外观，用于给每件配件拍验收图。
+   * 只影响外观，不改数值（数值仍由服务端按真实 build 算）。
+   */
+  build: string | null
   noaudio: boolean
   /** false = ?post=0，关闭画面风格层。 */
   post: boolean
@@ -148,6 +153,7 @@ export function parseQa(source: string): QaParams {
     wet: clamp(finite(params.get('wet')), 0, 1),
     reload: clamp(finite(params.get('reload')), 0, 1),
     vmdist: finite(params.get('vmdist')),
+    build: params.get('build'),
     noaudio: flag(params, 'noaudio', false),
     post: flag(params, 'post', true),
     postFail: flag(params, 'postfail', false),
