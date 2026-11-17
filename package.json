@@ -10,6 +10,7 @@
     "qa:diff": "node tools/qa-diff.mjs",
     "qa:smoke": "node tools/qa-smoke.mjs",
     "qa:bench": "node tools/qa-bench.mjs",
+    "qa:maps": "node --experimental-strip-types tools/map-audit.mjs",
     "typecheck": "pnpm -F @dk/shared typecheck && pnpm -F @dk/server typecheck && pnpm -F @dk/client typecheck",
     "start": "pnpm -F @dk/server start"
   },
