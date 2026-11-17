@@ -13,6 +13,7 @@
 import { mulberry32 } from './hit.ts'
 import type { SearchKind } from './level.ts'
 import { LOOT_ITEM, type LootItem } from './protocol.ts'
+import { itemDefByKey, type ItemInstance } from './items.ts'
 
 export interface LootRoll {
   /** 必给的现金（美元）。 */
@@ -57,4 +58,37 @@ export function rollLoot(spotIndex: number, kind: SearchKind, seed = 0): LootRol
     if (rand() < drop.chance) items.push({ id: drop.id, count: 1 })
   }
   return { cash, items }
+}
+
+/* ==========================================================================
+ * 接进背包：旧的四类战利品 → items.ts 的物品实例
+ * ========================================================================== */
+
+/**
+ * `LOOT_ITEM` 是协议里的老枚举（快照/提示用），`ITEM_DEFS` 是背包用的物品表。
+ * 这张表是两者之间唯一的桥：加一件战利品只要改这里 + 物品表，不动协议。
+ */
+export const LOOT_ITEM_KEY: Record<number, string> = {
+  [LOOT_ITEM.Bandage]: 'medkit_small',
+  [LOOT_ITEM.Ammo]: 'ammo_45lc',
+  [LOOT_ITEM.Liquor]: 'valuable_liquor',
+  [LOOT_ITEM.Watch]: 'valuable_watch',
+}
+
+/**
+ * 把一次搜刮结果转成可放进网格容器的物品实例。
+ *
+ * `nextUid` 由调用方（服务端）发号；这里只做纯映射，不分配任何全局状态，
+ * 所以同一份 roll 在两个容器里可以生成两批不同 uid 的实例（尸体被两个人搜）。
+ */
+export function rollToInstances(roll: LootRoll, nextUid: () => number): ItemInstance[] {
+  const out: ItemInstance[] = []
+  for (const entry of roll.items) {
+    const key = LOOT_ITEM_KEY[entry.id]
+    if (!key) continue
+    const def = itemDefByKey(key)
+    if (!def) continue
+    out.push({ uid: nextUid(), def: def.id, count: Math.max(1, entry.count) })
+  }
+  return out
 }

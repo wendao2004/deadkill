@@ -76,6 +76,7 @@ export const ITEM_DEFS: readonly ItemDef[] = [
   { id: 9, key: 'part_scope4', name: '4× 镜', kind: 'part', w: 2, h: 1, stack: 1, weight: 0.5, value: 260, model: 'scope4' },
   { id: 10, key: 'part_brake', name: '制退器', kind: 'part', w: 1, h: 1, stack: 1, weight: 0.2, value: 90, model: 'brake' },
   { id: 11, key: 'bag_small', name: '帆布背包', kind: 'container', w: 3, h: 3, stack: 1, weight: 0.9, value: 80, model: 'bag', grid: { cols: 4, rows: 4 } },
+  { id: 13, key: 'valuable_liquor', name: '私酿烈酒', kind: 'valuable', w: 1, h: 2, stack: 1, weight: 0.8, value: 90, model: 'valuable' },
   { id: 12, key: 'weapon_winfield', name: '温菲尔德杠杆步枪', kind: 'weapon', w: 4, h: 2, stack: 1, weight: 3.6, value: 400, model: 'rifle' },
 ]
 
