@@ -66,14 +66,20 @@ import {
   buildRevolver,
   buildRifle,
   buildShotgun,
-  createScopeAttachment,
-  createSuppressorAttachment,
   type BuiltRifle,
   type WeaponMaterialSet,
   type WeaponHands,
 } from './weapon-models.ts'
 import { createFirstPersonArms } from './first-person-arms.ts'
-import { createMagazineTube, createMuzzleBrake, createScope4x, createStockVariant, disposePart } from './parts/attachments.ts'
+import {
+  createMagazineTube,
+  createMuzzleBrake,
+  createScope2x,
+  createScope4x,
+  createStockVariant,
+  createSuppressor,
+  disposePart,
+} from './parts/attachments.ts'
 import { applyModelDetail } from './model-detail.ts'
 
 /** render.ts 提供，用来复用共享的卡通材质与墨线壳，本模块不自己造材质。 */
@@ -959,14 +965,14 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     const rig = rigs.get(id)
     if (!rig) return
     if (withScope) {
-      rig.scopeAtt = createScopeAttachment(mats)
+      rig.scopeAtt = createScope2x(mats)
       rig.scopeAtt.visible = false
       rig.group.add(rig.scopeAtt)
       rig.scope4 = createScope4x(mats)
       rig.scope4.visible = false
       rig.group.add(rig.scope4)
     }
-    rig.suppAtt = createSuppressorAttachment(mats, rig.muzzleZ)
+    rig.suppAtt = createSuppressor(mats, rig.muzzleZ)
     rig.suppAtt.visible = false
     rig.group.add(rig.suppAtt)
 

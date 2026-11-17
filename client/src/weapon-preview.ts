@@ -30,7 +30,7 @@ import {
   attachmentById, buildFlags,
   type WeaponBuild,
 } from '@dk/shared'
-import { createMagazineTube, createMuzzleBrake, createScope4x, createStockVariant } from './parts/attachments.ts'
+import { createMagazineTube, createMuzzleBrake, createScope2x, createScope4x, createStockVariant, createSuppressor } from './parts/attachments.ts'
 import {
   buildKnife,
   buildRevolver,
@@ -262,7 +262,10 @@ export class WeaponPreview {
       if (stockModel === 'heavy' || stockModel === 'light') {
         group.add(createStockVariant(this.materials, stockModel))
       }
-      if (modelOf('sight') === 'scope4') group.add(createScope4x(this.materials))
+      if (modelOf('muzzle') === 'suppressor') group.add(createSuppressor(this.materials, muzzleZ))
+      const sightModel = modelOf('sight')
+      if (sightModel === 'scope4') group.add(createScope4x(this.materials))
+      else if (sightModel === 'scope2') group.add(createScope2x(this.materials))
     }
 
     // 模型局部坐标可能从枪托到枪口偏在一侧；**先缩放、再按缩放后的包围盒

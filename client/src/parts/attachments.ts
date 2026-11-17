@@ -270,3 +270,15 @@ export function createScope4x(mats: WeaponMaterialSet): Group {
   emit(asm, group, M)
   return group
 }
+
+/* ==========================================================================
+ * 2× 镜与消音器：从 weapon-models 收编
+ * ========================================================================== */
+
+/**
+ * 这两件最早写在 `weapon-models.ts` 里（跟着枪一起 build）。现在统一出口：
+ * 军械库与局内都从这里取，避免"工作台一套、局内另一套"。
+ *
+ * 没有重写几何：直接转发原 builder，保证行为与已有验收图完全一致。
+ */
+export { createScopeAttachment as createScope2x, createSuppressorAttachment as createSuppressor } from '../weapon-models.ts'
