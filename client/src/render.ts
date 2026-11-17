@@ -586,6 +586,8 @@ export class Renderer {
   private resolvedQuality: Exclude<GraphicsQuality, 'auto'> = 'balanced'
   /** QA 子系统展示：mats / fx / weapon；null = 正常游戏。 */
   private showcase: 'mats' | 'fx' | 'weapon' | null = null
+  /** noRender 隐形骨架的兜底外观组：GLB 掉档时用它，避免"摸得着看不见"。 */
+  private hiddenBrushFallback: Group | null = null
   /** 特效展示的发射节奏与当前序号（每帧由 updateCamera 推进）。 */
   private showcaseClock = 0
   private showcaseIndex = 0
@@ -1490,6 +1492,9 @@ export class Renderer {
       // 这里统一换成卡通材质 + 顶点色，并给实例挂一份墨线外壳。
       const outline = this.realistic ? undefined : this.stylizeGenerated(assets)
       const ok = decorateGenerated(this.scene, this.level, assets, outline)
+      // 贴图里没有对应的 hero 资产时，noRender 骨架会变成真正的空气墙。
+      // 这里补一层灰盒兜底：宁可看到一块素盒子，也不要撞到看不见的墙。
+      if (!ok) this.showHiddenBrushFallback()
       if (ok) {
         // 树干盒子的外观已经被模型包住；树冠棱球必须关掉，否则会出现
         // "方块绿球 + 真松树"叠在一起。
@@ -1499,7 +1504,44 @@ export class Renderer {
       }
     } catch (error) {
       console.warn('[generated] 程序化资产加载失败，保留盒刷外观', error)
+      this.showHiddenBrushFallback()
     }
+  }
+
+  /**
+   * 把 `noRender` 的隐形骨架画成素色盒子。
+   *
+   * 正常情况下这些盒子的外观由 GLB/程序化 hero 负责；一旦资产缺失或加载
+   * 失败，玩家就会撞到一堵"看不见的墙"——这是最难排查的一类 bug，因为
+   * 画面里什么都没有，服务端却认为那里有栋房子。
+   *
+   * 兜底只做一件事：让碰撞体和可见几何**至少一一对应**。样式用关卡材质色，
+   * 不加墨线（这是临时占位，不是美术）。
+   */
+  private showHiddenBrushFallback(): void {
+    if (this.hiddenBrushFallback !== null) return
+    const group = new Group()
+    group.name = 'hidden-brush-fallback'
+    for (const brush of this.level.boxes) {
+      if (brush.noRender !== true) continue
+      const key = brush.material ?? 'wood'
+      const spec = MATERIALS[key] ?? MATERIALS.wood!
+      const material = this.toonMaterial(spec.color, {
+        hatch: 0,
+        surface: spec.surface,
+        specular: 0.02,
+        rim: 0.04,
+      })
+      const mesh = new Mesh(new BoxGeometry(brush.hx * 2, brush.hy * 2, brush.hz * 2), material)
+      mesh.position.set(brush.x, brush.y, brush.z)
+      mesh.rotation.y = brush.rotY ?? 0
+      mesh.castShadow = false
+      mesh.receiveShadow = true
+      group.add(mesh)
+    }
+    this.hiddenBrushFallback = group
+    this.levelGroup.add(group)
+    console.warn('[level] 隐形骨架已用灰盒兜底：hero 资产缺失，' + group.children.length + ' 个盒子')
   }
 
   /**
