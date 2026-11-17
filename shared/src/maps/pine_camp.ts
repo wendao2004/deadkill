@@ -127,23 +127,26 @@ const heroes: HeroAnchor[] = [
  * 篝火是纯装饰（踩过去无所谓），刻意不给碰撞。
  */
 const PROP_COLLIDERS: Record<string, { hx: number; hy: number; hz: number; material: 'wood' | 'stone' | 'metal' | 'foliage' }> = {
-  log_pile: { hx: 1.35, hy: 0.55, hz: 0.75, material: 'wood' },
-  rock_a: { hx: 1.05, hy: 0.85, hz: 1.05, material: 'stone' },
-  stump: { hx: 0.45, hy: 0.34, hz: 0.45, material: 'wood' },
-  lantern_post: { hx: 0.13, hy: 1.75, hz: 0.13, material: 'metal' },
-  pine_dead: { hx: 0.28, hy: 2.3, hz: 0.28, material: 'foliage' },
+  log_pile: { hx: 1.35, hy: 0.6, hz: 0.75, material: 'wood' },
+  rock_a: { hx: 1.05, hy: 0.8, hz: 1.05, material: 'stone' },
+  stump: { hx: 0.45, hy: 0.4, hz: 0.45, material: 'wood' },
+  lantern_post: { hx: 0.13, hy: 1.8, hz: 0.13, material: 'metal' },
+  pine_dead: { hx: 0.28, hy: 2.4, hz: 0.28, material: 'foliage' },
 }
 
 for (const hero of heroes) {
   const spec = PROP_COLLIDERS[hero.asset]
   if (!spec) continue
   const scale = hero.scale ?? 1
+  // 顶点必须落在 0.4m 网格上：可攀爬高度是关卡设计量，差 8cm 就会出现
+  // "这级台阶上不去/能上去"的随机手感（tests/level.test.ts 有硬断言）。
+  const top = Math.max(0.4, Math.round((spec.hy * 2 * scale) / 0.4) * 0.4)
   boxes.list.push({
     x: hero.x,
-    y: spec.hy * scale,
+    y: top / 2,
     z: hero.z,
     hx: spec.hx * scale,
-    hy: spec.hy * scale,
+    hy: top / 2,
     hz: spec.hz * scale,
     rotY: hero.rotY,
     noRender: true,
