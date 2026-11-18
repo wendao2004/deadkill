@@ -80,6 +80,12 @@ export const LEVEL_STATION: LevelDef = {
   boxes: boxes.list,
   // 信号塔顶的红灯：站场里唯一在雾里发光的点，也是"往哪走"的夜航标。
   heroes: [{ asset: 'signal_lamp', x: 47.6, z: 1.6, y: 13.6 }],
+  // 站台/货场灯：雨夜里月台两侧各有一盏，中央站台一盏。
+  lamps: [
+    { x: 4, z: 80, rotY: Math.PI, name: '站台灯' },
+    { x: 82, z: 24, rotY: Math.PI, name: '货场东灯' },
+    { x: -82, z: 24, rotY: 0, name: '货场西灯' },
+  ],
   zones: [
     { name: '月台与站台', x: 0, z: 5, radius: 24 },
     { name: '货运场', x: 0, z: 30, radius: 40 },

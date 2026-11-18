@@ -71,16 +71,16 @@ const MOON_COLOR = 0x93a7c4
  * 月光强度。默认场景实测中央区中位数只有 41–54/255，太暗；抬到 1.15 后
  * 仍保留"冷蓝夜色"，但暗部不再糊成一块。玩家可通过设置里的亮度再微调。
  */
-const MOON_INTENSITY = 1.3
+const MOON_INTENSITY = 1.05
 /** 月亮高度角（度）。理由见文件头。 */
 const MOON_ELEVATION = 18
 /** 天空散射补光：从月亮反方向、更高处来，模拟被月光照亮的半空散射。 */
 const SKY_FILL_COLOR = 0x3d5270
 /** 补光必须显著弱于主光，否则两个方向各照一半，光比没了，画面又平又亮。 */
-const SKY_FILL_INTENSITY = 0.58
+const SKY_FILL_INTENSITY = 0.43
 /** 边缘光：从摄像机后上方打，冷白，专门把轮廓从黑背景里勾出来。 */
 const RIM_COLOR = 0xc8dcff
-const RIM_INTENSITY = 0.55
+const RIM_INTENSITY = 0.42
 /** 边缘光相对相机的方向（世界空间，单位向量偏置）：略高、略偏一侧。 */
 const RIM_BACK = 0.86
 const RIM_UP = 0.34
@@ -708,7 +708,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   // 极低的环境光：只负责把"背光面"从纯黑抬到能看出轮廓，不参与形体的
   // 方向性（0.22 在四档 toon 里通常只抬最低一档）。没有它时，玩家正对
   // 的墙/箱子经常是一块纯黑，连掩体在哪都读不出来。
-  const AMBIENT_INTENSITY = 0.28
+  const AMBIENT_INTENSITY = 0.18
   const ambient = new AmbientLight(0x2f4257, AMBIENT_INTENSITY)
 
   // 战局压力：记住关卡原始的天光/雾参数，pressure 只在其上做乘性压暗，
@@ -959,6 +959,11 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
 
     for (let i = 0; i < fires.length; i++) {
       const f = fires[i]
+      // 火盆灯同样按距离预算：40m 外只剩它照亮的几何本身，不再参与逐片元光照。
+      // 否则一张图 6 个巢穴 + 3 盏油灯会让每个片元循环 9 个点光源。
+      const dx = f.light.position.x - camera.position.x
+      const dz = f.light.position.z - camera.position.z
+      f.light.visible = dx * dx + dz * dz < 40 * 40
       // 两个不同频率的 1D value noise 相加：低频是"火势"，高频是"火苗舔动"。
       const n =
         noise1(clock * 1.9 + f.seed) * 0.62 + noise1(clock * 5.7 + f.seed * 1.7) * 0.38

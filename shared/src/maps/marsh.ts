@@ -85,6 +85,12 @@ export const LEVEL_MARSH: LevelDef = {
   fogDensity: 0.0092,
   boxes: boxes.list,
   water,
+  // 三盏堤岸灯：夜里给出生走廊一个暖色参照，同时不把中央场地照亮。
+  lamps: [
+    { x: -4, z: -108, rotY: 0, name: '北堤灯' },
+    { x: 108, z: 4, rotY: Math.PI / 2, name: '东堤灯' },
+    { x: 4, z: 112, rotY: Math.PI, name: '站场灯' },
+  ],
   zones: [
     { name: '农舍', x: 0, z: 0, radius: 40 },
     { name: '磨坊谷仓', x: -88, z: -88, radius: 27 },

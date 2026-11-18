@@ -924,11 +924,11 @@ export class Renderer {
     // 反射才不像一块灰板，但世界层不能被环境光洗成灰白天。
     this.environment = createEnvironmentProbe(this.gl, this.atmo.sky)
     this.scene.environment = this.environment.environment
-    this.scene.environmentIntensity = 0.95
+    this.scene.environmentIntensity = 0.72
     // PBR 与 toon 的响应完全不同：toon 的 4 级色阶会自己抬中间调，PBR 只会
     // 老老实实按入射光算。补一盏天空/地面半球光，把背光面从纯黑抬到可读，
     // 同时保留月光的方向性。0.3 是"能读出箱体侧面、又没把夜洗成阴天"的上限。
-    this.scene.add(new HemisphereLight(0x3d5270, 0x181410, 0.3))
+    this.scene.add(new HemisphereLight(0x3d5270, 0x181410, 0.16))
     this.viewScene.environment = this.environment.environment
     this.viewScene.environmentIntensity = 1.0
     // 假高光的方向 = 月光方向。世界材质用它；武器场景在 render() 里会临时
@@ -1732,7 +1732,9 @@ export class Renderer {
       glow.position.set(0.44, 2.2, 0)
       root.add(glow)
 
-      const light = new PointLight(0xffb060, 1.35, 11, 2)
+      // 环境光整体压暗后，灯必须比原来更"实"一点：1.9 / 13m 仍然只照局部，
+      // 不会把整片沼泽抬成黄昏。
+      const light = new PointLight(0xffb060, 1.9, 13, 2)
       light.position.set(0.44, 2.2, 0)
       root.add(light)
 
@@ -2570,6 +2572,14 @@ export class Renderer {
     // 唯一保证被调用的入口，而它已经拿到了 dt。
     this.props.update(dt)
     this.rain?.update(dt, this.camera)
+    // 点光源按距离预算：灯罩继续亮，但离得远的灯不参与逐片元光照。
+    // 一张图 3~4 盏灯 + 巢穴火盆，全部同时点亮会让前向渲染的每片元循环变重。
+    for (let i = 0; i < this.lamps.length; i++) {
+      const lamp = this.lamps[i]!
+      const dx = lamp.light.position.x - this.camera.position.x
+      const dz = lamp.light.position.z - this.camera.position.z
+      lamp.light.visible = lamp.lit && dx * dx + dz * dz < 32 * 32
+    }
 
     // 后坐力在这里衰减、再以衰减后的值喂武器：武器模块只回答"给定后坐力，
     // 枪该抬多少"，不自己持有计时器 —— 同一份 dt 在两处累加，衰减速率迟早漂。

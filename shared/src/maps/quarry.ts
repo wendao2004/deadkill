@@ -83,6 +83,12 @@ export const LEVEL_QUARRY: LevelDef = {
   boxes: boxes.list,
   // 吊臂顶的警示灯：10m 高的铁塔在石粉雾里本来只是一根灰柱，红点给它一个"顶"。
   heroes: [{ asset: 'signal_lamp', x: 16, z: -34, y: 10.0 }],
+  // 料场灯：石粉雾里的一排暖点，给"哪边是料场"一个夜间坐标。
+  lamps: [
+    { x: 62, z: 24, rotY: Math.PI, name: '东料场灯' },
+    { x: -62, z: 24, rotY: 0, name: '西料场灯' },
+    { x: 4, z: 74, rotY: Math.PI / 2, name: '矿车道灯' },
+  ],
   zones: [
     { name: '三层阶梯石台', x: 0, z: -24, radius: 20 },
     { name: '矿石溜槽', x: 20, z: 40, radius: 18 },
