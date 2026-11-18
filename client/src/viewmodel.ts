@@ -211,8 +211,13 @@ export interface Viewmodel {
   dispose(): void
 }
 
-/** 举枪到多少才允许收起枪身进镜筒（见 ViewmodelState.scoped）。 */
-const SCOPE_STOW_ADS = 0.72
+/**
+ * 举枪到多少才允许收起枪身进镜筒（见 ViewmodelState.scoped）。
+ *
+ * 0.72 时枪在 ~0.07s 就消失，玩家来不及看见"举枪抵肩"这一段，读起来像
+ * 画面突然放大。抬到 0.96 让枪先完整地抬到眼前，等镜筒遮罩基本盖上再收起。
+ */
+const SCOPE_STOW_ADS = 0.96
 
 // ---------------------------------------------------------------- 静态姿态
 
@@ -1664,8 +1669,8 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
     root.position.set(px * vs, py * vs, pz * vs)
     root.rotation.set(rx, ry, rz)
 
-    // 进镜筒时收起枪身：阈值取在举枪过半之后（0.72），此时视野已经收窄、
-    // 遮罩也在淡入，换掉整把枪不会被看成"枪凭空消失"。
+    // 进镜筒时收起枪身：阈值取在举枪接近到位之后（0.96），此时视野已经收窄、
+    // 遮罩也基本盖上了，换掉整把枪不会被看成"枪凭空消失"。
     const stowed = state.scoped === true && ads > SCOPE_STOW_ADS
     if (root.visible === stowed) root.visible = !stowed
 

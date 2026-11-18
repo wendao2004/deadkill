@@ -68,7 +68,7 @@ import {
   type Vec3,
   type WeaponBuild,
   buildStats,
-  effectiveWeaponSpec,
+  adsZoomFor,
   sanitizeBuild,
 } from '@dk/shared'
 
@@ -2332,6 +2332,17 @@ export class Game {
     return r
   }
 
+  /**
+   * 当前手持武器的实际开镜倍率。
+   *
+   * 主武器改装（build）只属于它自己的 weaponId：切到副武器/刀时再套主武器的
+   * 4× 镜，会让一把转轮手枪也满足 `SCOPE_MIN_ZOOM`，出现镜筒遮罩并把枪收起。
+   * 旧的一件式 attachment 仍按原来的乘数链路兼容。
+   */
+  private adsZoomOf(): number {
+    return adsZoomFor(this.heldWeapon, this.build, attachmentOf(this.attachment).zoomScale)
+  }
+
   private renderFrame(dt: number, _now: number): void {
     const character = this.character
     if (!character) return
@@ -2414,9 +2425,7 @@ export class Game {
       this.heldSlot,
       this.switchProgress(),
       this.meleeProgress(),
-      this.build
-        ? effectiveWeaponSpec(WEAPONS[this.heldWeapon]!, this.build).adsZoom ?? 1
-        : (WEAPONS[this.heldWeapon]?.adsZoom ?? 1) * attachmentOf(this.attachment).zoomScale,
+      this.adsZoomOf(),
       this.wallBlock,
     )
     // 指南针/撤离方位必须每帧跟着 yaw 走，不能等 1Hz 的目标包。
@@ -2580,9 +2589,10 @@ export class Game {
       clueNear,
       cluePct,
       ads: this.input.ads,
-      // 只给"真带镜"的枪（3 倍以上，现只有 3.8 倍神射手）上镜筒遮罩：
-      // 1.7/1.3 倍走机械瞄具，遮成黑圈会让人看不见铁瞄，反而更难打。
-      scoped: this.input.ads && (WEAPONS[this.heldWeapon]?.adsZoom ?? 1) >= SCOPE_MIN_ZOOM,
+      // 只给"真带镜"的枪（3 倍以上）上镜筒遮罩。倍率必须走和相机同一条
+      // `adsZoomOf()`：主武器装了 4× 镜时，base spec 的 1.3 倍不该决定遮罩。
+      // 遮罩的淡入由 #scope 的 transition-delay 负责，避让举枪动画。
+      scoped: this.input.ads && this.adsZoomOf() >= SCOPE_MIN_ZOOM,
       bossPct: this.bossPct,
       bossKind: this.bossKind,
       modifierName: getModifier(this.modifierId >= 0 ? this.modifierId : 0).name,

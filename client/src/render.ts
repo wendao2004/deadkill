@@ -2315,8 +2315,11 @@ export class Renderer {
 
     const target = ads ? 1 : 0
     // ADS 过渡用指数逼近而不是线性：线性到位那一下会有"咔"的停顿感。
-    // tau 0.052 是源码的 ADS 时间常数 —— 比旧版（约 0.071s）更脆。
-    this.adsBlend = approach(this.adsBlend, target, CAMERA_FEEL.fov.adsTau, dt)
+    // tau 0.052 是机械瞄具的 ADS 时间常数 —— 比旧版（约 0.071s）更脆。
+    // 真带镜的枪要先把枪举到眼前再进镜筒，节奏必须慢一档；否则 0.07s 内
+    // 枪就消失了，玩家看到的是"画面突然放大"而不是"我在瞄准"。
+    const adsTauScale = adsZoom >= SCOPE_MIN_ZOOM ? 1.9 : 1
+    this.adsBlend = approach(this.adsBlend, target, CAMERA_FEEL.fov.adsTau * adsTauScale, dt)
 
     // 速度 FOV：冲刺/坠落时视野轻微拉开，静止时回 1。ADS 必须比它更硬，
     // 否则开镜途中冲刺会让准星在屏幕上"呼吸"。

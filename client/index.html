@@ -204,7 +204,11 @@
       */
       #scope {
         position: fixed; inset: 0; z-index: 5; pointer-events: none;
-        opacity: 0; transition: opacity 0.1s steps(2, end);
+        /*
+          镜筒要等枪举到眼前再盖上：延迟 0.14s 正好让抵肩动作先被看见。
+          松开右键时不延迟，立刻退镜（否则准星会被黑圈多挡一拍）。
+        */
+        opacity: 0; transition: opacity 0.18s steps(3, end) 0.14s;
         background: radial-gradient(circle at 50% 50%,
           rgba(0, 0, 0, 0) 0 25vh,
           rgba(0, 0, 0, 0.5) 25.8vh,
@@ -212,6 +216,7 @@
           #000 33vh);
       }
       body.dk-scoped #scope { opacity: 1; }
+      body:not(.dk-scoped) #scope { transition: opacity 0.12s steps(2, end); }
       #scope .ring {
         position: absolute; left: 50%; top: 50%;
         width: 50vh; height: 50vh; border-radius: 50%;

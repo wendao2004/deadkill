@@ -9,10 +9,12 @@ import {
   buildFlags,
   buildFromEntries,
   effectiveWeaponSpec,
+  adsZoomFor,
   isCompatible,
   sanitizeBuild,
   type WeaponBuild,
 } from '../shared/src/weapon-build.ts'
+import { SCOPE_MIN_ZOOM } from '../shared/src/constants.ts'
 
 const rifle = WEAPONS[1]!
 const revolver = WEAPONS[5]!
@@ -94,4 +96,14 @@ test('build: 转轮只能用转轮供弹，霰弹没有可用的枪口消音', (
   assert.equal(revolver.magazine + 2, effectiveWeaponSpec(revolver, revolverBuild).magazine)
   assert.equal(sanitizeBuild(2, { muzzle: 201 }).slots.muzzle, undefined)
   assert.equal(shotgun.magazine + 0, effectiveWeaponSpec(shotgun, sanitizeBuild(2, {})).magazine)
+})
+
+test('开镜倍率：build 只对它的 weaponId 生效，4× 镜达到镜筒阈值', () => {
+  const scope4 = sanitizeBuild(1, { sight: 102 })
+  assert.ok(adsZoomFor(1, scope4) >= SCOPE_MIN_ZOOM, '4× 镜应触发镜筒遮罩')
+  assert.equal(adsZoomFor(1, null), 1, '原厂步枪只有机械瞄具')
+  assert.equal(adsZoomFor(4, null), 3.8, '神射手自带 3.8 倍光学镜')
+  // 换到副武器时不能继续套主武器的 4× 镜：否则转轮也会进镜筒并被收起。
+  assert.equal(adsZoomFor(5, scope4), 1)
+  assert.equal(adsZoomFor(1, scope4, 1), adsZoomFor(1, scope4))
 })

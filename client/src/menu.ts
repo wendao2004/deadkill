@@ -371,7 +371,7 @@ function loadBuilds(): Record<string, WeaponBuild> {
   }
 }
 
-function loadBuildFor(weaponId: number): WeaponBuild {
+export function loadBuildFor(weaponId: number): WeaponBuild {
   const saved = loadBuilds()[String(weaponId)]
   return saved ? sanitizeBuild(weaponId, saved.slots) : { weaponId, slots: {} }
 }

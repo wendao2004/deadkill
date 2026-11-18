@@ -28,6 +28,7 @@ import { createTraitIcon } from './traits.ts'
 import { pickLevelId } from './level-choice.ts'
 import {
   createMenu,
+  loadBuildFor,
   loadSavedConfig,
   loadSavedSettings,
   saveConfig,
@@ -762,6 +763,9 @@ if (qa.autostart) {
     matchId: qa.match ?? saved.matchId ?? 'qa',
     primaryId: saved.primaryId ?? DEFAULT_WEAPON_ID,
     traits: saved.traits ?? 0,
+    // 自动进场必须复用菜单里选好的改装，否则 ?build= 只改枪模外观、
+    // 相机仍按原厂倍率开镜，验收图与实际出装对不上。
+    build: loadBuildFor(saved.primaryId ?? DEFAULT_WEAPON_ID),
   }).catch((error) => {
     console.error('[qa] 自动进场失败', error)
     exitToMenu(`启动失败：${error instanceof Error ? error.message : String(error)}`)

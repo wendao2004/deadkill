@@ -346,6 +346,24 @@ export function buildStats(build: WeaponBuild | null | undefined): AttachmentSta
   return stats
 }
 
+/**
+ * 某把武器当前的 ADS 倍率。
+ *
+ * build 只属于它自己的 `weaponId`：切到副武器/刀时如果继续套主武器的 4× 镜，
+ * 一把转轮手枪也会满足 `SCOPE_MIN_ZOOM`，出现镜筒遮罩并把枪收起。
+ * `legacyAttachmentZoom` 给旧的一件式配件链路兜底（总开关关闭时为 1）。
+ */
+export function adsZoomFor(
+  weaponId: number,
+  build: WeaponBuild | null | undefined,
+  legacyAttachmentZoom = 1,
+): number {
+  const base = WEAPONS[weaponId]
+  if (!base) return 1
+  if (build && build.weaponId === weaponId) return effectiveWeaponSpec(base, build).adsZoom ?? 1
+  return (base.adsZoom ?? 1) * legacyAttachmentZoom
+}
+
 /** 有效武器数值。返回新对象，绝不改 WEAPONS 里的静态表。 */
 export function effectiveWeaponSpec(base: WeaponSpec, build: WeaponBuild | null | undefined): WeaponSpec {
   const stats = buildStats(build)
