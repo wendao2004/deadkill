@@ -1895,7 +1895,7 @@ export class Game {
       this.modifierId = objective.modifier
       const modifier = getModifier(objective.modifier)
       this.renderer.setModifier(modifier.fogScale, modifier.fogTint)
-      this.renderer.setRain(modifier.key === 'storm')
+      this.renderer.setRain(modifier.key === 'storm' ? 1 : 0)
       // ?wet= 是显式覆盖：A/B 截图要固定湿度，不能被这一局的天气改掉。
       if (qa.wet === null) {
         this.renderer.setWetness(WETNESS_BY_MODIFIER[modifier.key] ?? 0.55)

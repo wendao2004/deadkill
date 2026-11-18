@@ -167,6 +167,13 @@ export interface Atmosphere {
   /** 关卡切换时把雾颜色/密度灌进来（同时把天空地平线对齐到同一颜色）。 */
   setLevel(fogColor: number, fogDensity: number): void
   /**
+   * 解析雾在总密度里的占比。
+   *
+   * 有后处理时体积雾承担主要能见度，解析雾只留 0.25 做近景过渡；回退到
+   * 前向直出时切回 1，否则浓雾局会变成大晴天。
+   */
+  setAnalyticFogScale(scale: number): void
+  /**
    * 战局压力：0 = 开局，1 = 最后一秒。
    *
    * 光线随对局推进整体压暗、雾变浓；最后 28% 里地平线往暗红偏，
@@ -725,7 +732,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     skyFill.intensity = SKY_FILL_INTENSITY * (1 - 0.3 * p)
     rim.intensity = RIM_INTENSITY * (1 - 0.22 * p)
     ambient.intensity = AMBIENT_INTENSITY * (1 - 0.22 * p)
-    fog.density = fogBaseDensity * (1 + 0.55 * p)
+    fog.density = fogBaseDensity * (1 + 0.55 * p) * analyticFogScale
     skyUniforms.uZenith.value.copy(baseSky.zenith).multiplyScalar(dim)
     skyUniforms.uMid.value.copy(baseSky.mid).multiplyScalar(dim)
     skyUniforms.uHorizon.value.copy(baseSky.horizon).multiplyScalar(dim)
@@ -791,13 +798,20 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
 
   // ------------------------------------------------------------------ 关卡参数
   let fogColorHex = 0x232c35
+  /** 解析雾占比；体积雾接管后由 Renderer 降到 0.25。 */
+  let analyticFogScale = 1
+
+  function setAnalyticFogScale(scale: number): void {
+    analyticFogScale = Math.max(0, Math.min(1, scale))
+    applyPressure()
+  }
 
   function setLevel(fogColor: number, fogDensity: number): void {
     fogColorHex = fogColor
     // 直接吃关卡给的雾颜色/密度：雾本身就是"远景要糊成什么颜色"的定义，
     // 在这里再压暗一次会让关卡美术失去对远景的控制权。
     fog.color.setHex(fogColor)
-    fog.density = fogDensity
+    fog.density = fogDensity * analyticFogScale
 
     // 天空地平线对齐到雾色：远景物体淡出成雾色，如果天空那一圈比雾色亮很多，
     // 就会看到一条"地平线台阶"。对齐之后远景是一块连续的冷蓝黑，
@@ -975,6 +989,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     moonDirection: moonDir,
     update,
     setLevel,
+    setAnalyticFogScale,
     setPressure,
     setShadowQuality,
     addFireLight,

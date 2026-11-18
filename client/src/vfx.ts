@@ -51,7 +51,7 @@ import {
   PlaneGeometry,
   ShaderMaterial,
 } from 'three'
-import type { Object3D, Scene } from 'three'
+import type { Camera, Object3D, Scene } from 'three'
 import { mulberry32 } from '@dk/shared'
 import type { Vec3 } from '@dk/shared'
 
@@ -62,7 +62,11 @@ export type ImpactKind = 'flesh' | 'wood' | 'stone' | 'metal' | 'mud'
 export interface VfxOptions {
   /** 同时活跃的特效上限，默认 96；超出时复用最老的。 */
   maxEffects?: number
+  /** 距离剔除用相机；不传就不剔除（旧调用方行为不变）。 */
+  camera?: Camera
 }
+
+export type VfxQuality = 'performance' | 'balanced' | 'quality'
 
 export interface Vfx {
   /** 子弹打中某处的飞溅。dir 是子弹飞行方向（归一化），用来自动算背溅方向。 */
@@ -73,6 +77,8 @@ export interface Vfx {
   shockwave(point: Vec3, radius: number): void
   /** 枪口硝烟，eye 是眼睛位置，dir 是朝向。 */
   muzzle(eye: Vec3, dir: Vec3, ads: boolean): void
+  /** 画质档：低档少发粒子 + 缩短剔除距离，减轻透明 overdraw。 */
+  setQuality(quality: VfxQuality): void
   update(dt: number): void
   dispose(): void
   readonly root: Object3D
@@ -446,6 +452,19 @@ const SP = {
 export function createVfx(scene: Scene, options?: VfxOptions): Vfx {
   const maxEffects = Math.max(1, Math.floor(options?.maxEffects ?? DEFAULT_MAX_EFFECTS))
   const capacity = maxEffects * MAX_PER_EFFECT
+  const camera = options?.camera ?? null
+  /** 低画质少发粒子；1 = 原量。 */
+  let countScale = 1
+  /** 距离剔除半径平方；Infinity = 不剔除。 */
+  let maxDistanceSq = Infinity
+
+  const tooFar = (point: Vec3): boolean => {
+    if (camera === null) return false
+    const dx = point.x - camera.position.x
+    const dz = point.z - camera.position.z
+    return dx * dx + dz * dz > maxDistanceSq
+  }
+  const scaledCount = (count: number): number => Math.max(1, Math.round(count * countScale))
 
   // 所有缓冲在这里一次性分配完，之后每次 spawn 只是往里面写数字。
   const data = new Float32Array(capacity * STRIDE)
@@ -533,7 +552,7 @@ export function createVfx(scene: Scene, options?: VfxOptions): Vfx {
   // ------------------------------------------------------------ impact
 
   function impact(point: Vec3, dir: Vec3, kind: ImpactKind): void {
-    if (disposed) return
+    if (disposed || tooFar(point)) return
     const spec = KINDS[KIND_INDEX[kind]]
     if (spec === undefined) return
 
@@ -552,7 +571,7 @@ export function createVfx(scene: Scene, options?: VfxOptions): Vfx {
       dz = 0
     }
 
-    const count = spec.countMin + Math.floor(rnd() * (spec.countMax - spec.countMin + 1))
+    const count = scaledCount(spec.countMin + Math.floor(rnd() * (spec.countMax - spec.countMin + 1)))
     const slotBase = takeSlot()
     const cosCone = Math.cos(spec.cone)
     orthoBasis(-dx, -dy, -dz)
@@ -608,9 +627,9 @@ export function createVfx(scene: Scene, options?: VfxOptions): Vfx {
   // ------------------------------------------------------------ burst
 
   function burst(point: Vec3, scale: number): void {
-    if (disposed) return
+    if (disposed || tooFar(point)) return
     const s = scale > 0.01 ? scale : 0.01
-    const count = 8 + Math.floor(rnd() * 5) // 8..12
+    const count = scaledCount(8 + Math.floor(rnd() * 5)) // 8..12
     const slotBase = takeSlot()
     const spread = Math.sqrt(s)
 
@@ -681,9 +700,9 @@ export function createVfx(scene: Scene, options?: VfxOptions): Vfx {
    * 复用它的代价是 12 个 slot，而新建一套网格要额外管生命周期、透明排序与 dispose。
    */
   function shockwave(point: Vec3, radius: number): void {
-    if (disposed) return
+    if (disposed || tooFar(point)) return
     const r = Math.max(0.5, radius)
-    const count = 12
+    const count = scaledCount(12)
     const slotBase = takeSlot()
     for (let k = 0; k < count; k++) {
       const angle = (k / count) * TAU
@@ -732,7 +751,7 @@ export function createVfx(scene: Scene, options?: VfxOptions): Vfx {
     }
 
     // 开镜时硝烟会直接糊在准星上，是最劝退的画面：减半，并往枪线收窄。
-    const count = ads ? 2 : 3 + Math.floor(rnd() * 3) // 常态 3..5
+    const count = scaledCount(ads ? 2 : 3 + Math.floor(rnd() * 3)) // 常态 3..5
     const spread = ads ? 0.16 : 0.42
     const slotBase = takeSlot()
     orthoBasis(dx, dy, dz)
@@ -904,11 +923,29 @@ export function createVfx(scene: Scene, options?: VfxOptions): Vfx {
     mesh.visible = false
   }
 
+  function setQuality(quality: VfxQuality): void {
+    if (disposed) return
+    if (quality === 'performance') {
+      countScale = 0.55
+      maxDistanceSq = 45 * 45
+    } else if (quality === 'balanced') {
+      countScale = 0.8
+      maxDistanceSq = 65 * 65
+    } else {
+      countScale = 1
+      maxDistanceSq = 90 * 90
+    }
+  }
+
+  // 默认按 quality 档：和相机一起传进来的调用方会立刻调用一次 setQuality。
+  setQuality('quality')
+
   return {
     impact,
     burst,
     shockwave,
     muzzle,
+    setQuality,
     update,
     dispose,
     get root(): Object3D {

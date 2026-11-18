@@ -40,6 +40,7 @@ import {
   DepthTexture,
   HalfFloatType,
   LinearFilter,
+  Matrix4,
   Mesh,
   NoBlending,
   NormalBlending,
@@ -312,9 +313,89 @@ uniform vec2 uWorldTexel;
 uniform float uSharpness;
 uniform float uChromatic;
 uniform float uContact;
+uniform sampler2D tDepth;
+uniform mat4 uInvProj;
+uniform mat4 uCamWorld;
+uniform vec3 uCamPos;
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+uniform float uFogHeight;
+uniform float uFogMaxDist;
+uniform float uGroundY;
+uniform int uFogSteps;
+uniform vec3 uMoonDir;
+uniform vec3 uMoonColor;
+uniform float uTime;
 varying vec2 vUv;
 
 ${LUM}
+
+/* 体积雾的确定性噪声：没有贴图，两个 hash 拼出一层可漂移的团块。 */
+float fogHash( vec2 p ) {
+  return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 );
+}
+float fogNoise( vec2 p ) {
+  vec2 i = floor( p );
+  vec2 f = fract( p );
+  f = f * f * ( 3.0 - 2.0 * f );
+  float a = fogHash( i );
+  float b = fogHash( i + vec2( 1.0, 0.0 ) );
+  float c = fogHash( i + vec2( 0.0, 1.0 ) );
+  float d = fogHash( i + vec2( 1.0, 1.0 ) );
+  return mix( mix( a, b, f.x ), mix( c, d, f.x ), f.y );
+}
+
+/**
+ * 体积雾：按深度重建世界坐标，在相机到片元之间做指数高度雾积分。
+ *
+ * 这沿用 three.js 官方深度重建示例的做法（DepthTexture + projectionMatrixInverse），
+ * 而不是逐物体叠加雾片：雾的浓度是连续的，能见度才会随距离平滑下降。
+ * 天空像素（depth == 1）直接跳过 —— 地平线颜色已由 atmosphere 与雾色对齐，
+ * 在这里盖一层只会把月亮一起吃掉。
+ */
+vec3 applyVolumetricFog( vec3 color, vec2 uv ) {
+  if ( uFogDensity <= 0.00001 ) return color;
+  float depth = texture2D( tDepth, uv ).x;
+  if ( depth >= 0.99999 ) return color;
+
+  vec4 clip = vec4( uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0 );
+  vec4 viewPos = uInvProj * clip;
+  viewPos.xyz /= viewPos.w;
+  vec3 worldPos = ( uCamWorld * vec4( viewPos.xyz, 1.0 ) ).xyz;
+  vec3 ray = worldPos - uCamPos;
+  float viewDist = length( ray );
+  if ( viewDist < 0.05 ) return color;
+
+  vec3 rayDir = ray / viewDist;
+  float march = min( viewDist, uFogMaxDist );
+  // 常数上界 + break：GLSL ES 1.0 的循环变量必须是常数上界，uFogSteps 只负责提前退出。
+  const int MAX_STEPS = 16;
+  float stepLen = march / float( max( uFogSteps, 1 ) );
+  float jitter = fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) + uTime * 0.13 );
+  float t = stepLen * jitter;
+
+  // Henyey-Greenstein 相函数：月光从背后打过来时，雾会亮一档（前向散射）。
+  float g = 0.55;
+  float cosTheta = dot( rayDir, normalize( uMoonDir ) );
+  float hg = ( 1.0 - g * g ) / pow( max( 1e-3, 1.0 + g * g - 2.0 * g * cosTheta ), 1.5 );
+
+  float transmittance = 1.0;
+  vec3 scattered = vec3( 0.0 );
+  for ( int i = 0; i < MAX_STEPS; i++ ) {
+    if ( i >= uFogSteps || transmittance < 0.015 ) break;
+    vec3 p = uCamPos + rayDir * t;
+    float height = max( p.y - uGroundY, 0.0 );
+    float density = uFogDensity * exp( -height * uFogHeight );
+    // 大尺度团块：雾不是均匀介质。0.65~1.0 的调制避免把近景糊成一块板。
+    density *= 0.65 + 0.35 * fogNoise( p.xz * 0.075 + vec2( uTime * 0.012, -uTime * 0.008 ) );
+    float stepT = exp( -density * stepLen );
+    float absorbed = 1.0 - stepT;
+    scattered += transmittance * absorbed * ( uFogColor + uMoonColor * hg * 0.055 );
+    transmittance *= stepT;
+    t += stepLen;
+  }
+  return color * transmittance + scattered;
+}
 
 void main() {
   vec2 d = vUv - 0.5;
@@ -364,6 +445,9 @@ void main() {
   if ( uContact > 0.0001 ) {
     world *= texture2D( tContact, vUv ).r;
   }
+
+  // --- 体积雾：只作用于世界层；武器不参与，枪必须保持清晰。---
+  world = applyVolumetricFog( world, vUv );
 
   // --- 武器层合成 ---
   // MSAA resolve 后边缘像素是"覆盖率 × 颜色 / 覆盖率 alpha"，本质是预乘。
@@ -758,10 +842,26 @@ export class PostFX {
         tWorld: { value: null as Texture | null },
         tView: { value: null as Texture | null },
         tContact: { value: null as Texture | null },
+        tDepth: { value: null as Texture | null },
         uWorldTexel: { value: new Vector2(1, 1) },
         uContact: { value: 0 },
         uSharpness: { value: DEFAULTS.sharpness },
         uChromatic: { value: DEFAULTS.chromatic },
+        // 体积雾：颜色/密度由天气驱动；矩阵与深度每帧更新。
+        // 先给单位矩阵：首帧即使还没跑过 updateContactShadow，uniform 上传也不能拿
+        // null 去读 elements（three 会直接抛错，整条后处理链被判失败）。
+        uInvProj: { value: new Matrix4() },
+        uCamWorld: { value: new Matrix4() },
+        uCamPos: { value: new Vector3() },
+        uFogColor: { value: new Color(0x232c35) },
+        uFogDensity: { value: 0 },
+        uFogHeight: { value: 0.11 },
+        uFogMaxDist: { value: 170 },
+        uGroundY: { value: 0 },
+        uFogSteps: { value: 10 },
+        uMoonDir: { value: new Vector3(0, 1, 0) },
+        uMoonColor: { value: new Color(0x9fb6d8) },
+        uTime: { value: 0 },
       },
       vertexShader: FS_VERT,
       fragmentShader: COMBINE,
@@ -951,6 +1051,13 @@ export class PostFX {
    * 这里重新取一次即可。
    */
   updateContactShadow(camera: Camera, lightDirection: Vector3): void {
+    // 体积雾的相机矩阵每帧都必须更新；深度纹理可以晚一帧到。
+    const cu = this.combineMaterial.uniforms
+    cu.uInvProj.value = camera.projectionMatrixInverse
+    cu.uCamWorld.value = camera.matrixWorld
+    cu.uCamPos.value.copy(camera.position)
+    cu.uMoonDir.value.copy(lightDirection).normalize()
+
     if (this.worldDepth === null) return
     const u = this.contactMaterial.uniforms
     u.uInvProj.value = camera.projectionMatrixInverse
@@ -962,6 +1069,30 @@ export class PostFX {
     this.contactReady = true
     // 同 setContactShadow：强度只在 contact shader 里应用一次。
     this.combineMaterial.uniforms.uContact.value = this.contactEnabled ? 1 : 0
+
+    // 体积雾与接触阴影共用同一张世界深度：深度引用必须与这张图同帧。
+    cu.tDepth.value = this.worldDepth
+  }
+
+  /**
+   * 体积雾参数。颜色/密度由关卡与天气修饰决定：
+   * 同一张图在"浓雾"下能见度必须真的变短，而不是只把画面整体调灰。
+   */
+  setVolumetricFog(color: number, density: number, groundY: number): void {
+    const u = this.combineMaterial.uniforms
+    u.uFogColor.value.setHex(color)
+    u.uFogDensity.value = Math.max(0, density)
+    u.uGroundY.value = groundY
+  }
+
+  /** 画质档：步数越多，雾的层次与光轴越细，但每像素成本线性上升。 */
+  setVolumetricQuality(steps: number): void {
+    this.combineMaterial.uniforms.uFogSteps.value = Math.max(1, Math.min(16, Math.floor(steps)))
+  }
+
+  /** 漂移相位；由 Renderer 每帧写入，雾团与 Boil 共用同一只时钟。 */
+  setTime(time: number): void {
+    this.combineMaterial.uniforms.uTime.value = time
   }
 
   /**

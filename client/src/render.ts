@@ -107,6 +107,7 @@ import { createAtmosphere, type Atmosphere } from './atmosphere.ts'
 import { createEnvironmentProbe, type EnvironmentProbe } from './environment.ts'
 import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './shadows.ts'
 import { createViewmodel, type Viewmodel, type ViewmodelKit, type ViewmodelState } from './viewmodel.ts'
+import { createRain, type Rain } from './rain.ts'
 import type { WeaponBuild } from '@dk/shared'
 import { CAMERA_FEEL, Spring, angleDelta, approach, clamp, clamp01, hashNoise } from './feel.ts'
 
@@ -184,6 +185,15 @@ const GROUND_PALETTE: Record<string, { color: number; tint: number; tintAmount: 
 const TRACER_LIFE = 0.09
 /** 曳光弹对象池上限：超量时复用最早一条，避免持续开火造成无界分配。 */
 const MAX_TRACERS = 64
+
+/**
+ * 每张图的"底雨"强度：地图自己的天气（小雨转雾 / 细雨）就该有雨。
+ * 骤雨 modifier 会在 setRain 里取 max，不会把底雨关掉。
+ */
+const RAIN_BY_LEVEL: Record<string, number> = {
+  'marsh-p0': 0.18,
+  'station-dusk': 0.45,
+}
 
 /** 命中光脉冲时长（秒）与峰值强度。两帧左右，只负责"那一下"。 */
 const IMPACT_FLASH_SECONDS = 0.075
@@ -620,9 +630,11 @@ export class Renderer {
   /** 角色/怪物的接地阴影共用一张贴图和材质，避免每个角色一份。 */
   private readonly shadowTexture = createShadowTexture()
   private readonly shadowMaterial = createShadowMaterial(this.shadowTexture, 0.5)
-  /** 骤雨：跟随相机的竖直线段，只在天候 key === 'storm' 时显示。 */
-  private rain: LineSegments | null = null
-  private rainPositions: Float32Array | null = null
+  /** 雨：GPU 驱动的雨丝 + 地面溅射；强度由关卡天气与 modifier 合成。 */
+  private rain: Rain | null = null
+  /** 每张图的"底雨"：地图天气写着细雨/小雨转雾时，即使没有骤雨 modifier 也下雨。 */
+  private readonly levelRain: number
+  private rainIntensity = 0
   private readonly tracers: Tracer[] = []
   /** 第一人称武器（模型 + 全部程序化姿态动画），挂在 camera 上。 */
   private readonly viewmodel: Viewmodel
@@ -770,12 +782,17 @@ export class Renderer {
   private time = 0
   /** 关卡本来的雾色与密度，见构造函数里 appliedFog 的注释。 */
   private fogBase = { color: 0, density: 0 }
+  /** 当前天气的雾密度倍率；回退到前向直出时要用它把解析雾补回来。 */
+  private fogScale = 1
+  /** 体积雾的地面基准高度：高度衰减从这里往上算。 */
+  private fogGroundY = 0
   /** 沸腾计时器与当前倍数。 */
   private boilTimer = 0
   private boilScale = 1
 
   constructor(container: HTMLElement, level: LevelDef) {
     this.level = level
+    this.levelRain = RAIN_BY_LEVEL[level.id] ?? 0
     // 色彩脚本按关卡 id 取；未登记的新图会回落到默认档，不会渲染成死黑。
     this.art = artProfile(level.id)
     // 苔藓/湿气按"离地多高"分布：先告诉墨线层这张图的地面在哪。
@@ -854,15 +871,19 @@ export class Renderer {
     // 背景色只在天空球没盖住的角落露出来（例如 SwiftShader 下球被裁掉），
     // 给一个接近夜色而不是关卡雾色的值，免得漏出一圈"未画完的灰"。
     this.scene.background = new Color(0x05080d)
-    // 雾保留但只用它分层次，不承担"遮丑"。
-    this.scene.fog = new FogExp2(level.fogColor, level.fogDensity)
+    // 解析雾只留薄薄一层做近中景过渡；天气的能见度由体积雾决定（见 PostFX）。
+    // 直接渲染回退时 disablePost() 会把密度补回全额，材质雾仍然成立。
+    this.scene.fog = new FogExp2(level.fogColor, level.fogDensity * 0.25)
     // 关卡给的雾是基线。每局的"天气修正"（死寂/浓雾/骤雨/虫潮）在这条基线上
     // 乘系数，所以要先把原值记下来，否则切两次就再也回不到关卡本来的样子。
     this.fogBase = { color: level.fogColor, density: level.fogDensity }
+    this.fogGroundY = level.groundY
+    this.post.setVolumetricFog(level.fogColor, level.fogDensity * 1.8, level.groundY)
 
     this.camera = new PerspectiveCamera(BASE_FOV, container.clientWidth / container.clientHeight, 0.05, 400)
     this.scene.add(this.camera)
-    this.buildRain()
+    this.rain = createRain(this.scene, level.groundY)
+    this.rain.setIntensity(this.levelRain)
 
     // 武器场景：相机固定在原点、朝 -Z，武器坐标本身就是相机局部坐标。
     // 三盏固定的"棚拍灯"比让武器吃世界月光可靠得多：夜里整把枪会掉成
@@ -896,6 +917,8 @@ export class Renderer {
     // 两套灯叠在地上就还是白天，夜晚永远是"调暗一点"而不是另一种照明。
     this.atmo = createAtmosphere(this.scene)
     this.atmo.setLevel(level.fogColor, level.fogDensity)
+    // 有后处理时能见度交给体积雾；解析雾只留近景过渡。
+    this.atmo.setAnalyticFogScale(0.25)
     // 天空烘成 IBL：必须在 setLevel 之后，否则烘到的是默认雾色而不是这一局
     // 的天光。武器场景单独给一份更高的 intensity —— 棚拍灯下金属需要环境
     // 反射才不像一块灰板，但世界层不能被环境光洗成灰白天。
@@ -961,7 +984,7 @@ export class Renderer {
     // 玩家对同一件事看到不同画面。
     this.markers = createObjectiveMarkers(level)
     this.scene.add(this.markers.root)
-    this.vfx = createVfx(this.scene)
+    this.vfx = createVfx(this.scene, { camera: this.camera })
     this.decals = createDecals(this.scene)
 
     // 武器动画只吃一组标量（开镜混合/后坐力/速度/疾跑/离地/换弹进度/俯仰），
@@ -1363,6 +1386,12 @@ export class Renderer {
       this.postEnabled && resolved !== 'performance',
       resolved === 'quality' ? 0.42 : 0.32,
     )
+    // 体积雾步数：performance 只保留能看出的轮廓，quality 才做完整的光轴。
+    this.post.setVolumetricQuality(
+      resolved === 'performance' ? 5 : resolved === 'balanced' ? 9 : 13,
+    )
+    this.rain?.setQuality(resolved)
+    this.vfx?.setQuality(resolved)
   }
 
   setSize(width: number, height: number): void {
@@ -2520,7 +2549,7 @@ export class Renderer {
     // 水面波纹与芦苇摆动只依赖时间。放在这里是因为 updateCamera 是每帧
     // 唯一保证被调用的入口，而它已经拿到了 dt。
     this.props.update(dt)
-    this.updateRain(dt)
+    this.rain?.update(dt, this.camera)
 
     // 后坐力在这里衰减、再以衰减后的值喂武器：武器模块只回答"给定后坐力，
     // 枪该抬多少"，不自己持有计时器 —— 同一份 dt 在两处累加，衰减速率迟早漂。
@@ -2977,8 +3006,9 @@ export class Renderer {
       return
     }
     this.post.renderWorld(this.scene, this.camera)
-    // 深度已经写完：把相机矩阵与朝月亮的方向交给接触阴影。放在武器层之前，
-    // present 里就能直接用这一帧的深度，不需要额外 prepass。
+    // 深度已经写完：把相机矩阵与朝月亮的方向交给接触阴影与体积雾。放在武器层
+    // 之前，present 里就能直接用这一帧的深度，不需要额外 prepass。
+    this.post.setTime(this.time)
     this.post.updateContactShadow(this.camera, moon)
 
     setInkKeyDirection(-0.35, 0.78, 0.52)
@@ -2998,6 +3028,8 @@ export class Renderer {
     this.directRender = true
     this.gl.toneMapping = ACESFilmicToneMapping
     this.gl.toneMappingExposure = 1.22
+    // 没有后处理就没有体积雾：把解析雾补回全额，否则浓雾局会变成大晴天。
+    this.atmo.setAnalyticFogScale(1)
     // 武器层默认没有背景；直出时确保它不会盖住世界。
     this.viewScene.background = null
     console.warn(`[render] 后处理不可用，回退前向直出：${reason}`)
@@ -3197,42 +3229,6 @@ export class Renderer {
   }
 
   /**
-   * 骤雨：480 根短线，围在相机 22m 半径内。线段而不是 Points，因为雨滴的
-   * 速度感来自"拉长"，点只会读成一团噪点。
-   */
-  private buildRain(): void {
-    const count = 480
-    const positions = new Float32Array(count * 2 * 3)
-    for (let i = 0; i < count; i++) {
-      const x = (Math.random() - 0.5) * 44
-      const z = (Math.random() - 0.5) * 44
-      const y = Math.random() * 22
-      const o = i * 6
-      positions[o] = x
-      positions[o + 1] = y
-      positions[o + 2] = z
-      positions[o + 3] = x
-      positions[o + 4] = y - 0.38
-      positions[o + 5] = z
-    }
-    const geo = new BufferGeometry()
-    geo.setAttribute('position', new Float32BufferAttribute(positions, 3))
-    const mat = new LineBasicMaterial({
-      color: 0xaebdcc,
-      transparent: true,
-      opacity: 0.22,
-      depthWrite: false,
-    })
-    const rain = new LineSegments(geo, mat)
-    rain.frustumCulled = false
-    rain.visible = false
-    this.scene.add(rain)
-    this.rain = rain
-    this.rainPositions = positions
-    this.disposables.push(geo, mat)
-  }
-
-  /**
    * 战局压力：0 = 开局，1 = 最后一秒。光会随对局推进暗下去，最后一段
    * 地平线偏红 —— 时间压力从 HUD 数字变成画面本身。
    */
@@ -3240,27 +3236,13 @@ export class Renderer {
     this.atmo.setPressure(progress)
   }
 
-  setRain(active: boolean): void {
-    if (this.rain) this.rain.visible = active
-  }
-
-  /** 每帧把雨滴往下推、绕回顶部，并让整片雨跟着相机走。 */
-  private updateRain(dt: number): void {
-    const rain = this.rain
-    const positions = this.rainPositions
-    if (!rain || !positions || !rain.visible) return
-    const fall = Math.min(dt, 0.1) * 13
-    for (let i = 0; i < positions.length; i += 6) {
-      positions[i + 1] -= fall
-      positions[i + 4] -= fall
-      if (positions[i + 1] < 0) {
-        positions[i + 1] += 22
-        positions[i + 4] = positions[i + 1] - 0.38
-      }
-    }
-    rain.geometry.getAttribute('position').needsUpdate = true
-    rain.position.x = this.camera.position.x
-    rain.position.z = this.camera.position.z
+  /**
+   * 雨量 0..1。地图自带的底雨（车站细雨、沼泽小雨转雾）不会被关掉：
+   * 天气 modifier 的骤雨取 max，晴天修饰则回落到地图底雨。
+   */
+  setRain(intensity: number): void {
+    this.rainIntensity = Math.max(0, Math.min(1, intensity))
+    this.rain?.setIntensity(Math.max(this.levelRain, this.rainIntensity))
   }
 
   /**
@@ -3272,11 +3254,19 @@ export class Renderer {
   setModifier(fogScale: number, fogTint: number): void {
     const fog = this.scene.fog
     if (fog instanceof FogExp2) {
-      fog.density = this.fogBase.density * Math.max(0.1, fogScale)
+      const scaled = Math.max(0.1, fogScale)
+      this.fogScale = scaled
       // 0 表示"这张图自己的雾色"：修正表里没有更合适的色调时不要硬塞一个。
       if (fogTint !== 0) fog.color.setHex(fogTint)
       else fog.color.setHex(this.fogBase.color)
-      this.atmo.setLevel(fog.color.getHex(), fog.density)
+      this.post.setVolumetricFog(
+        fog.color.getHex(),
+        this.fogBase.density * scaled * 1.8,
+        this.fogGroundY,
+      )
+      this.atmo.setLevel(fog.color.getHex(), this.fogBase.density * scaled)
+      // 解析雾只承担近景过渡；体积雾才是能见度的主判据。
+      this.atmo.setAnalyticFogScale(this.directRender ? 1 : 0.25)
       // 天光跟着雾色变了：重烘一次 IBL。capture 返回的是新纹理，两个场景
       // 都要重新指过去，否则环境反射还停在上一种天气。
       this.environment.capture()
@@ -3301,6 +3291,8 @@ export class Renderer {
     this.impactLight.removeFromParent()
     this.viewmodel.dispose()
     this.props.dispose()
+    this.rain?.dispose()
+    this.rain = null
     // 大气在 props 之后：它会把自己那盏复用的 FogExp2 还原，props 里若有
     // 依赖雾的材质先释放更安全。环境探针 clone 了天空，先于大气释放。
     this.environment.dispose()
