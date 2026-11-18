@@ -34,6 +34,112 @@
   display: none;
 }
 
+/* ---------------------------------------------------------------- HUD 腕带式布局 */
+#hud { padding: clamp(14px, 2.2vw, 30px); gap: 8px; }
+#hud .hud-row { align-items: flex-end; }
+#hud .hud-row:first-child {
+  position: absolute;
+  left: clamp(14px, 2.2vw, 30px);
+  bottom: clamp(112px, 13vh, 142px);
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+}
+#traits { gap: 5px; }
+#traits .dk-trait-icon, #traits .dk-trait-slot { width: 22px; height: 22px; }
+#bandages {
+  min-width: 86px;
+  padding: 4px 8px 5px;
+  border-left: 2px solid rgba(216, 207, 186, 0.42);
+  background: linear-gradient(90deg, rgba(12, 11, 10, 0.68), transparent);
+}
+#hp, #ammo {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: clamp(32px, 4vw, 52px);
+  line-height: 0.95;
+  -webkit-text-stroke-width: 1.6px;
+  text-shadow: 3px 3px 0 var(--ink);
+}
+#hp::before, #ammo::before { font-size: 9px; letter-spacing: 0.2em; }
+#hp { color: var(--bone); transform: none; }
+#hp.low { color: var(--blood-text); }
+#ammo { font-size: clamp(40px, 5vw, 68px); transform: none; }
+#reserve {
+  padding: 5px 0 6px 9px;
+  border-left: 1px solid rgba(216, 207, 186, 0.28);
+  color: var(--bone);
+}
+#debug {
+  position: fixed;
+  top: 22px;
+  right: 28px;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  opacity: 0.7;
+}
+#log {
+  flex: 1 1 auto;
+  max-width: min(48vw, 540px);
+  min-height: 22px;
+  padding: 4px 10px;
+  border-left-width: 2px;
+  font-size: 11px;
+  background: linear-gradient(90deg, rgba(12, 11, 10, 0.72), transparent);
+}
+.hud-ammo { padding: 4px 10px 2px; background: linear-gradient(270deg, rgba(12, 11, 10, 0.72), transparent); }
+/* 带镜开镜时只压掉装饰层；血量与弹药是活命信息，任何情况下都必须可见。 */
+body.dk-scoped #vignette,
+body.dk-scoped #grain { opacity: 0; }
+body.dk-scoped #sightdot { opacity: 0; }
+@media (max-width: 760px) {
+  #hud { padding: 10px 12px 12px; }
+  #hud .hud-row:first-child { left: 12px; bottom: 94px; gap: 5px; }
+  #traits .dk-trait-icon, #traits .dk-trait-slot { width: 19px; height: 19px; }
+  #hp, #ammo { font-size: clamp(28px, 8vw, 40px); }
+  #ammo { font-size: clamp(36px, 10vw, 50px); }
+  #log { display: none; }
+  #debug { top: 8px; right: 10px; font-size: 8px; }
+  .hud-ammo { padding-inline: 4px; }
+}
+@media (max-height: 560px) { #hud .hud-row:first-child { bottom: 82px; } }
+@media (prefers-reduced-motion: reduce) { body.dk-entering #hud { animation: none; } }
+
+/* Keep the combat center clear; health and ammo sit on opposite lower corners. */
+#hud .hud-row:nth-child(2) {
+  position: absolute;
+  left: clamp(14px, 2.2vw, 30px);
+  bottom: 18px;
+  width: max-content;
+}
+#hud .hud-row:last-child {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  width: auto;
+  min-height: 64px;
+  gap: 12px;
+  padding: 0 clamp(14px, 2.2vw, 30px);
+}
+#log {
+  position: absolute;
+  left: clamp(14px, 2.2vw, 30px);
+  bottom: 76px;
+  max-width: min(48vw, 540px);
+}
+.hud-ammo { margin-left: auto; }
+@media (max-width: 760px) {
+  #hud .hud-row:nth-child(2) { left: 12px; bottom: 12px; }
+  #hud .hud-row:last-child { bottom: 12px; min-height: 50px; gap: 6px; }
+  #log { display: none; }
+}
+
 /* ---------------------------------------------------------------- 通用件 */
 
 /* 平涂底 + 1px 墨边 + 硬投影：这是整个 HUD 的"纸片"语汇 */
@@ -1691,4 +1797,94 @@ body:has(> .dko-death-ui.is-on) #crosshair {
   font-size: 13px;
   letter-spacing: 0.2em;
   color: var(--amber, #d99a4a);
+}
+
+/* ============================================================================
+   作战 HUD 收口 · 2026-11-18
+   ----------------------------------------------------------------------------
+   规则（来自 docs/美术圣经.md §9）：HUD 只放活命必需信息，硬边硬投影，
+   边缘承载读数、中心留给敌人剪影。所以这里只做三件事：
+   把目标读数压回四角、把暂停层改成公会现场记录、把有限宽度让给瞄准。
+   必须留在文件末尾：与上方同名选择器同权重，靠源顺序覆盖。
+   ========================================================================== */
+
+.dko-clues { left: clamp(14px, 2.2vw, 30px); top: 22px; }
+.dko-clock { top: 18px; padding: 0 14px 5px; }
+.dko-clock-num { font-size: 27px; }
+.dko-compass {
+  top: 62px;
+  width: min(360px, 42vw);
+  height: 24px;
+  border-color: rgba(216, 207, 186, 0.12);
+  background:
+    linear-gradient(to bottom, rgba(12, 11, 10, 0.42), rgba(12, 11, 10, 0.12)),
+    repeating-linear-gradient(90deg, rgba(216, 207, 186, 0.08) 0 1px, transparent 1px 24px);
+}
+.dko-team { right: clamp(14px, 2.2vw, 30px); top: 72px; }
+.dko-contract { left: clamp(14px, 2.2vw, 30px); top: 116px; }
+.dko-event { top: 100px; }
+
+.dk-pause {
+  background:
+    linear-gradient(180deg, rgba(5, 7, 9, 0.45), rgba(5, 7, 9, 0.76)),
+    repeating-linear-gradient(-38deg, rgba(216, 207, 186, 0.018) 0 1px, transparent 1px 7px);
+}
+.dk-pause__card {
+  position: relative;
+  width: min(420px, 88vw);
+  padding: 32px 34px 28px;
+  border: 1px solid rgba(216, 207, 186, 0.2);
+  border-top: 2px solid var(--amber, #d99a4a);
+  background:
+    linear-gradient(145deg, rgba(29, 32, 31, 0.96), rgba(8, 10, 10, 0.98)),
+    repeating-linear-gradient(-38deg, rgba(216, 207, 186, 0.035) 0 1px, transparent 1px 6px);
+  box-shadow: 5px 5px 0 rgba(12, 11, 10, 0.82);
+  text-align: left;
+}
+.dk-pause__card::before {
+  content: '猎人公会 · 现场记录';
+  display: block;
+  margin-bottom: 13px;
+  font: 9px/1.4 var(--font-mono, monospace);
+  letter-spacing: 0.22em;
+  color: var(--ash, #a89e8d);
+}
+.dk-pause__title { font-size: 32px; letter-spacing: 0.22em; text-shadow: 2px 2px 0 var(--ink, #0c0b0a); }
+.dk-pause__sub {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--blood-text, #cf6a54);
+  background: rgba(125, 43, 34, 0.1);
+  line-height: 1.6;
+}
+.dk-pause__hint { margin-top: 10px; line-height: 1.8; }
+.dk-pause__actions { justify-content: flex-start; margin-top: 24px; }
+.dk-pause__btn {
+  min-height: 40px;
+  border: 1px solid rgba(216, 207, 186, 0.24);
+  background: rgba(12, 11, 10, 0.4);
+  box-shadow: none;
+}
+.dk-pause__btn--primary {
+  border-color: var(--amber, #d99a4a);
+  background: rgba(217, 154, 74, 0.1);
+  color: var(--amber, #d99a4a);
+}
+.dk-pause__btn:hover,
+.dk-pause__btn:focus-visible {
+  outline: 1px solid var(--amber, #d99a4a);
+  outline-offset: 2px;
+  background: rgba(217, 154, 74, 0.14);
+  color: var(--bone, #d8cfba);
+}
+
+@media (max-width: 760px) {
+  .dko-clues { left: 12px; top: 12px; }
+  .dko-clock { top: 12px; }
+  .dko-compass { top: 58px; width: min(300px, 64vw); }
+  .dko-team { right: 12px; top: 52px; min-width: 142px; }
+  .dko-contract { left: 12px; top: 104px; }
+  .dko-event { top: 95px; }
+  .dk-pause__card { padding: 26px 22px 22px; }
+  .dk-pause__actions { flex-direction: column; }
 }

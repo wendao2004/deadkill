@@ -62,7 +62,18 @@ const CSS = `
 .dkov-boss .name{font-size:13px;letter-spacing:.42em;color:#e0cfae;text-align:center;text-shadow:0 2px 6px rgba(0,0,0,.9)}
 .dkov-boss .track{margin-top:6px;height:7px;border:1px solid rgba(12,11,10,.9);background:rgba(10,9,8,.72);box-shadow:0 2px 0 rgba(0,0,0,.5)}
 .dkov-boss .track i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#8d2b22,#d8a24a);transition:width .12s linear}
-`.trim()
+
+/* 公会纸面交互层：短促、硬边、避开画面中心。 */
+.dkov-host .dkov-key{border-radius:0;box-shadow:2px 2px 0 #0c0b0a}
+.dkov-host .dkov-card{position:relative;min-width:min(340px,86vw);max-width:min(460px,90vw);border:1px solid rgba(216,207,186,.22);border-top:2px solid #d99a4a;background:linear-gradient(150deg,rgba(37,39,36,.98),rgba(10,11,10,.99));box-shadow:5px 5px 0 #0c0b0a}
+.dkov-host .dkov-card::before{content:'GUILD LEDGER / SALTLINE';display:block;margin-bottom:14px;font:9px/1.4 var(--font-mono,monospace);letter-spacing:.24em;color:#a89e8d}
+.dkov-host .dkov-card.bad{border-top-color:#7d2b22}
+.dkov-host .dkov-settle{background:rgba(4,6,8,.88);background-image:repeating-linear-gradient(-38deg,rgba(216,207,186,.025) 0 1px,transparent 1px 7px)}
+.dkov-host .dkov-total{padding-top:12px;border-top:1px solid rgba(216,207,186,.3)}
+.dkov-host .dkov-lore{border-left-width:2px;box-shadow:4px 4px 0 rgba(12,11,10,.82)}
+.dkov-host .dkov-prompt .row{font-family:var(--font-mono,monospace);font-size:13px;letter-spacing:.16em}
+.dkov-host .dkov-toast{font-family:var(--font-mono,monospace);font-size:13px;letter-spacing:.12em}
+@media(max-width:600px){.dkov-host .dkov-card{padding:24px 20px 20px}.dkov-host .dkov-lore{left:4%;width:70vw}}`.trim()
 
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID) !== null) return

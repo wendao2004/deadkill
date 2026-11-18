@@ -5064,6 +5064,116 @@
   animation: dk-stage-item 380ms 1120ms cubic-bezier(0.16, 0.9, 0.22, 1) both;
 }
 
+/* ---- 准备室：煤烟玻璃、案头地图与公会纸面档案 ---- */
+.dk-menu {
+  --px: 0;
+  --py: 0;
+  background: #07090b;
+  background-image:
+    radial-gradient(ellipse 55% 58% at 50% 45%, rgba(45, 39, 29, 0.32), transparent 74%),
+    linear-gradient(180deg, rgba(3, 5, 7, 0.24), rgba(3, 5, 7, 0.78));
+}
+.dk-bg { transform: translate3d(calc(var(--px, 0) * 4px), calc(var(--py, 0) * 3px), 0) scale(1.015); }
+.dk-vignette {
+  background:
+    radial-gradient(ellipse 48% 44% at 50% 52%, transparent 36%, rgba(4, 5, 6, 0.82) 100%),
+    linear-gradient(180deg, rgba(4, 5, 6, 0.38), transparent 28% 68%, rgba(4, 5, 6, 0.74));
+}
+.dk-grain { opacity: 0.16; animation: none; mix-blend-mode: soft-light; }
+/* 绝对定位元素同时给 left/right 与 width 会左对齐；这里让容器铺满，
+   三块内容各自限宽并居中。 */
+.dk-menu .dk-home { gap: 0; background: none; }
+.dk-menu .dk-home__head {
+  position: relative;
+  width: min(620px, 88vw);
+  padding: clamp(22px, 4vh, 40px) 28px 22px;
+  border: 0;
+  border-top: 1px solid rgba(216, 207, 186, 0.28);
+  border-bottom: 1px solid rgba(216, 207, 186, 0.18);
+  background:
+    radial-gradient(ellipse at 50% 0, rgba(217, 154, 74, 0.11), transparent 72%),
+    linear-gradient(180deg, rgba(21, 20, 17, 0.78), rgba(8, 10, 11, 0.56));
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
+}
+.dk-menu .dk-home__kicker { margin-bottom: 23px; color: rgba(216, 207, 186, 0.78); letter-spacing: 0.14em; }
+.dk-menu .dk-home__kicker::before,
+.dk-menu .dk-home__kicker::after { width: 14px; margin-inline: 7px; }
+.dk-menu .dk-home__title {
+  font-size: clamp(50px, 8vw, 94px);
+  letter-spacing: -0.04em;
+  color: #e1d7c3;
+  text-shadow: 2px 2px 0 var(--ink), 5px 5px 0 rgba(12, 11, 10, 0.75);
+  animation: none;
+}
+.dk-menu .dk-home__sub { margin-top: 16px; color: rgba(216, 207, 186, 0.82); }
+.dk-menu .dk-home__rumor {
+  max-width: 34em;
+  margin: 18px auto 0;
+  padding-top: 12px;
+  border-top: 1px solid rgba(216, 207, 186, 0.12);
+  color: rgba(216, 207, 186, 0.72);
+  font-size: 13px;
+}
+.dk-menu .dk-home__menu {
+  width: min(620px, 88vw);
+  padding: 0 22px;
+  border-top-color: rgba(216, 207, 186, 0.18);
+  background: linear-gradient(180deg, rgba(8, 10, 11, 0.88), rgba(8, 10, 11, 0.62));
+}
+.dk-menu .dk-home__item {
+  min-height: 58px;
+  padding: 13px 8px;
+  border-bottom-color: rgba(216, 207, 186, 0.13);
+  transition: background 90ms steps(2, end), border-color 90ms steps(2, end), padding-left 90ms steps(2, end);
+}
+.dk-menu .dk-home__item:first-child { border-left-color: var(--amber); }
+.dk-menu .dk-home__item:nth-child(2),
+.dk-menu .dk-home__item:nth-child(3),
+.dk-menu .dk-home__item:nth-child(4) { transform: none; }
+.dk-menu .dk-home__item:hover,
+.dk-menu .dk-home__item:focus-visible {
+  padding-left: 16px;
+  border-left-color: var(--amber);
+  background: linear-gradient(90deg, rgba(217, 154, 74, 0.1), transparent 72%);
+}
+.dk-menu .dk-home__item:active { transform: none; box-shadow: none; }
+.dk-menu .dk-home__item:not(:first-child) .dk-home__arrow { opacity: 0; }
+.dk-menu .dk-home__item:not(:first-child):hover .dk-home__arrow,
+.dk-menu .dk-home__item:not(:first-child):focus-visible .dk-home__arrow { opacity: 0; }
+.dk-menu .dk-home__index { color: rgba(216, 207, 186, 0.46); }
+.dk-menu .dk-home__item:first-child .dk-home__index,
+.dk-menu .dk-home__item:first-child .dk-home__arrow { color: var(--amber); opacity: 1; }
+.dk-menu .dk-home__cn { font-size: clamp(19px, 2.1vw, 25px); }
+.dk-menu .dk-home__foot {
+  width: min(620px, 88vw);
+  justify-content: space-between;
+  padding: 12px 22px 0;
+  color: rgba(216, 207, 186, 0.58);
+  font-size: 9px;
+}
+.dk-menu .dk-home__coins { color: var(--amber); }
+.dk-menu .dk-stage {
+  background: linear-gradient(180deg, transparent 0 32%, rgba(7, 8, 8, 0.88) 46% 60%, transparent 76%);
+}
+.dk-menu.is-deploying .dk-stage__map { letter-spacing: 0.1em; }
+.dk-menu .dk-bottom { backdrop-filter: none; }
+@media (max-width: 720px) {
+  .dk-menu .dk-home { padding-inline: 0; }
+  .dk-menu .dk-home__head { width: min(620px, 92vw); padding: 22px 12px 18px; }
+  .dk-menu .dk-home__menu { width: min(620px, 92vw); }
+  .dk-menu .dk-home__foot { width: min(620px, 92vw); }
+  .dk-menu .dk-home__menu { padding-inline: 12px; }
+  .dk-menu .dk-home__item { min-height: 52px; padding-block: 10px; }
+  .dk-menu .dk-home__foot { padding-inline: 12px; }
+  .dk-menu .dk-home__kicker { font-size: 9px; letter-spacing: 0.08em; }
+  .dk-menu .dk-home__kicker::before,
+  .dk-menu .dk-home__kicker::after { width: 8px; margin-inline: 4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dk-bg { transform: none; }
+  .dk-grain { animation: none !important; }
+}
+
 /* 地图卡上的"日期 · 天气"：把五张卡从"五个选项"变成"五天的记录"。
    比描述更硬（事实），所以用等宽 + 琥珀，字号压到 8.5px —— 它是脚注，不是卖点。 */
 .dk-menu.is-immersive .dk-map__when {
