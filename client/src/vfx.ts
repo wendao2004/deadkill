@@ -79,6 +79,8 @@ export interface Vfx {
   muzzle(eye: Vec3, dir: Vec3, ads: boolean): void
   /** 画质档：低档少发粒子 + 缩短剔除距离，减轻透明 overdraw。 */
   setQuality(quality: VfxQuality): void
+  /** 预编译用：临时让粒子网格参与 compile，避免第一次命中时同步编译。 */
+  prewarm(): void
   update(dt: number): void
   dispose(): void
   readonly root: Object3D
@@ -937,6 +939,12 @@ export function createVfx(scene: Scene, options?: VfxOptions): Vfx {
     }
   }
 
+  function prewarm(): void {
+    if (disposed) return
+    // compile 只遍历可见对象；把网格点亮一次，让着色器在加载页里编译完。
+    mesh.visible = true
+  }
+
   // 默认按 quality 档：和相机一起传进来的调用方会立刻调用一次 setQuality。
   setQuality('quality')
 
@@ -946,6 +954,7 @@ export function createVfx(scene: Scene, options?: VfxOptions): Vfx {
     shockwave,
     muzzle,
     setQuality,
+    prewarm,
     update,
     dispose,
     get root(): Object3D {

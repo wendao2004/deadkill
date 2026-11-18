@@ -583,6 +583,14 @@ export class Game {
 
   /** 防止 onWelcome 重入时启动两条 rAF 循环。 */
   private starting = false
+  /**
+   * 预编译完成信号。`start()` 必须等它：主界面只在 start() 之后撤掉，
+   * 提前返回会让玩家在加载页外第一眼看到着色器编译造成的长帧。
+   */
+  private prewarmResolve: (() => void) | null = null
+  private readonly prewarmDone = new Promise<void>((resolve) => {
+    this.prewarmResolve = resolve
+  })
 
   /**
    * 进局前的最后一步：预编译着色器 → 显示 GPU 提示 → 启动帧循环。
@@ -607,6 +615,9 @@ export class Game {
       this.running = true
       this.lastFrameAt = performance.now()
       this.raf = requestAnimationFrame(this.frame)
+      // 预编译（含失败回退）已经结束，主界面可以撤掉了。
+      this.prewarmResolve?.()
+      this.prewarmResolve = null
     }
   }
 
@@ -678,6 +689,13 @@ export class Game {
         this.options.onClose(info)
       },
     })
+
+    // 等预编译结束再返回：main.ts 在这之后才撤掉主界面/加载层。
+    // 10 秒兜底避免服务端没回 Welcome 时永远留在加载页。
+    await Promise.race([
+      this.prewarmDone,
+      new Promise<void>((resolve) => window.setTimeout(resolve, 10_000)),
+    ])
   }
 
   /**

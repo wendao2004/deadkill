@@ -50,7 +50,7 @@ export interface Rain {
 }
 
 const RAIN_SEED = 0x5a17f0
-const MAX_DROPS = 2200
+const MAX_DROPS = 1800
 const MAX_SPLASHES = 140
 /** 雨区半径（米）。太大看不出"雨在周围"，太小会看到边缘的圆柱。 */
 const RADIUS = 26
@@ -70,7 +70,8 @@ varying float vAlpha;
 void main() {
   vUv = uv;
   float speed = 12.0 + aSeed.w * 10.0;
-  float y = mod(aSeed.z * ${HEIGHT.toFixed(1)} + uTime * speed, ${HEIGHT.toFixed(1)});
+  // 减号 = 随时间向下；加号会让整场雨从地面往天上倒流。
+  float y = mod(aSeed.z * ${HEIGHT.toFixed(1)} - uTime * speed, ${HEIGHT.toFixed(1)});
   vec3 center;
   center.x = uCamera.x + aSeed.x * ${RADIUS.toFixed(1)} + uWind.x * (y / speed);
   center.z = uCamera.z + aSeed.y * ${RADIUS.toFixed(1)} + uWind.z * (y / speed);

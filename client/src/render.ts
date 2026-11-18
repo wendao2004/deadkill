@@ -1388,7 +1388,7 @@ export class Renderer {
     )
     // 体积雾步数：performance 只保留能看出的轮廓，quality 才做完整的光轴。
     this.post.setVolumetricQuality(
-      resolved === 'performance' ? 5 : resolved === 'balanced' ? 9 : 13,
+      resolved === 'performance' ? 4 : resolved === 'balanced' ? 8 : 12,
     )
     this.rain?.setQuality(resolved)
     this.vfx?.setQuality(resolved)
@@ -1863,6 +1863,23 @@ export class Renderer {
   async prewarm(): Promise<void> {
     const r = this.gl
     const prevTarget = r.getRenderTarget()
+    // compile 只遍历可见对象。怪物池、命中粒子与雨在常态下是隐藏的，不临时
+    // 点亮就会漏掉它们的 shader —— 第一次遇敌/第一滴雨时再同步编译，正好是
+    // 玩家最不能掉帧的那一秒。这里只编译、不绘制。
+    const forced: Object3D[] = []
+    const restore = (): void => {
+      for (const object of forced) object.visible = false
+      forced.length = 0
+      this.rain?.setIntensity(Math.max(this.levelRain, this.rainIntensity))
+    }
+    this.monsters.root.traverse((object) => {
+      if (!object.visible) {
+        object.visible = true
+        forced.push(object)
+      }
+    })
+    this.vfx.prewarm()
+    this.rain?.setIntensity(1)
     try {
       // 编译 variant 的 cache key 含 outputColorSpace/toneMapping，必须绑在
       // 和正式渲染相同的 HDR 目标上，否则会编出 canvas 版的错误变体。
@@ -1870,6 +1887,7 @@ export class Renderer {
       await r.compileAsync(this.scene, this.camera)
       r.setRenderTarget(this.post.viewTarget)
       await r.compileAsync(this.viewScene, this.viewCamera)
+      restore()
 
       // 第二遍：真正画一帧，覆盖 shadow/depth 与首帧才暴露的变体。
       r.setRenderTarget(this.post.worldTarget)
@@ -1879,7 +1897,9 @@ export class Renderer {
       this.post.present()
     } catch (error) {
       console.warn('[prewarm] 预热失败，继续进局', error)
+      restore()
     } finally {
+      restore()
       r.setRenderTarget(prevTarget)
       // 预热已经跑过完整一帧（含 present），后处理 program 此时都已编译。
       // 自检失败或 QA 强制时，整条链绕过，改为前向直出。
