@@ -182,6 +182,8 @@ const GROUND_PALETTE: Record<string, { color: number; tint: number; tintAmount: 
 
 /** 曳光弹存活时间（秒）。短于感知阈值会看不见，长了像激光。 */
 const TRACER_LIFE = 0.09
+/** 曳光弹对象池上限：超量时复用最早一条，避免持续开火造成无界分配。 */
+const MAX_TRACERS = 64
 
 /** 命中光脉冲时长（秒）与峰值强度。两帧左右，只负责"那一下"。 */
 const IMPACT_FLASH_SECONDS = 0.075
@@ -2589,17 +2591,17 @@ export class Renderer {
     this.vfx.update(dt)
     this.decals.update(dt)
 
-    for (let i = this.tracers.length - 1; i >= 0; i--) {
+    for (let i = 0; i < this.tracers.length; i++) {
       const tracer = this.tracers[i]!
-      tracer.life -= dt
-      if (tracer.life <= 0) {
-        this.scene.remove(tracer.line)
-        tracer.line.geometry.dispose()
-        tracer.material.dispose()
-        this.tracers.splice(i, 1)
+      if (tracer.life <= 0) continue
+      tracer.life = Math.max(0, tracer.life - dt)
+      if (tracer.life === 0) {
+        // 保留节点与 GPU 资源供下一次开火复用，避免高射速下反复创建/销毁。
+        tracer.line.visible = false
+        tracer.material.opacity = 0
         continue
       }
-      tracer.material.opacity = Math.max(0, tracer.life / TRACER_LIFE)
+      tracer.material.opacity = tracer.life / TRACER_LIFE
     }
   }
 
@@ -2742,16 +2744,49 @@ export class Renderer {
 
   /** 曳光弹：从枪口到命中点（或射程尽头）的一条线。 */
   addTracer(origin: Vec3, dir: Vec3, distance: number, hit: boolean): void {
-    const end = new Vector3(
-      origin.x + dir.x * distance,
-      origin.y + dir.y * distance,
-      origin.z + dir.z * distance,
-    )
+    // 优先复用已经过期的槽位，稳定交火时不再反复分配 Geometry / Material。
+    let tracer: Tracer | undefined
+    for (let i = 0; i < this.tracers.length; i++) {
+      const candidate = this.tracers[i]!
+      if (candidate.life <= 0) {
+        tracer = candidate
+        break
+      }
+    }
+
+    if (tracer) {
+      const positions = tracer.line.geometry.getAttribute('position') as Float32BufferAttribute
+      positions.setXYZ(0, origin.x, origin.y, origin.z)
+      positions.setXYZ(
+        1,
+        origin.x + dir.x * distance,
+        origin.y + dir.y * distance,
+        origin.z + dir.z * distance,
+      )
+      positions.needsUpdate = true
+      tracer.material.color.setHex(hit ? 0xffe066 : 0xffc94a).multiplyScalar(2.6)
+      tracer.material.opacity = 1
+      // 端点每次都会改变；关闭视锥剔除避免旧 boundingSphere 缓存导致新弹道消失。
+      tracer.line.frustumCulled = false
+      tracer.line.visible = true
+      tracer.life = TRACER_LIFE
+      return
+    }
+
+    // 峰值超过容量时跳过新曳光弹：射击/命中判定完全不受影响。
+    if (this.tracers.length >= MAX_TRACERS) return
     const geo = new BufferGeometry()
     geo.setAttribute(
       'position',
       new Float32BufferAttribute(
-        [origin.x, origin.y, origin.z, end.x, end.y, end.z],
+        [
+          origin.x,
+          origin.y,
+          origin.z,
+          origin.x + dir.x * distance,
+          origin.y + dir.y * distance,
+          origin.z + dir.z * distance,
+        ],
         3,
       ),
     )
@@ -2765,6 +2800,7 @@ export class Renderer {
       depthWrite: false,
     })
     const line = new Line(geo, mat)
+    line.frustumCulled = false
     this.scene.add(line)
     this.tracers.push({ line, material: mat, life: TRACER_LIFE })
   }
@@ -3252,6 +3288,13 @@ export class Renderer {
     this.markers.dispose()
     this.vfx.dispose()
     this.decals.dispose()
+    // Renderer 可能在仍有曳光弹时被销毁（重连/返回大厅）；释放逐弹创建的 GPU 资源。
+    for (const tracer of this.tracers) {
+      this.scene.remove(tracer.line)
+      tracer.line.geometry.dispose()
+      tracer.material.dispose()
+    }
+    this.tracers.length = 0
     this.impactLight.removeFromParent()
     this.viewmodel.dispose()
     this.props.dispose()
