@@ -13,7 +13,7 @@
 .dk-menu {
   --ink: #0c0b0a;
   --bone: #d8cfba;
-  --ash: #8d8578;
+  --ash: #a89e8d;
   --amber: #d99a4a;
   --blood: #7d2b22;
   --slate: #2a3138;
@@ -346,7 +346,7 @@
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.1em;
-  color: rgba(141, 133, 120, 0.6);
+  color: rgba(170, 160, 143, 0.6);
 }
 
 .dk-nav__cn {
@@ -362,7 +362,7 @@
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.26em;
-  color: rgba(141, 133, 120, 0.72);
+  color: rgba(170, 160, 143, 0.72);
 }
 
 /* ------------------------------------------------------------------ 面板 */
@@ -381,7 +381,7 @@
   display: none;
   overflow: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(141, 133, 120, 0.5) transparent;
+  scrollbar-color: rgba(170, 160, 143, 0.5) transparent;
   padding-right: 4px;
 }
 
@@ -569,7 +569,7 @@
   background:
     linear-gradient(148deg, transparent 44%, rgba(12, 11, 10, 0.92) 44% 62%, transparent 62%),
     radial-gradient(circle at 26% 74%, rgba(154, 168, 69, 0.24) 0 2px, transparent 3px),
-    radial-gradient(circle at 66% 82%, rgba(141, 133, 120, 0.3) 0 2px, transparent 3px),
+    radial-gradient(circle at 66% 82%, rgba(170, 160, 143, 0.3) 0 2px, transparent 3px),
     linear-gradient(to bottom, #23282c, #14181b 60%, #080a0b);
 }
 
@@ -810,7 +810,7 @@
 }
 
 .dk-input::placeholder {
-  color: rgba(141, 133, 120, 0.62);
+  color: rgba(170, 160, 143, 0.62);
 }
 
 .dk-input:focus {
@@ -861,7 +861,7 @@
   font-size: 9.5px;
   line-height: 1.7;
   letter-spacing: 0.04em;
-  color: rgba(141, 133, 120, 0.8);
+  color: rgba(170, 160, 143, 0.8);
 }
 
 /* 主武器选择：跨满出击页两列贴底，和下棋一样"先挑枪再挑图"都不挡按钮 */
@@ -991,7 +991,7 @@
 
 .dk-weapon__stat-key {
   letter-spacing: 0.12em;
-  color: rgba(141, 133, 120, 0.85);
+  color: rgba(170, 160, 143, 0.85);
 }
 
 .dk-weapon__stat-val {
@@ -1008,7 +1008,7 @@
   font-family: var(--font-mono);
   font-size: 8.5px;
   letter-spacing: 0.1em;
-  color: rgba(141, 133, 120, 0.75);
+  color: rgba(170, 160, 143, 0.75);
 }
 
 .dk-weapon.is-selected .dk-weapon__switch {
@@ -1197,7 +1197,7 @@
   font-family: var(--font-mono);
   font-size: 8px;
   letter-spacing: 0.1em;
-  color: rgba(141, 133, 120, 0.8);
+  color: rgba(170, 160, 143, 0.8);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1215,7 +1215,7 @@
   width: 14px;
   height: 6px;
   border: 2px solid var(--ink);
-  background: rgba(141, 133, 120, 0.22);
+  background: rgba(170, 160, 143, 0.22);
   transition: background 120ms linear;
 }
 
@@ -1235,7 +1235,7 @@
 }
 
 .dk-trait__desc.is-locked {
-  color: rgba(141, 133, 120, 0.68);
+  color: rgba(170, 160, 143, 0.68);
 }
 
 .dk-trait.is-selected .dk-trait__desc {
@@ -1288,9 +1288,9 @@
 
 /* 满级：按钮退成"标签"，不给任何"还能点"的暗示。 */
 .dk-trait__buy:disabled {
-  background: rgba(141, 133, 120, 0.24);
+  background: rgba(170, 160, 143, 0.24);
   box-shadow: none;
-  color: rgba(141, 133, 120, 0.9);
+  color: rgba(170, 160, 143, 0.9);
   cursor: default;
 }
 
@@ -1504,7 +1504,7 @@
   font-family: var(--font-mono);
   font-size: 8.5px;
   letter-spacing: 0.22em;
-  color: rgba(141, 133, 120, 0.7);
+  color: rgba(170, 160, 143, 0.7);
 }
 
 .dk-attr__num {
@@ -1573,7 +1573,7 @@
 .dk-slot__note {
   font-family: var(--font-mono);
   font-size: 9px;
-  color: rgba(141, 133, 120, 0.75);
+  color: rgba(170, 160, 143, 0.75);
 }
 
 /* ------------------------------------------------------------------ 军械库 */
@@ -1792,7 +1792,7 @@
 
 /* 阵亡行整行压红：扫一眼列表就能看出"哪几场是白跑"。 */
 .dk-table__row.is-lost .dk-table__cell--result {
-  color: var(--blood);
+  color: var(--blood-text, #cf6a54);
 }
 
 .dk-table__row.is-lost {
@@ -1850,7 +1850,7 @@
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.04em;
-  color: rgba(141, 133, 120, 0.78);
+  color: rgba(170, 160, 143, 0.78);
 }
 
 /* range 的默认外观是苹果味的圆角胶囊，跟整套硬边风格完全冲突，
@@ -1969,7 +1969,7 @@
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0.16em;
-  color: rgba(141, 133, 120, 0.9);
+  color: rgba(170, 160, 143, 0.9);
 }
 
 /* 版本号那一侧要能被压缩：窄屏时先牺牲它，保住右侧的状态提示。 */
@@ -1979,7 +1979,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: rgba(141, 133, 120, 0.78);
+  color: rgba(170, 160, 143, 0.78);
 }
 
 .dk-bottom__status {
@@ -1992,7 +1992,7 @@
 
 .dk-bottom__status.is-empty::before {
   content: '— 待命 —';
-  color: rgba(141, 133, 120, 0.55);
+  color: rgba(170, 160, 143, 0.55);
 }
 
 /* ------------------------------------------------------------------ 转场 */
@@ -2115,7 +2115,7 @@
   font-family: var(--font-ui);
   font-size: clamp(10px, 1.1vw, 13px);
   letter-spacing: 0.5em;
-  color: rgba(141, 133, 120, 0.9);
+  color: rgba(170, 160, 143, 0.9);
 }
 
 /* 一条手绘感的短横线：标题和文案之间需要一个分隔，但不能是规整的细线 */
@@ -2148,7 +2148,7 @@
   font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: 0.34em;
-  color: rgba(141, 133, 120, 0.72);
+  color: rgba(170, 160, 143, 0.72);
 }
 
 .is-deploying .dk-bar--top {
@@ -2608,7 +2608,7 @@
 }
 
 .dk-match-info.is-warning {
-  border-left-color: var(--blood);
+  border-left-color: var(--blood-text, #cf6a54);
   color: #c98e84;
 }
 
@@ -2949,7 +2949,7 @@
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: var(--blood);
+  color: var(--blood-text, #cf6a54);
 }
 
 .dk-onboard__confirm { width: 100%; }
@@ -3104,7 +3104,7 @@
   gap: 5px;
   padding: 10px 12px 11px;
   border: 2px solid var(--ink);
-  border-left: 4px solid rgba(141, 133, 120, 0.45);
+  border-left: 4px solid rgba(170, 160, 143, 0.45);
   background: rgba(12, 11, 10, 0.72);
   box-shadow: 3px 3px 0 var(--ink);
   color: var(--bone);
@@ -3863,7 +3863,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: rgba(141, 133, 120, 0.5);
+  background: rgba(170, 160, 143, 0.5);
 }
 
 .dk-friend.is-online .dk-friend__dot {
@@ -3899,7 +3899,7 @@
   cursor: pointer;
 }
 
-.dk-friend__remove:hover { color: var(--blood); }
+.dk-friend__remove:hover { color: var(--blood-text, #cf6a54); }
 
 .dk-friends__actions { display: flex; gap: 6px; }
 .dk-friends__hint { margin: 0; font-size: 10px; line-height: 1.6; color: var(--ash); }
@@ -4050,8 +4050,8 @@
 
 .dk-party__accept:hover,
 .dk-party__create:hover { background: rgba(217, 154, 74, 0.16); }
-.dk-party__decline:hover { border-color: var(--blood); color: var(--blood); }
-.dk-party__leave:hover { border-color: var(--blood); color: var(--blood); }
+.dk-party__decline:hover { border-color: var(--blood-text, #cf6a54); color: var(--blood-text, #cf6a54); }
+.dk-party__leave:hover { border-color: var(--blood-text, #cf6a54); color: var(--blood-text, #cf6a54); }
 
 .dk-party__member {
   display: flex;
@@ -4407,7 +4407,7 @@
   color: var(--amber);
 }
 
-.dk-build__none { font-family: var(--font-mono); font-size: 8.5px; color: rgba(141, 133, 120, 0.55); }
+.dk-build__none { font-family: var(--font-mono); font-size: 8.5px; color: rgba(170, 160, 143, 0.55); }
 
 .dk-build__note {
   margin: 0;
@@ -4435,3 +4435,574 @@
   height: clamp(320px, 56vh, 560px);
 }
 .dk-preview__host { flex: 1; min-height: 0; }
+
+/* ==========================================================================
+ * 可读性修正 · 2026-11-18
+ *
+ * 沉浸式改版把面板压成 rgba(8,10,12,0.62) + 1px 淡边之后，实际观感是"整块发灰"：
+ * ① --ash 原来是 #8d8578，9~11px 的小字在黑底上只剩轮廓（已整体提到 #a89e8d）；
+ * ② 面板半透明度太低，3D 背景的暖光斑透上来，把灰字洗掉；
+ * ③ `.dk-segment__item.is-selected` 保留旧版 `color: var(--ink)`，而沉浸式又把
+ *    背景换成了暗色渐变 —— 深字压深底，选中项等于消失（设置页"镜头晃动"就是）；
+ * ④ 滑块轨道是"黑底上的黑槽"，只有拇指方块可见。
+ *
+ * 这里只动颜色/不透明度/字号，不改任何布局尺寸 —— 定点截图对比时不应该出现位移。
+ * ========================================================================== */
+
+/* ---- 全局文字层级：次要信息要可读，"次要"不等于"看不清" ---- */
+
+.dk-menu .dk-panel__caption,
+.dk-menu .dk-panel__foot,
+.dk-menu .dk-field__label,
+.dk-menu .dk-deploy__hint,
+.dk-menu .dk-trait-summary,
+.dk-menu .dk-bottom {
+  color: var(--ash);
+}
+
+.dk-menu .dk-nav__en,
+.dk-menu .dk-home__en {
+  color: rgba(170, 160, 143, 0.92);
+}
+
+/* ---- 沉浸式面板：压住背景光，边框要能看见 ---- */
+
+.dk-menu.is-immersive .dk-panel,
+.dk-menu.is-immersive .dk-profile,
+.dk-menu.is-immersive .dk-deploy__side,
+.dk-menu.is-immersive .dk-room-detail,
+.dk-menu.is-immersive .dk-room-card,
+.dk-menu.is-immersive .dk-map,
+.dk-menu.is-immersive .dk-weapon,
+.dk-menu.is-immersive .dk-trait,
+.dk-menu.is-immersive .dk-friends,
+.dk-menu.is-immersive .dk-table,
+.dk-menu.is-immersive .dk-scroll {
+  border-color: rgba(216, 207, 186, 0.24) !important;
+  background: rgba(9, 11, 14, 0.84) !important;
+  box-shadow: inset 0 1px 0 rgba(216, 207, 186, 0.07) !important;
+}
+
+/* 选中态统一：琥珀描边 + 更实的底，选中的卡要能从其余卡里"跳出来"。 */
+.dk-menu.is-immersive .dk-map.is-selected,
+.dk-menu.is-immersive .dk-weapon.is-selected,
+.dk-menu.is-immersive .dk-trait.is-selected,
+.dk-menu.is-immersive .dk-room-card.is-selected {
+  border-color: var(--amber) !important;
+  background: linear-gradient(180deg, rgba(217, 154, 74, 0.16), rgba(12, 14, 18, 0.94)) !important;
+  box-shadow: inset 0 0 0 1px rgba(217, 154, 74, 0.28), 0 0 18px rgba(217, 154, 74, 0.1) !important;
+}
+
+/* ---- 分段按钮：选中 = 实心琥珀 + 墨字（修复深字压深底） ---- */
+
+.dk-menu.is-immersive .dk-segment__item {
+  color: rgba(216, 207, 186, 0.8);
+  background: rgba(216, 207, 186, 0.08);
+  border-color: rgba(216, 207, 186, 0.24);
+}
+
+.dk-menu.is-immersive .dk-segment__item:hover {
+  color: var(--bone);
+  background: rgba(216, 207, 186, 0.13);
+  border-color: rgba(216, 207, 186, 0.34);
+}
+
+.dk-menu.is-immersive .dk-segment__item.is-selected,
+.dk-menu.is-immersive .dk-segment__item.is-selected:hover {
+  color: #17120c !important;
+  background: linear-gradient(180deg, #e2a558, #c5822f) !important;
+  border-color: #e8b46a !important;
+  box-shadow: 0 0 0 1px rgba(12, 11, 10, 0.85) !important;
+  font-weight: 700;
+}
+
+/* 威胁滑块：thumb 是琥珀实心，按钮自身必须透明，否则 70% 黑底会把滑块压暗，
+   而文字又是墨色 —— 那样选中项同样读不出来。 */
+.dk-menu.is-immersive .dk-threat {
+  background: rgba(6, 8, 10, 0.7);
+  border-color: rgba(216, 207, 186, 0.2);
+}
+
+.dk-menu.is-immersive .dk-threat__stop {
+  color: var(--ash);
+}
+
+.dk-menu.is-immersive .dk-threat__stop.is-selected,
+.dk-menu.is-immersive .dk-threat__stop.is-selected:hover {
+  color: #17120c !important;
+  background: transparent !important;
+  font-weight: 700;
+}
+
+/* 未选中档位在滑块旁的对比：hover 也要给出可点反馈 */
+.dk-menu.is-immersive .dk-threat__stop:hover:not(.is-selected) {
+  color: var(--bone);
+  background: rgba(216, 207, 186, 0.08) !important;
+}
+
+/* ---- 步骤条 ---- */
+
+.dk-menu.is-immersive .dk-steps {
+  border-bottom-color: rgba(216, 207, 186, 0.22);
+}
+
+.dk-menu.is-immersive .dk-steps__item {
+  color: var(--ash);
+}
+
+.dk-menu.is-immersive .dk-steps__item:hover {
+  color: var(--bone);
+}
+
+.dk-menu.is-immersive .dk-steps__item.is-active {
+  color: var(--bone);
+}
+
+.dk-menu.is-immersive .dk-steps__en {
+  opacity: 1;
+  color: rgba(170, 160, 143, 0.86);
+}
+
+.dk-menu.is-immersive .dk-steps__item.is-active .dk-steps__en {
+  color: rgba(216, 207, 186, 0.82);
+}
+
+/* ---- 主操作按钮：每步的"下一步"是这一屏唯一的强动作，给实心 ---- */
+
+.dk-menu.is-immersive .dk-step-next,
+.dk-menu.is-immersive .dk-steps__next {
+  border: 1px solid #e8b46a;
+  background: linear-gradient(180deg, #e2a558, #c5822f);
+  color: #17120c;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px rgba(12, 11, 10, 0.8);
+}
+
+.dk-menu.is-immersive .dk-step-next:hover,
+.dk-menu.is-immersive .dk-step-next:focus-visible,
+.dk-menu.is-immersive .dk-steps__next:hover,
+.dk-menu.is-immersive .dk-steps__next:focus-visible {
+  outline: none;
+  background: linear-gradient(180deg, #efb468, #d18d38);
+  color: #17120c;
+}
+
+.dk-menu.is-immersive .dk-step-back {
+  border-color: rgba(216, 207, 186, 0.34);
+  color: var(--bone);
+}
+
+.dk-menu.is-immersive .dk-step-back:hover {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+/* ---- 顶部功能条 ---- */
+
+.dk-menu.is-immersive .dk-function-bar {
+  background: linear-gradient(180deg, rgba(4, 6, 8, 0.94), rgba(4, 6, 8, 0));
+}
+
+.dk-function-back {
+  border-color: rgba(216, 207, 186, 0.3);
+  background: rgba(12, 11, 10, 0.72);
+  color: var(--bone);
+  font-size: 10.5px;
+}
+
+.dk-function-back:hover,
+.dk-function-back:focus-visible {
+  border-color: var(--amber);
+  background: rgba(217, 154, 74, 0.16);
+  color: var(--amber);
+}
+
+.dk-function-bar__meta {
+  font-size: 9.5px;
+  color: rgba(217, 154, 74, 0.9);
+}
+
+/* ---- 地图图板：描述与序号不能糊在暗底里 ---- */
+
+.dk-menu.is-immersive .dk-map {
+  background: rgba(6, 8, 10, 0.9) !important;
+  border-color: rgba(216, 207, 186, 0.2) !important;
+}
+
+.dk-menu.is-immersive .dk-map__art {
+  filter: saturate(0.88) brightness(1);
+}
+
+.dk-menu.is-immersive .dk-map:hover .dk-map__art {
+  filter: saturate(1) brightness(1.08);
+}
+
+.dk-menu.is-immersive .dk-map.is-selected .dk-map__art {
+  filter: saturate(1.05) brightness(1.12);
+}
+
+.dk-menu.is-immersive .dk-map__body {
+  background: linear-gradient(180deg, rgba(8, 10, 12, 0.55), rgba(8, 10, 12, 0.96));
+}
+
+.dk-menu.is-immersive .dk-map__desc {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: rgba(216, 207, 186, 0.78);
+}
+
+.dk-menu.is-immersive .dk-map__en {
+  color: rgba(217, 154, 74, 0.92);
+  font-size: 9px;
+}
+
+.dk-menu.is-immersive .dk-map__threat {
+  color: #e5a557;
+  border-color: rgba(125, 43, 34, 0.85);
+}
+
+/* ---- 输入框 / 滑块：控件本身要看得见 ---- */
+
+.dk-menu.is-immersive .dk-input {
+  border-color: rgba(216, 207, 186, 0.3);
+  background: rgba(4, 6, 8, 0.72);
+  color: var(--bone);
+}
+
+.dk-menu.is-immersive .dk-input::placeholder {
+  color: rgba(170, 160, 143, 0.72);
+}
+
+.dk-menu.is-immersive .dk-input:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px rgba(217, 154, 74, 0.4);
+}
+
+.dk-menu .dk-range::-webkit-slider-runnable-track {
+  background: rgba(216, 207, 186, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(216, 207, 186, 0.24), inset 0 -6px 0 -4px rgba(217, 154, 74, 0.5);
+}
+
+.dk-menu .dk-range::-moz-range-track {
+  background: rgba(216, 207, 186, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(216, 207, 186, 0.24);
+}
+
+.dk-slider__hint {
+  color: rgba(170, 160, 143, 0.92);
+  font-size: 9.5px;
+}
+
+.dk-slider {
+  border-bottom-color: rgba(216, 207, 186, 0.2);
+}
+
+.dk-slider__label {
+  color: #e6dfcd;
+}
+
+/* ---- 首页：标题的硬投影原本会压住下方副标题，收掉最外一层 ---- */
+
+.dk-menu .dk-home__kicker {
+  margin-bottom: 16px;
+  font-size: 10.5px;
+  letter-spacing: 0.34em;
+  color: #e3b273;
+  opacity: 1;
+}
+
+.dk-menu .dk-home__title {
+  text-shadow:
+    0 2px 0 rgba(12, 11, 10, 0.9),
+    0 0 48px rgba(217, 154, 74, 0.18);
+}
+
+.dk-menu .dk-home__sub {
+  margin-top: 26px;
+  font-size: 11.5px;
+  letter-spacing: 0.2em;
+  color: rgba(216, 207, 186, 0.72);
+}
+
+.dk-menu .dk-home__menu {
+  border-top-color: rgba(216, 207, 186, 0.22);
+}
+
+.dk-menu .dk-home__item {
+  border-bottom-color: rgba(216, 207, 186, 0.16);
+}
+
+.dk-menu .dk-home__en {
+  color: rgba(170, 160, 143, 0.86);
+}
+
+.dk-menu .dk-home__foot {
+  color: var(--ash);
+  font-size: 10.5px;
+}
+
+.dk-menu .dk-home__coins {
+  color: #e0a95e;
+}
+
+/* ---- 表格 / 统计行：分隔线与数值 ---- */
+
+.dk-table__row {
+  border-bottom-color: rgba(216, 207, 186, 0.16);
+}
+
+.dk-table__row--head {
+  background: rgba(16, 19, 23, 0.92);
+}
+
+.dk-table__row--head .dk-table__cell {
+  color: var(--ash);
+}
+
+.dk-table__row:nth-child(even) {
+  background: rgba(216, 207, 186, 0.05);
+}
+
+.dk-stat {
+  border-bottom-color: rgba(216, 207, 186, 0.2);
+}
+
+.dk-stat__key {
+  color: rgba(216, 207, 186, 0.7);
+}
+
+/* ---- 军械库改枪芯片：8.5~9.5px 的小字在这个尺寸下已经低于可读下限 ---- */
+
+.dk-build__label {
+  font-size: 9.5px;
+  color: var(--ash);
+}
+
+.dk-build__meta {
+  font-size: 8.5px;
+  color: rgba(170, 160, 143, 0.86);
+}
+
+.dk-build__chip {
+  padding: 4px 8px;
+  border-color: rgba(216, 207, 186, 0.24);
+  color: rgba(216, 207, 186, 0.86);
+  font-size: 10.5px;
+}
+
+.dk-build__chip.is-selected {
+  border-color: #e8b46a;
+  background: rgba(217, 154, 74, 0.24);
+  color: #f0e3cc;
+}
+
+.dk-build__note {
+  font-size: 9px;
+  color: rgba(170, 160, 143, 0.86);
+}
+
+/* ---- 好友 / 队伍 / 房间列表 ---- */
+
+.dk-friends__label,
+.dk-friend__meta {
+  color: rgba(170, 160, 143, 0.9);
+}
+
+.dk-friend__name,
+.dk-party__member-name {
+  color: #e6dfcd;
+}
+
+.dk-friends__empty,
+.dk-friends__hint,
+.dk-party__hint,
+.dk-party__slot {
+  color: rgba(170, 160, 143, 0.92);
+}
+
+.dk-party__slot {
+  border-color: rgba(216, 207, 186, 0.28);
+}
+
+/* ---- 昵称引导：黑底卡片上唯一的动作要够亮 ---- */
+
+.dk-onboard__desc,
+.dk-exit__desc {
+  color: rgba(216, 207, 186, 0.78);
+}
+
+.dk-onboard__kicker {
+  color: rgba(217, 154, 74, 0.9);
+}
+
+/* ---- 卡片内文字：天赋 / 武器行 / 装备槽 ----
+   这三类的"未选中"状态原来直接继承 --ash，导致整卡只剩一个亮序号；
+   卡片名和数值属于"扫读信息"，必须比辅助说明更亮一档。 */
+
+.dk-menu .dk-trait {
+  color: rgba(216, 207, 186, 0.86);
+}
+
+.dk-menu .dk-trait__en {
+  color: rgba(170, 160, 143, 0.9);
+}
+
+.dk-menu .dk-trait__desc {
+  font-size: 10px;
+  line-height: 1.5;
+  color: rgba(170, 160, 143, 0.95);
+}
+
+.dk-menu .dk-trait__desc.is-locked {
+  color: rgba(170, 160, 143, 0.8);
+}
+
+.dk-menu .dk-trait.is-selected {
+  color: #efe7d3;
+}
+
+.dk-menu .dk-trait__level {
+  background: rgba(216, 207, 186, 0.22);
+  border-color: rgba(12, 11, 10, 0.9);
+}
+
+/* 锁定 / 满员是语义，不是"看不清"：透明度保留，但抬到仍然能读字的位置 */
+.dk-menu .dk-trait.is-locked { opacity: 0.66; }
+.dk-menu .dk-trait.is-full { opacity: 0.52; }
+
+.dk-menu .dk-weapon {
+  color: rgba(216, 207, 186, 0.82);
+}
+
+.dk-menu .dk-weapon__stat-key {
+  color: rgba(170, 160, 143, 0.92);
+}
+
+.dk-menu .dk-weapon__switch {
+  color: rgba(170, 160, 143, 0.88);
+}
+
+.dk-menu .dk-wrow {
+  color: rgba(216, 207, 186, 0.9);
+}
+
+.dk-menu .dk-wrow__class {
+  background: rgba(154, 168, 69, 0.5);
+  color: #12140c;
+}
+
+.dk-menu .dk-wbar__label {
+  font-size: 9.5px;
+  color: rgba(170, 160, 143, 0.95);
+}
+
+.dk-menu .dk-wbar__track {
+  background: rgba(216, 207, 186, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(12, 11, 10, 0.9);
+}
+
+.dk-menu .dk-slot {
+  border-color: rgba(216, 207, 186, 0.24);
+  background: linear-gradient(140deg, rgba(28, 33, 39, 0.9), rgba(9, 11, 14, 0.95));
+}
+
+.dk-menu .dk-slot__slot {
+  color: rgba(170, 160, 143, 0.92);
+}
+
+.dk-menu .dk-slot__name {
+  color: #e6dfcd;
+}
+
+.dk-menu .dk-slot__note {
+  color: rgba(170, 160, 143, 0.85);
+}
+
+.dk-menu .dk-slot__icon {
+  background: rgba(217, 154, 74, 0.18);
+}
+
+/* 属性条：底槽 + 填充都要能看出"还差多少" */
+.dk-menu .dk-attr__en {
+  color: rgba(170, 160, 143, 0.86);
+}
+
+.dk-menu .dk-bar-track {
+  box-shadow: inset 0 0 0 1px rgba(216, 207, 186, 0.2);
+}
+
+/* ---- 战绩表：空态与阵亡行的红色分开 ----
+   --blood (#7d2b22) 是背景色（威胁滑块、落败行底纹），当文字色只有 2:1 对比，
+   在暗面板上等于隐形。文字用提亮版，背景继续用原色。 */
+
+.dk-table__row.is-empty .dk-table__cell--result {
+  color: var(--ash);
+  font-family: var(--font-ui);
+  letter-spacing: 0.1em;
+}
+
+.dk-table__row.is-empty {
+  background: transparent;
+}
+
+.dk-table__row.is-lost .dk-table__cell--result {
+  color: #d0715b;
+}
+
+.dk-table__row.is-lost {
+  background: rgba(125, 43, 34, 0.22);
+}
+
+.dk-table__cell--result {
+  color: #c2d072;
+}
+
+.dk-table__row--head .dk-table__cell {
+  font-size: 9.5px;
+  color: rgba(170, 160, 143, 0.95);
+}
+
+.dk-table__cell--num {
+  color: #e0a95e;
+}
+
+/* 空态与提示行 */
+.dk-records .dk-panel__foot {
+  color: rgba(170, 160, 143, 0.95);
+}
+
+/* ---- 组队步骤的主武器卡：五列等分后卡片只剩 120px 宽，
+   "温菲尔德 M1873 消音卡宾枪" 这种两行名会把 44px 的卡撑破，
+   右侧的 ON 角标又压在第一行字尾 —— 给名字限行、给角标让位。 ---- */
+
+.dk-deploy[data-step='2'] .dk-primary .dk-weapon {
+  min-height: 54px;
+  padding-right: 20px;
+}
+
+.dk-deploy[data-step='2'] .dk-primary .dk-weapon__name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.14;
+}
+
+.dk-weapon__tick {
+  padding: 0 3px;
+  font-size: 7.5px;
+}
+
+.dk-deploy[data-step='2'] .dk-primary .dk-weapon__kind {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 这一步的卡片只有 120px 宽，类型标签挤成一个小色块反而像渲染错误；
+   名字本身已经带类型（"…消音卡宾枪"），隐藏它信息不丢。 */
+.dk-deploy[data-step='2'] .dk-primary .dk-weapon__kind {
+  display: none;
+}

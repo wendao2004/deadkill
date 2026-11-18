@@ -19,13 +19,16 @@ import {
   MeshBasicMaterial,
   MeshStandardMaterial,
   PerspectiveCamera,
+  PMREMGenerator,
   PointLight,
   RingGeometry,
   Scene,
   SRGBColorSpace,
   Vector3,
   WebGLRenderer,
+  WebGLRenderTarget,
 } from 'three'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import {
   attachmentById, buildFlags,
   type WeaponBuild,
@@ -78,6 +81,7 @@ export class WeaponPreview {
   private readonly camera = new PerspectiveCamera(25, 1, 0.01, 30)
   private readonly turntable = new Group()
   private readonly modelRoot = new Group()
+  private readonly envTexture: WebGLRenderTarget
   private readonly materials: WeaponMaterialSet
   private readonly floor: Mesh
   private readonly ring: Mesh
@@ -104,7 +108,7 @@ export class WeaponPreview {
     this.renderer = new WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     this.renderer.toneMapping = ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.12
+    this.renderer.toneMappingExposure = 1.34
     this.renderer.outputColorSpace = SRGBColorSpace
     this.renderer.domElement.className = 'dk-preview__canvas'
     host.appendChild(this.renderer.domElement)
@@ -112,20 +116,38 @@ export class WeaponPreview {
     this.camera.position.set(0, 0.24, 1.45)
     this.camera.lookAt(0, 0.02, 0)
 
+    // 金属需要环境反射，否则 metalness≈0.86 的枪身在纯色背景上只有一个黑剪影
+    // —— 高光完全依赖平行光的镜面瓣，侧面一转过去就什么都没有。
+    // 这里用 three 自带的室内环境生成一张 PMREM，强度压到 0.5：
+    // 目的是"让钢和木头分出层次"，不是把预览变成影棚产品图。
+    const pmrem = new PMREMGenerator(this.renderer)
+    const room = new RoomEnvironment()
+    this.envTexture = pmrem.fromScene(room, 0.04)
+    room.dispose()
+    pmrem.dispose()
+    this.scene.environment = this.envTexture.texture
+    this.scene.environmentIntensity = 0.95
+
     this.scene.add(new HemisphereLight(0x9db2c8, 0x120e0a, 1.15))
-    this.key = new DirectionalLight(0xffd0a0, 3.4)
+    this.key = new DirectionalLight(0xffd0a0, 4.4)
     this.key.position.set(1.6, 2.2, 1.2)
     this.scene.add(this.key)
-    const fill = new DirectionalLight(0x8fb6e0, 1.1)
+    const fill = new DirectionalLight(0x8fb6e0, 1.7)
     fill.position.set(-2, 0.6, 1.4)
     this.scene.add(fill)
     this.rim = new PointLight(0x6fa8ff, 8, 4, 2)
     this.rim.position.set(-0.4, 0.3, -1.4)
     this.scene.add(this.rim)
 
+    // 台面吃一点环境光就够：它是"把枪托起来的一块地"，不该和主体抢亮度。
     this.floor = new Mesh(
       new CircleGeometry(1.25, 64),
-      new MeshStandardMaterial({ color: 0x090c10, roughness: 0.92, metalness: 0.08 }),
+      new MeshStandardMaterial({
+        color: 0x090c10,
+        roughness: 0.92,
+        metalness: 0.08,
+        envMapIntensity: 0.18,
+      }),
     )
     this.floor.rotation.x = -Math.PI / 2
     this.floor.scale.setScalar(0.52)
@@ -273,7 +295,9 @@ export class WeaponPreview {
     group.updateMatrixWorld(true)
     const rawBox = new Box3().setFromObject(group)
     const rawSize = rawBox.getSize(new Vector3())
-    const fit = 0.68 / Math.max(rawSize.x, rawSize.y, rawSize.z, 0.2)
+    // 0.92 而不是 0.68：0.68 是"整枪占画面三分之二"的保守值，实际在 25° 视场下
+    // 只剩四分之一宽 —— 工作台看不清刻线和配件。0.92 让枪横跨画面，四角仍留余量。
+    const fit = 0.92 / Math.max(rawSize.x, rawSize.y, rawSize.z, 0.2)
     group.scale.setScalar(fit)
     group.updateMatrixWorld(true)
     const box = new Box3().setFromObject(group)
@@ -328,6 +352,7 @@ export class WeaponPreview {
     ;(this.floor.material as MeshStandardMaterial).dispose()
     this.ring.geometry.dispose()
     ;(this.ring.material as MeshBasicMaterial).dispose()
+    this.envTexture.dispose()
     this.renderer.dispose()
   }
 }

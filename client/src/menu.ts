@@ -3600,7 +3600,9 @@ function writeBuild(build: WeaponBuild): void {
     table.appendChild(header)
 
     // 战绩接口尚未接入：不塞五条假记录，明确告诉玩家"这里现在是空的"。
-    const empty = mk('div', 'dk-table__row is-lost')
+    // 空态不是"这一局输了"：用 is-empty 而不是 is-lost，否则整行会染成阵亡红，
+    // 读起来像"刚打输一局"，语义完全反了。
+    const empty = mk('div', 'dk-table__row is-empty')
     empty.appendChild(mk('span', 'dk-table__cell dk-table__cell--result', '暂无战绩'))
     empty.appendChild(mk('span', 'dk-table__cell dk-table__cell--num', '—'))
     empty.appendChild(mk('span', 'dk-table__cell dk-table__cell--num', '—'))

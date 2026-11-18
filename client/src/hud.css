@@ -313,7 +313,7 @@
    脉冲只动 opacity（合成器属性），不去动画 color —— 颜色动画会让这段文字
    每秒重绘一次，虽然量小，但没有理由为它付钱。 */
 .dko-clock.is-critical .dko-clock-num {
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
   /* 血字在黑描边上几乎看不见，所以加一层"骨白内衬"把字心提亮 */
   text-shadow:
     0 0 0 var(--bone, #d8cfba),
@@ -322,7 +322,7 @@
 }
 
 .dko-clock.is-critical .dko-clock-sub {
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
   animation: dko-pulse 1.5s ease-in-out infinite;
 }
 
@@ -378,7 +378,7 @@
 }
 
 .dko-banner-title::before {
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
   transform: translate(-3px, -2px);
   opacity: 0.9;
 }
@@ -405,7 +405,7 @@
 }
 
 .dko-banner--blood .dko-banner-title {
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
   /* 血字在暗底上太沉，把内衬提到骨白 */
   text-shadow: 0 0 0 var(--bone, #d8cfba), 4px 4px 0 rgba(12, 11, 10, 0.9);
 }
@@ -650,7 +650,7 @@
 }
 
 .dko-outcome.is-dead .dko-outcome-splash {
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
 }
 
 .dko-outcome-mark {
@@ -679,7 +679,7 @@
 }
 
 .dko-outcome-mark::before {
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
   transform: translate(-4px, -3px);
   opacity: 0.9;
 }
@@ -695,7 +695,7 @@
 }
 
 .dko-outcome.is-dead .dko-outcome-mark {
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
   /* 血字压在血墨团上会糊成一坨，用骨白内衬把字心挑出来 */
   text-shadow: 0 0 0 var(--bone, #d8cfba), 6px 6px 0 rgba(12, 11, 10, 0.9);
 }
@@ -933,7 +933,7 @@
 }
 
 .dko-curtain-title::before {
-  color: var(--blood);
+  color: var(--blood-text, #cf6a54);
   transform: translate(-4px, 3px);
 }
 
@@ -1170,7 +1170,7 @@ body:has(> .dko-death-ui.is-on) #crosshair {
   font-weight: 900;
   line-height: 1;
   letter-spacing: 0.18em;
-  color: var(--blood);
+  color: var(--blood-text, #cf6a54);
   -webkit-text-stroke: 4px var(--ink);
   text-shadow: 6px 6px 0 rgba(12, 11, 10, 0.92);
 }
@@ -1391,7 +1391,7 @@ body:has(> .dko-death-ui.is-on) #crosshair {
   margin-top: 10px;
   font-size: 12px;
   letter-spacing: 0.1em;
-  color: var(--blood, #b25a4e);
+  color: var(--blood-text, #cf6a54);
 }
 
 .dk-pause__hint {
@@ -1529,7 +1529,7 @@ body:has(> .dko-death-ui.is-on) #crosshair {
 }
 
 .dko-event.is-blood .dko-event-title {
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
   text-shadow: 2px 2px 0 rgba(12, 11, 10, 0.9), 0 0 14px rgba(125, 43, 34, 0.55);
 }
 
@@ -1593,7 +1593,7 @@ body:has(> .dko-death-ui.is-on) #crosshair {
   font-size: 34px;
   letter-spacing: 0.3em;
   margin-right: -0.3em;
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
   -webkit-text-stroke: 2px var(--ink, #0c0b0a);
   text-shadow: 3px 3px 0 rgba(12, 11, 10, 0.9);
 }
@@ -1658,7 +1658,7 @@ body:has(> .dko-death-ui.is-on) #crosshair {
 }
 
 .dko-team-row.is-downed .dko-team-status {
-  color: var(--blood, #7d2b22);
+  color: var(--blood-text, #cf6a54);
 }
 
 .dko-team-row.is-dead {
