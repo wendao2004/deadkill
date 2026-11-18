@@ -936,6 +936,9 @@ export class Renderer {
     this.props = buildProps(this.scene, level, {
       // 独显给 1.25：芦苇/枯树/地面碎屑都按这个倍率长，夜景里"空"是最伤的。
       density: this.gpu.integrated || this.gpu.software ? 0.45 : 1.25,
+      // ?story=1：给叙事静物插一根青色标记杆。这套静物是"贴墙随机角度"摆的，
+      // 没有标记就只能靠运气撞见 —— 加一根杆，改图和验收才可定位。
+      debugStory: qa.story,
     })
     this.monsters = createMonsterRenderer(this.scene, {
       gradientMap: this.gradientMap,

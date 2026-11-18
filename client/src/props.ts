@@ -37,6 +37,8 @@ import {
   Float32BufferAttribute,
   Group,
   InstancedMesh,
+  LineBasicMaterial,
+  LineSegments,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -61,6 +63,13 @@ import { handTint, tintInstances } from './procedural-tint.ts'
 export interface PropsOptions {
   /** 放大/缩小装饰密度，1 = 正常。低配机器可以给 0.5。 */
   density?: number
+  /**
+   * `?story=1`：给每组叙事静物插一根青色标记杆。
+   *
+   * 静物是"贴墙 + 随机角度"摆的，没有标记就只能靠运气撞见 —— 改图时想确认
+   * "那顿没吃完的饭到底落在哪面墙边"，只能靠这根杆。它只存在于 QA 模式。
+   */
+  debugStory?: boolean
 }
 
 export interface Props {
@@ -179,7 +188,7 @@ export function buildProps(scene: Scene, level: LevelDef, options?: PropsOptions
   buildFence(root, level, bag, gradientMap, rng, dens, placeable)
   buildBiomeProps(root, level, bag, gradientMap, rng, dens, placeable, biome)
   // 叙事静物排在群系装饰之后：它贴着墙根长，先让大件落位才不会被挤掉。
-  buildNarrative(root, level, bag, gradientMap, rng, dens, placeable, biome)
+  buildNarrative(root, level, bag, gradientMap, rng, dens, placeable, biome, options?.debugStory === true)
   // 破布得挂在真的树上，所以树列表要从 buildDeadTrees 带出来。
   buildTreeRags(natureRoot, level, bag, gradientMap, rng, trees)
   buildFogWalls(root, level, bag, rng, density)
@@ -1456,11 +1465,15 @@ function buildNarrative(
   density: number,
   placeable: (x: number, z: number, spawnRing?: number) => boolean,
   biome: Biome,
+  debug: boolean,
 ): void {
   const spec = narrativeSpec(biome)
   // 至少 2 处：只有一处的话，走运的玩家整局都碰不上这张图想讲的那句话。
   const count = Math.max(2, Math.round(spec.count * density))
-  const wild = biome === 'swamp' || biome === 'quarry'
+  // 只有"本来就在野地里的东西"才散落（撬棍、碎石、垫木）。
+  // 餐桌、烛台、行李都属于"人用过的地方"，必须贴着墙/门廊 —— 把它们撒进
+  // 空旷沼泽，读起来不是叙事，是穿帮。
+  const wild = biome === 'quarry'
   let spots = wild
     ? scatterSpots(level, rng, count, 9, placeable)
     : nearBoxSpots(level, rng, count, placeable)
@@ -1468,28 +1481,235 @@ function buildNarrative(
   // 也不要这一轮新增的静物整组消失。
   if (spots.length < 2) spots = scatterSpots(level, rng, count, 9, placeable)
   placeInstances(root, level, bag, gradientMap, rng, spec, spots)
+  if (debug) storyMarkers(root, bag, level, spots)
 }
 
+/**
+ * `?story=1` 的定位杆：一根青色实体柱 + 顶部十字横杠。
+ *
+ * 为什么是实体柱而不是线段：这些静物贴在建筑外墙，距离往往是 20~60m，
+ * 1px 的线在这种距离上会被抗锯齿和色调映射一起吃成"一根几乎看不见的竖线"。
+ * 柱体至少有宽度，`toneMapped: false` 保证它不被 AgX 压暗，`depthTest: false`
+ * 保证隔着墙也能看到 —— 验收时要回答的是"摆在哪"，不是"好不好看"。
+ */
+function storyMarkers(root: Group, bag: GpuBag, level: LevelDef, spots: PropSpot[]): void {
+  if (spots.length === 0) return
+  const material = new MeshBasicMaterial({
+    color: 0x2cf0c8,
+    depthTest: false,
+    fog: false,
+    transparent: true,
+    opacity: 0.92,
+    toneMapped: false,
+  })
+  bag.add(material)
+  const post = new CylinderGeometry(0.045, 0.045, 2.6, 6)
+  const bar = new BoxGeometry(1.1, 0.05, 0.05)
+  bag.add(post)
+  bag.add(bar)
+  // 把坐标挂到 window 上：截图时只能猜机位，有了坐标才能"对准"。
+  // 只写 QA 分支，正常游玩不存在这个属性。
+  const w = globalThis as unknown as { __storySpots?: Array<{ x: number; z: number; biome: string }> }
+  w.__storySpots = spots.map((spot) => ({ x: spot.x, z: spot.z, biome: '' }))
+
+  const group = new Group()
+  group.name = 'story-markers'
+  group.renderOrder = 21
+  for (const spot of spots) {
+    const column = new Mesh(post, material)
+    column.position.set(spot.x, level.groundY + 1.3, spot.z)
+    column.renderOrder = 21
+    group.add(column)
+    const cross = new Mesh(bar, material)
+    cross.position.set(spot.x, level.groundY + 2.55, spot.z)
+    cross.renderOrder = 21
+    group.add(cross)
+  }
+  root.add(group)
+}
+
+/**
+ * 每个生物群系讲**一件具体的事**。
+ *
+ * 早期版本里 farm / church / station 共用"长椅 + 油灯"，结果三张图的静物完全一样 ——
+ * 玩家走过两米就知道"又是那条椅子"，这一层就白做了。现在每张图有自己的句子：
+ *
+ * - 农舍：洪水来的时候他们正在吃饭（两副餐具、倒下的杯子、没盖盖的糖浆罐）
+ * - 教堂：教派还在点蜡，等一个不会回来的人（一簇长短不一的蜡烛、卷好的收尸布、挂在架子上的小钟）
+ * - 车站：他们在等一趟不会来的车（行李箱、一双鞋、斜靠的站牌）
+ *
+ * 三条都不是"装饰"，是叙述。所以它们**不给奖励、不进 UI**：让玩家停下来半秒就够了。
+ */
 function narrativeSpec(biome: Biome): PropSpec {
   switch (biome) {
     case 'quarry':
       // 撬棍 + 碎石 + 垫木：采石场"人刚走"的全部证据。
       return { geo: quarryWorkGeometry(), count: 4, scaleMin: 0.9, scaleMax: 1.2, sink: 0.05, ink: 1.2 }
     case 'swamp':
-      // 歪掉的路牌 + 三根木桩。墨线收窄到 0.85：板子只有 3.5cm 厚，外扩两像素
-      // 就把整块板吃成黑片了。
-      return { geo: swampMarkGeometry(), count: 4, scaleMin: 0.85, scaleMax: 1.15, sink: 0.09, ink: 0.85 }
     case 'farm':
-      // 农舍门廊下的一条长椅和一盏油灯。
-      return { geo: benchLanternGeometry(), count: 3, scaleMin: 0.9, scaleMax: 1.1, sink: 0.03, ink: 1.0 }
+      // 沼泽农舍就是"甘蔗农的农舍"：这张图的叙事点是那顿没吃完的饭。
+      // `swamp` 与 `farm` 共用同一条 —— 前者是当前地图的 biome，后者留给未来的纯农田图。
+      return { geo: supperTableGeometry(), count: 3, scaleMin: 0.92, scaleMax: 1.05, sink: 0.02, ink: 0.95 }
     case 'church':
+      return { geo: vigilCandlesGeometry(), count: 4, scaleMin: 0.92, scaleMax: 1.1, sink: 0.03, ink: 0.95 }
     case 'station':
-      // 墓园墙边与站台上都该有一条能坐的长椅、一盏还挂着的灯。
-      return { geo: benchLanternGeometry(), count: 4, scaleMin: 0.9, scaleMax: 1.1, sink: 0.03, ink: 1.0 }
+      return { geo: waitingLuggageGeometry(), count: 4, scaleMin: 0.94, scaleMax: 1.08, sink: 0.02, ink: 0.95 }
     case 'forest':
       // 砍到一半的树桩 + 插在里面的斧头：伐木队"刚走"的唯一证据。
       return { geo: axeStumpGeometry(), count: 4, scaleMin: 0.9, scaleMax: 1.2, sink: 0.06, ink: 1.1 }
   }
+}
+
+/** 测试入口：取某个 biome 的叙事静物几何。生产代码只走 `narrativeSpec`。 */
+export const STORY_BIOMES = ['swamp', 'farm', 'church', 'quarry', 'station', 'forest'] as const
+
+export function narrativeGeometryFor(biome: (typeof STORY_BIOMES)[number]): BufferGeometry {
+  return narrativeSpec(biome).geo
+}
+
+/* ==========================================================================
+ * 叙事静物 · 第一批（2026-11-18，对应美术圣经 §7）
+ *
+ * 三条约束：
+ * 1. 原点在底部中心，全部贴地 —— 摆放逻辑只做 sink（轻微下沉）与绕 Y 旋转。
+ * 2. 顶点色即材质色：这里没有贴图，颜色必须选在夜景能读出形体的区间里
+ *    （陶/蜡/布偏亮，木/皮偏暗），否则一整组静物在月光下是一坨黑。
+ * 3. 部件数控制在 12~16：一件道具就是个位数的三角形，实例化 3~4 次后
+ *    对 draw call 没有可见影响。
+ * ========================================================================== */
+
+/**
+ * 农舍餐桌：洪水到门口的那一顿没吃完的饭。
+ *
+ * 为什么要有一把倒下的椅子：正摆的两副餐具只说明"有人在吃饭"，
+ * 倒下的椅子才说明"他们走得很急"。这是整组静物里唯一讲故事的动作。
+ */
+function supperTableGeometry(): BufferGeometry {
+  const wood = 0x6b4e38
+  const woodDark = 0x54402c
+  const clay = 0xd2c4aa
+  const clayDark = 0x9d8f78
+  const syrup = 0x8a5a1f
+  const parts: BufferGeometry[] = [
+    // 桌面与四条腿
+    paint(new BoxGeometry(0.92, 0.055, 0.62).translate(0, 0.635, 0), wood),
+    paint(new BoxGeometry(0.05, 0.61, 0.05).translate(-0.38, 0.305, -0.24), woodDark),
+    paint(new BoxGeometry(0.05, 0.61, 0.05).translate(0.38, 0.305, -0.24), woodDark),
+    paint(new BoxGeometry(0.05, 0.61, 0.05).translate(-0.38, 0.305, 0.24), woodDark),
+    paint(new BoxGeometry(0.05, 0.61, 0.05).translate(0.38, 0.305, 0.24), woodDark),
+    // 两只碗（上宽下窄的浅锥台）
+    paint(new CylinderGeometry(0.115, 0.075, 0.07, 10).translate(-0.19, 0.7, -0.12), clay),
+    paint(new CylinderGeometry(0.105, 0.07, 0.065, 10).translate(0.17, 0.7, 0.1), clay),
+    // 一只还立着的杯子 + 一只倒了、滚到桌边的杯子
+    paint(new CylinderGeometry(0.036, 0.042, 0.095, 9).translate(-0.06, 0.71, 0.19), clayDark),
+    paint(
+      new CylinderGeometry(0.036, 0.042, 0.095, 9)
+        .rotateZ(Math.PI / 2)
+        .translate(0.4, 0.688, -0.2),
+      clayDark,
+    ),
+    // 糖浆罐：罐身 + 一圈纸标签 + 敞着的盖
+    paint(new CylinderGeometry(0.072, 0.076, 0.19, 10).translate(0.3, 0.755, 0.14), syrup),
+    paint(new CylinderGeometry(0.077, 0.077, 0.055, 10).translate(0.3, 0.755, 0.14), 0xd8cdb4),
+    paint(new CylinderGeometry(0.062, 0.062, 0.02, 10).translate(0.3, 0.868, 0.14), 0x6d5a41),
+    // 倒下的椅子：椅面斜靠桌腿，两条腿朝上 —— 只要轮廓，不必做全
+    paint(new BoxGeometry(0.34, 0.045, 0.34).rotateZ(0.52).translate(-0.62, 0.28, 0.02), wood),
+    paint(new BoxGeometry(0.04, 0.42, 0.04).rotateZ(0.52).translate(-0.86, 0.3, -0.1), woodDark),
+    paint(new BoxGeometry(0.04, 0.42, 0.04).rotateZ(0.52).translate(-0.86, 0.3, 0.13), woodDark),
+  ]
+  return assemble(parts)
+}
+
+/**
+ * 教堂守夜：一簇烧到不同长度的蜡烛、一卷收尸布、架子上的一口不响的钟。
+ *
+ * 蜡烛高度必须**参差**：一样高的蜡烛是"装饰"，长短不一的才像"有人每天来点一支"。
+ * 布卷横躺在地上、露出一点布头，是教派"还没收完"的证据。
+ */
+function vigilCandlesGeometry(): BufferGeometry {
+  const stone = 0x847e73
+  const stoneDark = 0x655f55
+  const wax = 0xece2c8
+  const waxDark = 0xbdb096
+  const flame = 0xfff4cc
+  const cloth = 0xa9a294
+  const clothDark = 0x8b8477
+  const iron = 0x767a80
+
+  // 台面高度：0.14m 的矮台在夜里读成"蜡烛插在地上"，抬到 0.3m 才像一张供桌。
+  const SLAB = 0.36
+  // 五支蜡烛：(x, z, 高度)。参差是刻意的 —— 一样高是"装饰"，长短不一才像
+  // "有人每天来点一支"。
+  const candles: Array<[number, number, number]> = [
+    [-0.16, -0.06, 0.2],
+    [-0.06, 0.08, 0.13],
+    [0.07, -0.05, 0.24],
+    [0.17, 0.07, 0.1],
+    [0.02, -0.13, 0.17],
+  ]
+  const parts: BufferGeometry[] = [
+    // 供桌：底座 + 台面 + 台沿
+    paint(new BoxGeometry(0.78, 0.3, 0.56).translate(0, 0.15, 0), stoneDark),
+    paint(new BoxGeometry(0.86, 0.06, 0.64).translate(0, SLAB - 0.03, 0), stone),
+  ]
+  for (const [x, z, h] of candles) {
+    const base = SLAB + 0.02
+    parts.push(paint(new CylinderGeometry(0.022, 0.025, h, 8).translate(x, base + h / 2, z), wax))
+    // 烛芯上的火苗：整组几何里唯一接近白色的面，四级色阶会把它推到最亮一级。
+    parts.push(paint(new CylinderGeometry(0.006, 0.012, 0.032, 6).translate(x, base + h + 0.02, z), flame))
+    // 蜡泪：台面上一圈更暗的蜡
+    parts.push(paint(new CylinderGeometry(0.032, 0.034, 0.008, 8).translate(x, base + 0.006, z), waxDark))
+  }
+  // 收尸布卷：横躺的圆柱 + 两端的布头，靠在供桌侧面（不挡住蜡烛）
+  parts.push(
+    paint(new CylinderGeometry(0.12, 0.12, 0.6, 9).rotateZ(Math.PI / 2).translate(0.05, 0.12, 0.6), cloth),
+    paint(new BoxGeometry(0.1, 0.07, 0.17).translate(0.34, 0.105, 0.6), clothDark),
+    paint(new BoxGeometry(0.08, 0.055, 0.13).translate(-0.26, 0.1, 0.6), clothDark),
+  )
+  // 小钟架：两根短柱 + 横梁 + 一口钟 + 钟舌。柱高 0.55 —— 原来 0.78 时整体
+  // 读成一个"门框"，钟反而成了框里的一个点。
+  parts.push(
+    paint(new BoxGeometry(0.055, 0.55, 0.055).translate(-0.26, 0.275, -0.52), 0x4a3b2a),
+    paint(new BoxGeometry(0.055, 0.55, 0.055).translate(0.26, 0.275, -0.52), 0x4a3b2a),
+    paint(new BoxGeometry(0.6, 0.055, 0.055).translate(0, 0.56, -0.52), 0x4a3b2a),
+    paint(new CylinderGeometry(0.06, 0.115, 0.17, 10).translate(0, 0.46, -0.52), iron),
+    paint(new BoxGeometry(0.022, 0.06, 0.022).translate(0, 0.37, -0.52), iron),
+    paint(new CylinderGeometry(0.018, 0.018, 0.02, 6).translate(0, 0.34, -0.52), iron),
+  )
+  return assemble(parts)
+}
+
+function waitingLuggageGeometry(): BufferGeometry {
+  const leather = 0x6a5038
+  const leatherLit = 0x8a6a48
+  const brass = 0xb08a45
+  const shoe = 0x4a3d33
+  const board = 0x8a7d68
+  const boardDark = 0x5d5445
+
+  const parts: BufferGeometry[] = [
+    // 箱体 + 两条皮带 + 提手
+    paint(new BoxGeometry(0.54, 0.34, 0.26).translate(0, 0.17, 0), leather),
+    paint(new BoxGeometry(0.56, 0.035, 0.28).translate(0, 0.24, 0), leatherLit),
+    paint(new BoxGeometry(0.56, 0.035, 0.28).translate(0, 0.1, 0), leatherLit),
+    paint(new BoxGeometry(0.12, 0.04, 0.03).translate(0, 0.365, 0), brass),
+    // 箱角包铁：四个小方块，让轮廓不像一块豆腐
+    paint(new BoxGeometry(0.06, 0.06, 0.28).translate(-0.25, 0.03, 0), brass),
+    paint(new BoxGeometry(0.06, 0.06, 0.28).translate(0.25, 0.03, 0), brass),
+    // 并排的一双鞋：鞋身 + 鞋头
+    paint(new BoxGeometry(0.1, 0.07, 0.25).translate(-0.12, 0.035, 0.42), shoe),
+    paint(new BoxGeometry(0.1, 0.07, 0.25).translate(0.06, 0.035, 0.42), shoe),
+    paint(new BoxGeometry(0.1, 0.045, 0.06).translate(-0.12, 0.022, 0.56), shoe),
+    paint(new BoxGeometry(0.1, 0.045, 0.06).translate(0.06, 0.022, 0.56), shoe),
+    // 斜靠的站牌：两根短柱 + 板面 + 板面上更亮的一条"时刻"
+    paint(new BoxGeometry(0.04, 0.9, 0.04).translate(-0.52, 0.45, -0.3), boardDark),
+    paint(new BoxGeometry(0.04, 0.9, 0.04).translate(-0.3, 0.45, -0.3), boardDark),
+    paint(new BoxGeometry(0.36, 0.5, 0.03).rotateZ(0.16).translate(-0.41, 0.86, -0.3), board),
+    paint(new BoxGeometry(0.26, 0.05, 0.012).rotateZ(0.16).translate(-0.41, 0.94, -0.28), 0xd6cbb0),
+    paint(new BoxGeometry(0.3, 0.03, 0.012).rotateZ(0.16).translate(-0.41, 0.84, -0.28), 0xb5a98e),
+    paint(new BoxGeometry(0.2, 0.03, 0.012).rotateZ(0.16).translate(-0.41, 0.78, -0.28), 0xb5a98e),
+  ]
+  return assemble(parts)
 }
 
 /** 斧头桩：树桩 + 斧柄 + 斧刃 + 脚边木屑。 */
@@ -1581,41 +1801,10 @@ function brokenCartGeometry(withSpokes: boolean): BufferGeometry {
  * 灯罩是整张图里唯一的暖色（0xa8935c）。在墨绿偏蓝的雾里，一点暖光比任何形状
  * 都更早被看见，所以它不只是一个细节，也是一个地标。
  */
-function benchLanternGeometry(): BufferGeometry {
-  const BENCH = 0x7a6045
-  const DARK = 0x5c4a37
-  const IRON = 0x3a3833
-  return assemble([
-    paint(new BoxGeometry(1.6, 0.09, 0.34).translate(0, 0.44, 0), BENCH),
-    paint(new BoxGeometry(0.1, 0.42, 0.3).translate(-0.62, 0.21, 0), DARK),
-    paint(new BoxGeometry(0.1, 0.42, 0.3).translate(0.62, 0.21, 0), DARK),
-    // 靠背往后仰 9°：竖直的靠背读起来像一块挡板。
-    paint(new BoxGeometry(1.6, 0.22, 0.06).rotateX(-0.16).translate(0, 0.68, -0.2), BENCH),
-    // 灯柱 + 横臂 + 吊在臂端的灯。
-    paint(new CylinderGeometry(0.045, 0.07, 1.72, 6).translate(1.05, 0.86, 0), IRON),
-    paint(new BoxGeometry(0.34, 0.05, 0.05).translate(0.9, 1.7, 0), IRON),
-    paint(new BoxGeometry(0.12, 0.03, 0.12).translate(0.74, 1.56, 0), IRON),
-    paint(new CylinderGeometry(0.07, 0.09, 0.18, 6).translate(0.74, 1.45, 0), 0xa8935c),
-  ])
-}
 
 /**
  * 沼泽边的木桩与残破路牌。路牌不指任何方向正是重点 —— 它曾经指过。
  */
-function swampMarkGeometry(): BufferGeometry {
-  const WET = 0x6a5540
-  const OLD = 0x5a4735
-  return assemble([
-    // 立柱往一边歪 9°，牌板再歪 24°：一块还挂在钉子上的板不会和柱子同角度。
-    paint(new BoxGeometry(0.08, 1.6, 0.08).rotateZ(0.16).translate(-0.6, 0.8, 0), WET),
-    paint(new BoxGeometry(0.62, 0.26, 0.035).rotateZ(0.42).translate(-0.3, 1.2, 0.02), OLD),
-    paint(new BoxGeometry(0.04, 0.05, 0.05).translate(-0.42, 1.24, 0.03), 0x3c3a36),
-    // 三根打进泥里的桩：一高一低，一根已经倒伏。
-    paint(new CylinderGeometry(0.055, 0.075, 0.95, 5).rotateZ(0.06).translate(0.3, 0.44, 0.1), WET),
-    paint(new CylinderGeometry(0.05, 0.07, 0.62, 5).rotateZ(-0.1).translate(0.72, 0.28, -0.2), WET),
-    paint(new BoxGeometry(0.9, 0.07, 0.07).rotateY(0.7).translate(0.5, 0.09, 0.55), OLD),
-  ])
-}
 
 /** 采石场的一小摊活儿：碎石 + 撬棍 + 垫木。撬棍是"人刚走"的唯一证据。 */
 function quarryWorkGeometry(): BufferGeometry {
@@ -1875,13 +2064,44 @@ function nearBoxSpots(
   const walls = level.boxes.filter((box) => box.hy * 2 >= 1.2)
   const spots: PropSpot[] = []
   if (walls.length === 0) return spots
+
+  // 只贴"像房子"的墙：2.2m 以上、占地 5㎡ 以上。篱笆和矮台挡不住光，也不会有人
+  // 在它旁边吃饭、点蜡或放行李 —— 把餐桌贴在一条 1.2m 高的矮墙外，读起来是 bug。
+  //
+  // 还要排掉地图边界那一圈围墙：它们是"世界的尽头"，不是建筑。贴上去的结果是
+  // 道具落在围墙外侧，玩家在墙内永远看不到 —— 摆得再对也等于没做。
+  const isPerimeter = (box: { x: number; z: number }): boolean =>
+    Math.max(Math.abs(box.x), Math.abs(box.z)) > level.boundsHalf - 12
+  const buildings = walls.filter(
+    (box) => !isPerimeter(box) && box.hy * 2 >= 2.2 && box.hx * box.hz >= 5,
+  )
+  // 再优先"玩家会路过"的那几栋：距最近出生点 12~62m。太近会挡出生走廊，
+  // 太远则整局都碰不到 —— 叙事道具 90% 的价值在"被看见"。
+  const distToSpawn = (box: { x: number; z: number }): number => {
+    let best = Infinity
+    for (const spawn of level.spawns) {
+      const d = Math.hypot(spawn.x - box.x, spawn.z - box.z)
+      if (d < best) best = d
+    }
+    return best
+  }
+  // 按"离出生点多远"排序，取最近的一批（上限 8 栋）。用固定距离区间会在
+  // 大地图上把核心建筑全筛掉 —— 90m 见方的图里，主教堂往往在 90m 外。
+  const reachable = buildings
+    .filter((box) => distToSpawn(box) >= 12)
+    .sort((a, b) => distToSpawn(a) - distToSpawn(b))
+    .slice(0, 8)
+  const pool = reachable.length >= 2 ? reachable : buildings.length >= 2 ? buildings : walls
+
   const minGap = 7
   let guard = 0
   while (spots.length < count && guard < count * 60) {
     guard++
-    const box = walls[Math.floor(rng() * walls.length) % walls.length]!
+    const box = pool[Math.floor(rng() * pool.length) % pool.length]!
     // 带 rotY 的盒子是"躺着的长方体"，外圈得按对角线量，否则会插进墙里。
-    const reach = (box.rotY ? Math.hypot(box.hx, box.hz) : Math.max(box.hx, box.hz)) + 1.0 + rng() * 1.8
+    // 贴着墙根放，不要退到院子中间：叙事道具要读成"有人在这儿放过"，而不是
+    // "地上凭空多了一张桌子"。0.7~1.5m 是门边到墙角的自然距离。
+    const reach = (box.rotY ? Math.hypot(box.hx, box.hz) : Math.max(box.hx, box.hz)) + 0.7 + rng() * 0.8
     const angle = rng() * Math.PI * 2
     const x = box.x + Math.cos(angle) * reach
     const z = box.z + Math.sin(angle) * reach

@@ -208,3 +208,25 @@ pnpm qa:bench -- --url "http://127.0.0.1:5173/?bench=1&q=quality&seed=4207&noaud
 输出 `__bench` 的 frames/avg/median/p99/min/max 与 `__stats()`。软件渲染
 （SwiftShader/llvmpipe）只警告、不按硬件阈值失败；CI 容器没有 GPU 时不会误判。
 脚本结束会清理整套 Chrome 子进程。
+
+
+---
+
+## 叙事静物与多图验收（2026-11-18）
+
+| 参数 | 作用 |
+|---|---|
+| `?story=1` | 给每组叙事静物插青色定位柱；坐标同时写到 `window.__storySpots` |
+| `?match=<id>` | 覆盖 QA 房间号。**不换房间就换不了图** —— 服务端按房间首位玩家的 `?map=` 定关卡 |
+| `?colliders=1` | 碰撞盒线框（青=可见，橙=`noRender` 隐形骨架） |
+| `?build=...` | 强制配件外观（只改外观不改数值） |
+| `?vmdist=` | 武器展示机位距离，0.36~0.45 做近景检查 |
+
+逐图验收的最小流程：
+
+```bash
+node tools/qa-shot.mjs --out a.png --url "...?map=chapel-night&match=shot-chapel&shot=1"
+node tools/qa-shot.mjs --out b.png --url "...?map=quarry-dust&match=shot-quarry&shot=1"
+```
+
+第二条如果还拍出教堂，就是忘了 `&match=`。

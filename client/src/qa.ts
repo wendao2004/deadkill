@@ -56,6 +56,16 @@ export interface QaParams {
   build: string | null
   /** `?colliders=1`：把参与碰撞的盒刷画成线框（含 noRender 隐形骨架）。 */
   colliders: boolean
+  /** `?story=1`：给叙事静物插标记杆，用于「这段叙事到底摆在哪」的定位与验收。 */
+  story: boolean
+  /**
+   * `?match=xxx`：覆盖 QA 自动进场用的房间号。
+   *
+   * 不带这个参数时永远是 `qa` 房间，而**服务端按房间第一位玩家的图定关卡** ——
+   * 于是同一台服务端上，第二次 `?map=quarry` 拍到的还是第一次那张图。
+   * 想逐图验收就必须换房间号。
+   */
+  match: string | null
   noaudio: boolean
   /** false = ?post=0，关闭画面风格层。 */
   post: boolean
@@ -157,6 +167,8 @@ export function parseQa(source: string): QaParams {
     vmdist: finite(params.get('vmdist')),
     build: params.get('build'),
     colliders: flag(params, 'colliders', false),
+    story: flag(params, 'story', false),
+    match: params.get('match'),
     noaudio: flag(params, 'noaudio', false),
     post: flag(params, 'post', true),
     postFail: flag(params, 'postfail', false),

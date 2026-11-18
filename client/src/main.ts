@@ -757,7 +757,9 @@ if (qa.autostart) {
     // 缺省值只在这里补一次：matchId 固定成 'qa' 才能让两次启动进同一房间，
     // 截图里出现的远端玩家/怪物数量也因此可复现。
     nickname: saved.nickname ?? 'QA',
-    matchId: saved.matchId ?? 'qa',
+    // ?match= 优先：QA 逐图验收必须能指定房间，否则服务端按房间首位玩家的图定关卡，
+    // 第二条 `?map=` 会被静默忽略（现象是"我明明换了图，画面还是上一张"）。
+    matchId: qa.match ?? saved.matchId ?? 'qa',
     primaryId: saved.primaryId ?? DEFAULT_WEAPON_ID,
     traits: saved.traits ?? 0,
   }).catch((error) => {
