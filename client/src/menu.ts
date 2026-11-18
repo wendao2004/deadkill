@@ -27,6 +27,7 @@ import {
   ATTACHMENTS,
   ATTACHMENTS_ENABLED,
   CONTRACTS,
+  CONTRACT_NONE,
   clampAttachment,
   clampContract,
   MAX_PLAYERS,
@@ -39,6 +40,7 @@ import {
   TRAIT_MAX_LEVEL,
   WEAPONS,
   getLevel,
+  contractOf,
   isPrimaryChoice,
   normalizeTraitLevels,
   packSelection,
@@ -61,6 +63,7 @@ import {
 } from '@dk/shared'
 
 
+import { deployBrief, worldLine, artProfile } from './art-direction.ts'
 import { rememberLevelId } from './level-choice.ts'
 import { traitGlyph } from './traits.ts'
 import { WeaponPreview } from './weapon-preview.ts'
@@ -1298,11 +1301,14 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   const stageEn = mk('div', 'dk-stage__en')
   const stageRule = mk('span', 'dk-stage__rule')
   const stageDesc = mk('div', 'dk-stage__desc')
+  // 简报行：日期 · 天气 · 合同。这是玩家进图前最后一次被告知"你要去哪"。
+  const stageBrief = mk('div', 'dk-stage__brief')
   const stageState = mk('div', 'dk-stage__state', '潜 入 中 · · ·')
   stage.appendChild(stageMap)
   stage.appendChild(stageEn)
   stage.appendChild(stageRule)
   stage.appendChild(stageDesc)
+  stage.appendChild(stageBrief)
   stage.appendChild(stageState)
   host.appendChild(barTop)
   host.appendChild(barBottom)
@@ -1487,9 +1493,14 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   function buildHome(): HTMLElement {
     const home = mk('div', 'dk-home')
     const head = mk('div', 'dk-home__head')
-    head.appendChild(mk('p', 'dk-home__kicker', '路易斯安那 · 1890'))
+    // 环境行：这一屏不是"选单"，是猎人在屋里看到的一条仪表读数。
+    // 日期/天气来自 art-direction.ts，与出击标题卡、局内雾感同源。
+    const world = artProfile(null)
+    head.appendChild(mk('p', 'dk-home__kicker', worldLine(null)))
     head.appendChild(mk('h2', 'dk-home__title', 'DEAD KILL'))
     head.appendChild(mk('p', 'dk-home__sub', '带走赏金，或者成为赏金'))
+    // 传闻：世界不说台词，只让玩家听见"别人在传什么"。
+    head.appendChild(mk('p', 'dk-home__rumor', `「${world.rumor}」`))
     home.appendChild(head)
 
     const menu = mk('div', 'dk-home__menu')
@@ -1761,6 +1772,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       body.appendChild(mk('span', 'dk-map__name', entry.name))
       body.appendChild(mk('span', 'dk-map__en', entry.en))
       body.appendChild(mk('span', 'dk-map__desc', entry.desc))
+      // 这张图在世界上是"哪一天、什么天"：五张卡不是一个菜单的五个选项，
+      // 是五个不同日子的记录。数据与局内雾感、出击简报同源（art-direction.ts）。
+      const world = artProfile(entry.id)
+      body.appendChild(mk('span', 'dk-map__when', `${world.date} · ${world.weather}`))
       const meta = mk('span', 'dk-map__meta')
       meta.appendChild(mk('span', 'dk-map__threat', '威胁 ' + entry.threat))
       body.appendChild(meta)
@@ -3209,6 +3224,8 @@ function writeBuild(build: WeaponBuild): void {
     stageMap.textContent = entry.name
     stageEn.textContent = entry.en
     stageDesc.textContent = entry.desc
+    const contract = contractOf(clampContract(deployState.contract))
+    stageBrief.textContent = deployBrief(entry.id, contract.id === CONTRACT_NONE ? null : contract.name)
     stageState.textContent = '潜 入 中 · · ·'
   }
 

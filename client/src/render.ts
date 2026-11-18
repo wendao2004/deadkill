@@ -102,6 +102,7 @@ import { createMonsterRenderer, type MonsterRenderer, type MonsterView } from '.
 import { createObjectiveMarkers, type ObjectiveMarkers, type ObjectiveView } from './markers.ts'
 import { createVfx, type ImpactKind, type Vfx } from './vfx.ts'
 import { createDecals, type Decals } from './decals.ts'
+import { artProfile, type ArtProfile } from './art-direction.ts'
 import { createAtmosphere, type Atmosphere } from './atmosphere.ts'
 import { createEnvironmentProbe, type EnvironmentProbe } from './environment.ts'
 import { SHADOW_GEOMETRY, createShadowMaterial, createShadowTexture } from './shadows.ts'
@@ -663,6 +664,10 @@ export class Renderer {
   private readonly props: Props
   /** 关卡数据：自然资产散布要按树冠盒子定位。 */
   private readonly level: LevelDef
+  /** 本图的美术配置（色彩脚本 + 世界观文案），见 `art-direction.ts`。 */
+  private readonly art: ArtProfile
+  /** 玩家在设置里选的亮度倍率。与色彩脚本的曝光相乘，二者互不覆盖。 */
+  private brightness = 1
   /** 程序化树冠的独立网格：GLTF 树加载成功后隐藏它。 */
   private canopyMesh: Mesh | null = null
   /** GLTF 自然资产根节点（纯视觉）。 */
@@ -769,6 +774,8 @@ export class Renderer {
 
   constructor(container: HTMLElement, level: LevelDef) {
     this.level = level
+    // 色彩脚本按关卡 id 取；未登记的新图会回落到默认档，不会渲染成死黑。
+    this.art = artProfile(level.id)
     // 苔藓/湿气按"离地多高"分布：先告诉墨线层这张图的地面在哪。
     setInkGroundY(level.groundY)
     this.gradientMap = makeGradientMap()
@@ -914,6 +921,7 @@ export class Renderer {
 
     this.scene.add(this.levelGroup)
     this.buildLevel(level)
+    this.applyArtGrade()
     this.buildDoors()
     this.buildTraps()
     this.buildLamps()
@@ -1032,11 +1040,33 @@ export class Renderer {
    * 分级的硬要求），exposure 在 no-tone-mapping 下不参与片元，调了也不会变。
    */
   setBrightness(brightness: number): void {
-    const value = Math.min(1.8, Math.max(0.8, brightness))
     // 亮度现在作用在 HDR 合成的曝光上，而不是 CSS filter：
     // 在高光已经进入 AgX 之后再加一层 brightness 只会把白压平；在线性光里
     // 乘曝光，亮部会沿肩部滚落，暗部也不会被一起洗灰。
-    this.post.setSettings({ exposure: 1.22 * value })
+    //
+    // 它乘在**本图色彩脚本的曝光**上，不是写死的 1.22：否则玩家把亮度调到 100%
+    // 就会把五张图的色调差异一起抹平，教堂和采石场变成一个样子。
+    this.brightness = Math.min(1.8, Math.max(0.8, brightness))
+    this.applyArtGrade()
+  }
+
+  /**
+   * 把本图色彩脚本灌进后处理。
+   *
+   * 颗粒/暗角/色差/泛光**不让玩家调**：它们是这张图的"情绪"，调掉就不是同一个
+   * 世界了。玩家只控制曝光（亮度滑杆），因为那是可访问性而不是风格。
+   *
+   * 展示模式（`?show=weapon`）要用固定曝光，所以调用方必须先判断
+   * `showcase === null`；见 `setShowcase`。
+   */
+  private applyArtGrade(): void {
+    this.post.setSettings({
+      exposure: this.art.exposure * this.brightness,
+      bloom: this.art.bloom,
+      grain: this.art.grain,
+      vignette: this.art.vignette,
+      chromatic: this.art.chromatic,
+    })
   }
 
   /** 镜头晃动强度：1 完整 / 0.45 减弱 / 0 关闭。 */
@@ -1106,7 +1136,10 @@ export class Renderer {
     this.scene.visible = mode !== 'weapon'
     // 展示模式只照一把枪，画面里 95% 是纯黑，自动曝光会把整把枪压成剪影。
     // 这里直接给一档固定曝光，让近景能看清倒角/配件接缝。
-    this.post.setSettings({ exposure: mode === 'weapon' ? 2.6 : 1.22 })
+    // 退出展示时回到**本图**的曝光，而不是写死的 1.22；同时把颗粒/暗角一起
+    // 重新灌回去 —— 展示模式只改了曝光，但写死 1.22 会把采石场的 1.30 抹掉。
+    if (mode === 'weapon') this.post.setSettings({ exposure: 2.6 })
+    else this.applyArtGrade()
     if (mode === 'mats') this.buildMaterialShowcase(overrideCamera)
     else if (mode === 'fx') this.buildEffectShowcase(overrideCamera)
   }

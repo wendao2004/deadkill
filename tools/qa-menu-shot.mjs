@@ -26,6 +26,8 @@ const pane = readFlag('--pane')
 const home = readFlag('--home') === null ? null : Number(readFlag('--home'))
 /** 出击向导当前步（1 = 地图，2 = 组队，3 = 房间）：点几次"下一步"。 */
 const step = readFlag('--step') === null ? null : Number(readFlag('--step'))
+/** 按下「进入猎场」，截黑场里的标题卡（它在真进场后 1~3s 内就没了）。 */
+const stageShot = process.argv.includes('--stage')
 const port = 9600 + Math.floor(Math.random() * 300)
 const profile = mkdtempSync(join(tmpdir(), 'dkqa-menu-'))
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -191,7 +193,17 @@ async function main() {
     await sleep(700)
   }
 
-  await sleep(900)
+  if (stageShot) {
+    await evaluate(`(() => {
+      const cta = document.querySelector('.dk-cta')
+      if (cta) cta.click()
+      return !!cta
+    })()`)
+    // 标题卡在 iris 收满（820ms）之后才逐行浮出，1020ms 截最稳。
+    await sleep(1020)
+  } else {
+    await sleep(900)
+  }
 
   const stats = await evaluate('JSON.stringify(window.__stats ? window.__stats() : null)')
   const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })

@@ -5006,3 +5006,73 @@
 .dk-deploy[data-step='2'] .dk-primary .dk-weapon__kind {
   display: none;
 }
+
+/* ==========================================================================
+ * 世界观层 · 2026-11-18
+ *
+ * 首页不再只是四个按钮：标题上下各有一行"世界在报数"的字 ——
+ * 上面是日期/天气（仪表读数），下面是一句当天流传的话（墙上的传闻）。
+ * 两者都来自 `art-direction.ts`，与出击标题卡、局内雾感同源。
+ *
+ * 排版取舍：环境行用等宽 + 小字距（读数感），传闻用衬线斜体（人声感）。
+ * 两者都不能抢标题，所以亮度压在 0.6~0.85 之间。
+ * ========================================================================== */
+
+.dk-menu .dk-home__kicker {
+  margin-bottom: 14px;
+  padding-bottom: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  color: rgba(216, 207, 186, 0.74);
+  opacity: 1;
+}
+
+/* 读数的两侧短横：让它像一行被刻/印在板子上的信息，而不是一句副标题。 */
+.dk-menu .dk-home__kicker::before,
+.dk-menu .dk-home__kicker::after {
+  content: "";
+  display: inline-block;
+  width: 22px;
+  height: 1px;
+  margin: 0 10px 3px;
+  background: rgba(216, 207, 186, 0.28);
+  vertical-align: middle;
+}
+
+.dk-menu .dk-home__rumor {
+  margin: 16px 0 0;
+  font-family: Georgia, 'Songti SC', 'Noto Serif CJK SC', serif;
+  font-style: italic;
+  font-size: 12.5px;
+  line-height: 1.6;
+  letter-spacing: 0.06em;
+  color: rgba(217, 154, 74, 0.78);
+  text-shadow: 0 1px 0 rgba(12, 11, 10, 0.9);
+}
+
+/* 标题卡里的简报行：比风味文案更"硬"，是事实而不是气氛。 */
+.dk-stage__brief {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  color: rgba(216, 207, 186, 0.76);
+}
+
+.is-deploying .dk-stage__brief {
+  animation: dk-stage-item 380ms 1120ms cubic-bezier(0.16, 0.9, 0.22, 1) both;
+}
+
+/* 地图卡上的"日期 · 天气"：把五张卡从"五个选项"变成"五天的记录"。
+   比描述更硬（事实），所以用等宽 + 琥珀，字号压到 8.5px —— 它是脚注，不是卖点。 */
+.dk-menu.is-immersive .dk-map__when {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  color: rgba(217, 154, 74, 0.86);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
