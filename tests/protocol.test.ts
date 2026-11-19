@@ -233,7 +233,7 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   // v19：战利品包加合同 id/进度 2 字节（11 → 13）。
   // v20：目标包加巢穴状态位图 1 字节（26 → 27）。
   // v21：玩家快照加队伍 1 字节（36 → 37）；配装包加组队偏好，战利品包加救援进度。
-  assert.equal(PROTOCOL_VERSION, 24)
+  assert.equal(PROTOCOL_VERSION, 25)
   assert.equal(SNAPSHOT_HEADER, 17)
   assert.equal(PLAYER_SNAPSHOT_SIZE, 37)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)

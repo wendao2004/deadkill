@@ -36,7 +36,9 @@
 // 11 = 四种地图 Boss（种类码 3..6）、怪物状态 Special(4) 与事件 BossPulse(8)。
 // 旧客户端不认识种类 4..6 会直接丢掉 Boss（看不见的 Boss 比连不上更糟），
 // 事件 8 还会被当成 Respawn 读 16 字节 —— 所以硬拒。
-export const PROTOCOL_VERSION = 24
+// 25 = weather modifier 的含义扩成 8 档（4 种天气 × 昼夜）。包体没变，但旧客户端
+// 会把白昼 id 4..7 回落到"死寂"（夜晚），两端看到的天气不一致 —— 所以硬拒。
+export const PROTOCOL_VERSION = 25
 
 /**
  * 服务端模拟频率（Hz）。
