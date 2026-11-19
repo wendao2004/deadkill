@@ -1913,6 +1913,9 @@ export class Game {
       this.modifierId = objective.modifier
       const modifier = getModifier(objective.modifier)
       this.renderer.setModifier(modifier.fogScale, modifier.fogTint)
+      // 同一张图的 07:00 / 19:00 两套光照：目标包只多传一个 modifier id，
+      // 白天用 4..7，夜晚用 0..3，不需要改协议。
+      this.renderer.setDaylight(modifier.time === 'day')
       this.renderer.setRain(modifier.key === 'storm' ? 1 : 0)
       // ?wet= 是显式覆盖：A/B 截图要固定湿度，不能被这一局的天气改掉。
       if (qa.wet === null) {
@@ -2613,7 +2616,11 @@ export class Game {
       scoped: this.input.ads && this.adsZoomOf() >= SCOPE_MIN_ZOOM,
       bossPct: this.bossPct,
       bossKind: this.bossKind,
-      modifierName: getModifier(this.modifierId >= 0 ? this.modifierId : 0).name,
+      modifierName: (() => {
+        const modifier = getModifier(this.modifierId >= 0 ? this.modifierId : 0)
+        // 钟点是玩家判断"这是同一天的哪一趟"的第一信息，必须和天候一起出现。
+        return `${modifier.hour} · ${modifier.name}`
+      })(),
       modifierDesc: getModifier(this.modifierId >= 0 ? this.modifierId : 0).desc,
       traits: this.options.traits,
       bandages: this.loot?.bandages ?? 0,

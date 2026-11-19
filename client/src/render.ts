@@ -597,6 +597,9 @@ export class Renderer {
   private sceneHashCache: SceneSignature | null = null
   /** auto 解析后的实际档位；接触阴影/降档判断要用它，而不是靠 minScale 反推。 */
   private resolvedQuality: Exclude<GraphicsQuality, 'auto'> = 'balanced'
+  /** 本局时间带：07:00 白天 / 19:00 夜晚。由目标包的 modifier 驱动。 */
+  private isDay = false
+  private readonly hemi: HemisphereLight
   /** QA 子系统展示：mats / fx / weapon；null = 正常游戏。 */
   private showcase: 'mats' | 'fx' | 'weapon' | null = null
   /** noRender 隐形骨架的兜底外观组：GLB 掉档时用它，避免"摸得着看不见"。 */
@@ -930,7 +933,8 @@ export class Renderer {
     // PBR 与 toon 的响应完全不同：toon 的 4 级色阶会自己抬中间调，PBR 只会
     // 老老实实按入射光算。补一盏天空/地面半球光，把背光面从纯黑抬到可读，
     // 同时保留月光的方向性。0.3 是"能读出箱体侧面、又没把夜洗成阴天"的上限。
-    this.scene.add(new HemisphereLight(0x3d5270, 0x181410, 0.16))
+    this.hemi = new HemisphereLight(0x3d5270, 0x181410, 0.16)
+    this.scene.add(this.hemi)
     this.viewScene.environment = this.environment.environment
     this.viewScene.environmentIntensity = 1.0
     // 假高光的方向 = 月光方向。世界材质用它；武器场景在 render() 里会临时
@@ -1091,7 +1095,8 @@ export class Renderer {
    */
   private applyArtGrade(): void {
     this.post.setSettings({
-      exposure: this.art.exposure * this.brightness,
+      // 白天少抬一档曝光：光本身已经更亮，曝光再抬会把石材洗白。
+      exposure: this.art.exposure * this.brightness * (this.isDay ? 0.92 : 1),
       bloom: this.art.bloom,
       grain: this.art.grain,
       vignette: this.art.vignette,
@@ -3283,6 +3288,24 @@ export class Renderer {
    * 只改雾，不改光照 —— 浓雾局真正变的是"能看多远"，把太阳也调暗会变成
    * 另一个游戏。fogScale = 1 且 tint 与关卡基线相同时等于什么都不做。
    */
+  /**
+   * 时间带：07:00 白天 / 19:00 夜晚。
+   *
+   * 同一张图用同一份几何，只换光：太阳/月亮颜色、天空色带、环境光、曝光。
+   * 天气（雾量/雨/怪量）仍由 modifier 决定，两者独立组合。
+   */
+  setDaylight(day: boolean): void {
+    if (this.isDay === day) return
+    this.isDay = day
+    this.atmo.setDaylight(day)
+    this.post.setFogOrb(day, this.art.lightScale)
+    this.hemi.color.setHex(day ? 0x9fb6d0 : 0x3d5270)
+    this.hemi.groundColor.setHex(day ? 0x4a4438 : 0x181410)
+    this.hemi.intensity = day ? 0.5 : 0.16
+    this.scene.environmentIntensity = day ? 1.12 : 0.72
+    this.applyArtGrade()
+  }
+
   setModifier(fogScale: number, fogTint: number): void {
     const fog = this.scene.fog
     if (fog instanceof FogExp2) {
@@ -3297,6 +3320,8 @@ export class Renderer {
         this.fogGroundY,
         this.art.lightScale,
       )
+      // setVolumetricFog 会把雾的光源重置成冷月；白天要重新盖上暖阳。
+      this.post.setFogOrb(this.isDay, this.art.lightScale)
       this.atmo.setLevel(fog.color.getHex(), this.fogBase.density * scaled)
       // 解析雾只承担近景过渡；体积雾才是能见度的主判据。
       this.atmo.setAnalyticFogScale(this.directRender ? 1 : 0.25)

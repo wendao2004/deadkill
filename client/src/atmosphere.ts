@@ -67,6 +67,10 @@ import type { PerspectiveCamera, Scene } from 'three'
 
 /** 月光。冷蓝是骨架：暖色只允许来自火盆和地平线余晖，两色一混就没夜味了。 */
 const MOON_COLOR = 0x93a7c4
+/** 07:00 的低角度太阳：暖白，靠地平线，和水彩余晖同一色系。 */
+const SUN_COLOR = 0xffd2a0
+const DAY_SKY_FILL_COLOR = 0x9fb6d0
+const DAY_AMBIENT_COLOR = 0x506070
 /**
  * 月光强度。默认场景实测中央区中位数只有 41–54/255，太暗；抬到 1.15 后
  * 仍保留"冷蓝夜色"，但暗部不再糊成一块。玩家可通过设置里的亮度再微调。
@@ -180,6 +184,8 @@ export interface Atmosphere {
    * 这个旋钮，由 art-direction.ts 的 profile 驱动。
    */
   setLightScale(scale: number): void
+  /** 07:00 白天 / 19:00 夜晚：换太阳/月亮颜色、天空色带与光强。 */
+  setDaylight(day: boolean): void
   /**
    * 战局压力：0 = 开局，1 = 最后一秒。
    *
@@ -256,6 +262,8 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     uCloudDark: { value: new Color() },
     uCloudLit: { value: new Color() },
     uTime: { value: 0 },
+    /** 0 = 夜，1 = 昼。天空、月亮、星点都按它切换。 */
+    uDay: { value: 0 },
   }
 
   const skyMaterial = new ShaderMaterial({
@@ -284,6 +292,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       'uniform vec3 uCloudDark;',
       'uniform vec3 uCloudLit;',
       'uniform float uTime;',
+      'uniform float uDay;',
       'varying vec3 vDir;',
       'float skyHash(vec2 p) {',
       '  p = fract(p * vec2(127.1, 311.7));',
@@ -305,12 +314,16 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       '  float wob = (skyNoise(vec2(az * 1.7, h * 5.0 + 3.1)) - 0.5) * 0.06',
       '            + (skyNoise(vec2(az * 5.3, 11.7)) - 0.5) * 0.03;',
       '  float hh = h + wob;',
-      '  // 三条色带：地平线余晖 → 中景靛蓝 → 天顶深蓝。',
-      '  vec3 col = mix(uHorizon, uMid, smoothstep(0.015, 0.20, hh));',
-      '  col = mix(col, uZenith, smoothstep(0.20, 0.62, hh));',
-      '  col = mix(col, uBelow, smoothstep(0.0, -0.42, h));',
-      '  // 地平线余晖：像水彩在纸边洇开的一层暖色，不是物理散射。',
-      '  col += uEmber * exp(-max(h, -0.1) * 16.0);',
+      '  // 三条色带：夜是余晖→靛蓝→深蓝；昼换成雾白→灰蓝→晴空蓝。',
+      '  vec3 horizonCol = mix(uHorizon, vec3(0.66, 0.68, 0.62), uDay);',
+      '  vec3 midCol = mix(uMid, vec3(0.40, 0.52, 0.62), uDay);',
+      '  vec3 zenithCol = mix(uZenith, vec3(0.17, 0.30, 0.46), uDay);',
+      '  vec3 belowCol = mix(uBelow, vec3(0.20, 0.22, 0.20), uDay);',
+      '  vec3 col = mix(horizonCol, midCol, smoothstep(0.015, 0.20, hh));',
+      '  col = mix(col, zenithCol, smoothstep(0.20, 0.62, hh));',
+      '  col = mix(col, belowCol, smoothstep(0.0, -0.42, h));',
+      '  // 地平线余晖：像水彩在纸边洇开的一层暖色，不是物理散射。白天只剩一点。',
+      '  col += uEmber * exp(-max(h, -0.1) * 16.0) * (1.0 - uDay * 0.85);',
       '  // 云：两层横向笔触，边缘被噪声撕开，像大笔刷扫过。',
       '  float drift = uTime * 0.004;',
       '  float cn = skyNoise(vec2(az * 2.1 + drift, h * 26.0)) * 0.6',
@@ -318,6 +331,8 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       '  float band = smoothstep(0.03, 0.09, h) * (1.0 - smoothstep(0.22, 0.34, h));',
       '  float cloud = smoothstep(0.52, 0.72, cn) * band;',
       '  vec3 cloudCol = mix(uCloudDark, uCloudLit, smoothstep(0.04, 0.30, h));',
+      '  vec3 dayCloud = mix(vec3(0.52, 0.55, 0.57), vec3(0.84, 0.85, 0.84), smoothstep(0.04, 0.30, h));',
+      '  cloudCol = mix(cloudCol, dayCloud, uDay * 0.85);',
       '  col = mix(col, cloudCol, cloud * 0.52);',
       '  // 远景林线：一圈锯齿剪影，把地面画死，也盖住地图边缘的几何缝。',
       '  float ridge = 0.010',
@@ -325,11 +340,13 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       '              + 0.010 * skyNoise(vec2(az * 17.0, 4.3));',
       '  float treeLine = smoothstep(ridge + 0.004, ridge - 0.004, h) * step(-0.30, h);',
       '  col = mix(col, uTrees, treeLine);',
-      '  // 月亮：比真实大一圈的圆盘 + 两层光晕。',
+      '  // 月亮/太阳用同一个方向：夜里是冷月，白天是低角度的暖阳。',
       '  float md = max(dot(d, uMoonDir), 0.0);',
-      '  float disc = smoothstep(0.99955, 0.99972, md);',
-      '  float halo = pow(md, 300.0) * 0.55 + pow(md, 22.0) * 0.07;',
-      '  col += uMoonColor * (disc * 2.6 + halo);',
+      '  float discSize = mix(0.99955, 0.9992, uDay);',
+      '  float disc = smoothstep(discSize, discSize + 0.00017, md);',
+      '  float halo = pow(md, mix(300.0, 90.0, uDay)) * mix(0.55, 1.15, uDay)',
+      '             + pow(md, 22.0) * mix(0.07, 0.12, uDay);',
+      '  col += uMoonColor * (disc * mix(2.6, 4.2, uDay) + halo);',
       '  // 星：稀疏，贴地平线淡出，林线以下不画。',
       '  vec2 sc = vec2(az * 9.0, asin(clamp(h, -1.0, 1.0)) * 9.0);',
       '  vec2 cell = floor(sc);',
@@ -338,7 +355,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       '  vec2 jit = vec2(skyHash(cell + 3.7), skyHash(cell + 19.1));',
       '  float star = smoothstep(0.090, 0.015, length(f - jit)) * step(0.905, r);',
       '  star *= (0.5 + 0.5 * skyHash(cell + 41.3)) * (0.7 + 0.3 * sin(uTime * 1.9 + r * 63.0));',
-      '  star *= smoothstep(0.06, 0.30, h) * (1.0 - treeLine);',
+      '  star *= smoothstep(0.06, 0.30, h) * (1.0 - treeLine) * (1.0 - uDay);',
       '  col += uMoonColor * star * 1.4;',
       '  gl_FragColor = vec4(col, 1.0);',
       '  #include <colorspace_fragment>',
@@ -733,22 +750,39 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   let pressure = 0
   /** 每图光强倍率：墓园白石材会过曝，单独压低，不动火光。 */
   let lightScale = 1
+  /** 0 = 19:00 夜，1 = 07:00 昼。 */
+  let daylight = 0
+
+  function refreshSkyOrb(): void {
+    // 天空里的月亮/太阳与星点亮度跟着每图光照倍率一起收。
+    skyUniforms.uMoonColor.value
+      .setHex(daylight > 0.5 ? SUN_COLOR : MOON_COLOR)
+      .multiplyScalar((daylight > 0.5 ? 2.0 : 1.35) * lightScale)
+  }
 
   function setLightScale(scale: number): void {
     lightScale = Math.max(0, Math.min(1.5, scale))
-    // 天空里的月亮与星点亮度也一起收：只压场景光、不压天空，墓园的天仍会
-    // 亮得像一块白布。
-    skyUniforms.uMoonColor.value.setHex(MOON_COLOR).multiplyScalar(1.35 * lightScale)
+    refreshSkyOrb()
+    applyPressure()
+  }
+
+  function setDaylight(day: boolean): void {
+    daylight = day ? 1 : 0
+    skyUniforms.uDay.value = daylight
+    moon.color.setHex(day ? SUN_COLOR : MOON_COLOR)
+    skyFill.color.setHex(day ? DAY_SKY_FILL_COLOR : SKY_FILL_COLOR)
+    ambient.color.setHex(day ? DAY_AMBIENT_COLOR : 0x2f4257)
+    refreshSkyOrb()
     applyPressure()
   }
 
   function applyPressure(): void {
     const p = Math.min(1, Math.max(0, pressure))
     const dim = 1 - 0.42 * p
-    moon.intensity = MOON_INTENSITY * dim * lightScale
-    skyFill.intensity = SKY_FILL_INTENSITY * (1 - 0.3 * p) * lightScale
-    rim.intensity = RIM_INTENSITY * (1 - 0.22 * p) * lightScale
-    ambient.intensity = AMBIENT_INTENSITY * (1 - 0.22 * p) * lightScale
+    moon.intensity = MOON_INTENSITY * dim * lightScale * (1 + daylight * 1.4)
+    skyFill.intensity = SKY_FILL_INTENSITY * (1 - 0.3 * p) * lightScale * (1 + daylight * 1.5)
+    rim.intensity = RIM_INTENSITY * (1 - 0.22 * p) * lightScale * (1 + daylight * 0.4)
+    ambient.intensity = AMBIENT_INTENSITY * (1 - 0.22 * p) * lightScale * (1 + daylight * 3)
     fog.density = fogBaseDensity * (1 + 0.55 * p) * analyticFogScale
     skyUniforms.uZenith.value.copy(baseSky.zenith).multiplyScalar(dim)
     skyUniforms.uMid.value.copy(baseSky.mid).multiplyScalar(dim)
@@ -972,7 +1006,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     // 静态强度会让整个场景看起来像一张打光好的照片，完全没有时间感。
     moonNoisePhase += step * 0.045
     const veil = 0.86 + 0.14 * (noise1(moonNoisePhase) * 0.7 + noise1(moonNoisePhase * 2.3) * 0.3)
-    moon.intensity = MOON_INTENSITY * veil * lightScale
+    moon.intensity = MOON_INTENSITY * veil * lightScale * (1 + daylight * 1.4)
 
     for (let i = 0; i < fires.length; i++) {
       const f = fires[i]
@@ -984,7 +1018,8 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       // 两个不同频率的 1D value noise 相加：低频是"火势"，高频是"火苗舔动"。
       const n =
         noise1(clock * 1.9 + f.seed) * 0.62 + noise1(clock * 5.7 + f.seed * 1.7) * 0.38
-      f.light.intensity = f.base * (0.74 + 0.46 * n)
+      // 白天火光只剩一点暖色点缀，不能和太阳抢亮度。
+      f.light.intensity = f.base * (0.74 + 0.46 * n) * (1 - daylight * 0.55)
       // 色温抖动：亮的时候偏金黄，弱的瞬间偏暗红 —— 这就是火焰看起来"HDR"的原因。
       f.light.color.copy(f.cold).lerp(f.hot, Math.min(Math.max(n, 0), 1))
     }
@@ -1013,6 +1048,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     setLevel,
     setAnalyticFogScale,
     setLightScale,
+    setDaylight,
     setPressure,
     setShadowQuality,
     addFireLight,

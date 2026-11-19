@@ -2,10 +2,13 @@
  * 每局环境修饰（modifier）。
  *
  * 一局打完最大的浪费不是死了，而是"下一局和这一局一模一样"：同样的雾、
- * 同样数量的怪、同样的开箱收益，第四把就会开始背地图。这里把三个最能被
- * 玩家感知到的旋钮（能见度、怪物密度、现金）交给每局的种子，服务端在
- * 建世界时抽一次，随手下发一个 u8 给客户端 —— 全队看到的是同一场天气，
- * 不会出现"我这边大雾你那边晴天"。
+ * 同样数量的怪、同样的开箱收益，第四把就会开始背地图。这里把玩家最能
+ * 感知到的旋钮（能见度、怪物密度、现金）交给每局的种子，服务端在建世界时
+ * 抽一次，随手下发一个 u8 给客户端 —— 全队看到的是同一场天气，不会出现
+ * "我这边大雾你那边晴天"。
+ *
+ * 8 个条目 = **4 种天气 × 2 个时间带**（19:00 夜 / 07:00 昼）：同一张图抽到
+ * 白天和夜晚是两套光照，但协议仍然只传一个 u8，不需要为时间带再加字段。
  *
  * 数值都刻意压在"能感觉到但不改变玩法"的区间：浓雾是 fogScale 2.2 而不是
  * 直接看不见 20m 外，虫潮是 1.6 倍怪量而不是把人埋了。差异化要让人换打法，
@@ -29,6 +32,10 @@ export interface MatchModifier {
   monsterScale: number
   /** 战利品现金倍率。 */
   cashScale: number
+  /** 时间带：同一张图在白天/夜晚是两种光照。 */
+  time: 'night' | 'day'
+  /** 玩家看到的钟点（整点），例如 07:00 / 19:00。 */
+  hour: string
 }
 
 export const MODIFIERS: readonly MatchModifier[] = [
@@ -42,6 +49,8 @@ export const MODIFIERS: readonly MatchModifier[] = [
     fogTint: 0x767f6d,
     monsterScale: 1,
     cashScale: 1,
+    time: 'night',
+    hour: '19:00',
   },
   {
     id: 1,
@@ -53,6 +62,8 @@ export const MODIFIERS: readonly MatchModifier[] = [
     fogTint: 0x9aa08c,
     monsterScale: 1,
     cashScale: 1.1,
+    time: 'night',
+    hour: '19:00',
   },
   {
     id: 2,
@@ -64,6 +75,8 @@ export const MODIFIERS: readonly MatchModifier[] = [
     fogTint: 0x59645f,
     monsterScale: 1.15,
     cashScale: 1.15,
+    time: 'night',
+    hour: '19:00',
   },
   {
     id: 3,
@@ -75,6 +88,62 @@ export const MODIFIERS: readonly MatchModifier[] = [
     fogTint: 0x6c7358,
     monsterScale: 1.6,
     cashScale: 1.3,
+    time: 'night',
+    hour: '19:00',
+  },
+  // ---- 07:00 白昼版：同一张图、另一套光照。随机抽到白天时，雾色整体提亮，
+  // 体积雾的月光散射换成太阳暖光；Visibility 仍然由雾量决定，不是换一张图。
+  {
+    id: 4,
+    key: 'calm',
+    name: '白昼',
+    en: 'DAYLIGHT',
+    desc: '日头把影子压短。看得远，也更容易被看见。',
+    fogScale: 0.5,
+    fogTint: 0x9fb0ae,
+    monsterScale: 1,
+    cashScale: 1,
+    time: 'day',
+    hour: '07:00',
+  },
+  {
+    id: 5,
+    key: 'fog',
+    name: '晨雾',
+    en: 'MORNING FOG',
+    desc: '太阳还压在雾下面。光先到，人后到。',
+    fogScale: 1.5,
+    fogTint: 0xc2cbc2,
+    monsterScale: 1,
+    cashScale: 1.1,
+    time: 'day',
+    hour: '07:00',
+  },
+  {
+    id: 6,
+    key: 'storm',
+    name: '白昼骤雨',
+    en: 'DAY SQUALL',
+    desc: '雨把日光磨成一层灰。枪声传得比人影远。',
+    fogScale: 1.1,
+    fogTint: 0x8f9ea6,
+    monsterScale: 1.15,
+    cashScale: 1.15,
+    time: 'day',
+    hour: '07:00',
+  },
+  {
+    id: 7,
+    key: 'swarm',
+    name: '日间虫潮',
+    en: 'DAY SWARM',
+    desc: '太阳底下，沼泽里的东西全出来了。',
+    fogScale: 0.85,
+    fogTint: 0xa9b18e,
+    monsterScale: 1.6,
+    cashScale: 1.3,
+    time: 'day',
+    hour: '07:00',
   },
 ]
 

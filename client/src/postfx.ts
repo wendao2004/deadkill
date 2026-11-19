@@ -1088,6 +1088,13 @@ export class PostFX {
     u.uMoonColor.value.setHex(0x9fb6d8).multiplyScalar(Math.max(0, lightScale))
   }
 
+  /** 体积雾的光源颜色：夜里是冷月，白天换成暖阳。 */
+  setFogOrb(day: boolean, lightScale: number): void {
+    this.combineMaterial.uniforms.uMoonColor.value
+      .setHex(day ? 0xffd2a0 : 0x9fb6d8)
+      .multiplyScalar(Math.max(0, lightScale) * (day ? 1.6 : 1))
+  }
+
   /** 画质档：步数越多，雾的层次与光轴越细，但每像素成本线性上升。 */
   setVolumetricQuality(steps: number): void {
     this.combineMaterial.uniforms.uFogSteps.value = Math.max(1, Math.min(16, Math.floor(steps)))
