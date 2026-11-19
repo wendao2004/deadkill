@@ -174,6 +174,13 @@ export interface Atmosphere {
    */
   setAnalyticFogScale(scale: number): void
   /**
+   * 每张图的光照倍率（月光/天空补光/边缘光/环境光一起缩放）。
+   *
+   * 墓园的白石材在同样月光下会整体发白；只降曝光会把雾也压死，所以单独留
+   * 这个旋钮，由 art-direction.ts 的 profile 驱动。
+   */
+  setLightScale(scale: number): void
+  /**
    * 战局压力：0 = 开局，1 = 最后一秒。
    *
    * 光线随对局推进整体压暗、雾变浓；最后 28% 里地平线往暗红偏，
@@ -724,14 +731,24 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
   }
   let fogBaseDensity = 0.019
   let pressure = 0
+  /** 每图光强倍率：墓园白石材会过曝，单独压低，不动火光。 */
+  let lightScale = 1
+
+  function setLightScale(scale: number): void {
+    lightScale = Math.max(0, Math.min(1.5, scale))
+    // 天空里的月亮与星点亮度也一起收：只压场景光、不压天空，墓园的天仍会
+    // 亮得像一块白布。
+    skyUniforms.uMoonColor.value.setHex(MOON_COLOR).multiplyScalar(1.35 * lightScale)
+    applyPressure()
+  }
 
   function applyPressure(): void {
     const p = Math.min(1, Math.max(0, pressure))
     const dim = 1 - 0.42 * p
-    moon.intensity = MOON_INTENSITY * dim
-    skyFill.intensity = SKY_FILL_INTENSITY * (1 - 0.3 * p)
-    rim.intensity = RIM_INTENSITY * (1 - 0.22 * p)
-    ambient.intensity = AMBIENT_INTENSITY * (1 - 0.22 * p)
+    moon.intensity = MOON_INTENSITY * dim * lightScale
+    skyFill.intensity = SKY_FILL_INTENSITY * (1 - 0.3 * p) * lightScale
+    rim.intensity = RIM_INTENSITY * (1 - 0.22 * p) * lightScale
+    ambient.intensity = AMBIENT_INTENSITY * (1 - 0.22 * p) * lightScale
     fog.density = fogBaseDensity * (1 + 0.55 * p) * analyticFogScale
     skyUniforms.uZenith.value.copy(baseSky.zenith).multiplyScalar(dim)
     skyUniforms.uMid.value.copy(baseSky.mid).multiplyScalar(dim)
@@ -955,7 +972,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     // 静态强度会让整个场景看起来像一张打光好的照片，完全没有时间感。
     moonNoisePhase += step * 0.045
     const veil = 0.86 + 0.14 * (noise1(moonNoisePhase) * 0.7 + noise1(moonNoisePhase * 2.3) * 0.3)
-    moon.intensity = MOON_INTENSITY * veil
+    moon.intensity = MOON_INTENSITY * veil * lightScale
 
     for (let i = 0; i < fires.length; i++) {
       const f = fires[i]
@@ -995,6 +1012,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
     update,
     setLevel,
     setAnalyticFogScale,
+    setLightScale,
     setPressure,
     setShadowQuality,
     addFireLight,

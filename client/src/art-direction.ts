@@ -35,6 +35,13 @@ export interface ArtProfile {
   /** 世界观：当天流传的一句话。不解释、不指向玩法。 */
   rumor: string
   exposure: number
+  /**
+   * 月光/天空补光/边缘光/环境光的整体倍率。
+   *
+   * 墓园的石碑是白石材，同样的月光会比其他图亮一整档；只压曝光会把
+   * 雾和火光一起压死，所以单独给"光"一个每图旋钮。
+   */
+  lightScale: number
   bloom: number
   grain: number
   vignette: number
@@ -54,6 +61,7 @@ const FALLBACK: ArtProfile = {
   weather: '小雨转雾',
   rumor: '糖浆罐里结的不是糖。',
   exposure: 1.22,
+  lightScale: 1,
   bloom: 0.07,
   grain: 0.014,
   vignette: 0.3,
@@ -73,7 +81,9 @@ const PROFILES: Record<string, ArtProfile> = {
     date: '11 月 21 日',
     weather: '浓雾，无风',
     rumor: '钟没人敲，但夜里有人数拍子。',
-    exposure: 1.12,
+    exposure: 1.05,
+    // 白石材 + 浓雾会把月光反射成一片白；墓园单独压到 0.62，只留轮廓与烛光。
+    lightScale: 0.62,
     bloom: 0.075,
     grain: 0.02,
     vignette: 0.36,
@@ -90,6 +100,7 @@ const PROFILES: Record<string, ArtProfile> = {
     weather: '浮尘',
     rumor: '坑底的水照不出你。',
     exposure: 1.3,
+    lightScale: 1,
     bloom: 0.065,
     grain: 0.024,
     vignette: 0.24,
@@ -106,6 +117,7 @@ const PROFILES: Record<string, ArtProfile> = {
     weather: '细雨',
     rumor: '末班车三年前就开走了，月台上还有人排队。',
     exposure: 1.18,
+    lightScale: 1,
     bloom: 0.08,
     grain: 0.012,
     vignette: 0.34,
@@ -122,6 +134,7 @@ const PROFILES: Record<string, ArtProfile> = {
     weather: '霜',
     rumor: '树桩上的年轮，比砍它的人记得更多。',
     exposure: 1.16,
+    lightScale: 0.95,
     bloom: 0.09,
     grain: 0.018,
     vignette: 0.32,

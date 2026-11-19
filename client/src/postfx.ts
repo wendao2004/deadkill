@@ -1078,11 +1078,14 @@ export class PostFX {
    * 体积雾参数。颜色/密度由关卡与天气修饰决定：
    * 同一张图在"浓雾"下能见度必须真的变短，而不是只把画面整体调灰。
    */
-  setVolumetricFog(color: number, density: number, groundY: number): void {
+  setVolumetricFog(color: number, density: number, groundY: number, lightScale = 1): void {
     const u = this.combineMaterial.uniforms
     u.uFogColor.value.setHex(color)
     u.uFogDensity.value = Math.max(0, density)
     u.uGroundY.value = groundY
+    // 雾里的月光散射必须跟着每图光照倍率一起降，否则墓园的地面暗了、
+    // 雾仍然白花花。
+    u.uMoonColor.value.setHex(0x9fb6d8).multiplyScalar(Math.max(0, lightScale))
   }
 
   /** 画质档：步数越多，雾的层次与光轴越细，但每像素成本线性上升。 */

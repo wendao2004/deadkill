@@ -117,11 +117,12 @@ void main() {
   vUv = uv;
   float cycle = fract(uTime * 1.25 + aSeed.z);
   float scale = mix(0.05, 0.42, cycle) * aSeed.w;
-  vec3 center = vec3(
-    uCamera.x + aSeed.x * ${SPLASH_RADIUS.toFixed(1)},
-    uGroundY + 0.025,
-    uCamera.z + aSeed.y * ${SPLASH_RADIUS.toFixed(1)}
-  );
+  // 涟漪钉在世界坐标里，不跟视角平移：
+  // 取一个以相机为窗口的 24m 世界瓦片，实例位置只随瓦片索引跳变，
+  // 相机移动时同一滴雨落点不动 —— 否则会像一层贴在镜头上的水膜。
+  vec2 tile = (aSeed.xy * 0.5 + 0.5) * 24.0;
+  vec2 worldXZ = mod(tile - uCamera.xz + ${(SPLASH_RADIUS).toFixed(1)}, 24.0) + uCamera.xz - ${(SPLASH_RADIUS).toFixed(1)};
+  vec3 center = vec3(worldXZ.x, uGroundY + 0.025, worldXZ.y);
   vec3 world = center + vec3(position.x * scale, 0.0, position.y * scale);
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
   vAlpha = uIntensity * (1.0 - cycle) * smoothstep(0.0, 0.12, cycle) * 0.55;

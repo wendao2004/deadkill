@@ -878,7 +878,7 @@ export class Renderer {
     // 乘系数，所以要先把原值记下来，否则切两次就再也回不到关卡本来的样子。
     this.fogBase = { color: level.fogColor, density: level.fogDensity }
     this.fogGroundY = level.groundY
-    this.post.setVolumetricFog(level.fogColor, level.fogDensity * 1.8, level.groundY)
+    this.post.setVolumetricFog(level.fogColor, level.fogDensity * 1.8, level.groundY, this.art.lightScale)
 
     this.camera = new PerspectiveCamera(BASE_FOV, container.clientWidth / container.clientHeight, 0.05, 400)
     this.scene.add(this.camera)
@@ -916,6 +916,8 @@ export class Renderer {
     // 原来这里的 buildSky/buildLights 已删除 —— 旧灯组合计强度 ≈5.2，
     // 两套灯叠在地上就还是白天，夜晚永远是"调暗一点"而不是另一种照明。
     this.atmo = createAtmosphere(this.scene)
+    // 每张图的光照倍率：墓园的白石材会过曝，profile 里单独压。
+    this.atmo.setLightScale(this.art.lightScale)
     this.atmo.setLevel(level.fogColor, level.fogDensity)
     // 有后处理时能见度交给体积雾；解析雾只留近景过渡。
     this.atmo.setAnalyticFogScale(0.25)
@@ -3293,6 +3295,7 @@ export class Renderer {
         fog.color.getHex(),
         this.fogBase.density * scaled * 1.8,
         this.fogGroundY,
+        this.art.lightScale,
       )
       this.atmo.setLevel(fog.color.getHex(), this.fogBase.density * scaled)
       // 解析雾只承担近景过渡；体积雾才是能见度的主判据。
