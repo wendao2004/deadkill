@@ -63,16 +63,16 @@
 ### 工程与验收
 - 服务端权威 + 客户端预测/和解 + 远端插值 + 延迟补偿；两端共用
   `shared/sim.ts`、`shared/character.ts` 与同一套 Rapier 物理。
-- 协议：手写二进制，定长、小端；当前 `PROTOCOL_VERSION = 27`，
+- 协议：手写二进制，定长、小端；当前 `PROTOCOL_VERSION = 28`，
   60Hz tick、20Hz 快照。22 新增 `Msg.Names` 昵称名单（加入/离开时全量广播），
   击杀播报与队友列表读玩家代号，不再显示「猎人 #id」；25 把天气 modifier
   扩为昼夜 8 档；26 新增个人结算 `Msg.Result` 与权威档案 `Msg.Profile`，
-  Hello 带稳定 `profileId`；27 Hello 再加 `partyCode`，服务端据此校验 partyId。
+  Hello 带稳定 `profileId`；协议 28 的 Hello 再加 `partyCode`，服务端据此校验 partyId。
 - QA：固定 seed / 画质 / 机位 / 冻结帧 / 无音频；`window.__stats()`；
   `pnpm qa:diff` 像素对比；`pnpm qa:smoke` 全路径冒烟。
 - 鲁棒性：指针锁不可用时自动降级为移动鼠标转向；后处理链启动自检，
   失败或 `?postfail=1` 时回退 ACES 前向直出（`__stats().renderPath`）。
-- `pnpm test` **346** 条纯函数与集成测试（根 `tests/` 与 `client/tests/` 一起跑）。
+- `pnpm test` **347** 条纯函数与集成测试（根 `tests/` 与 `client/tests/` 一起跑）。
 
 ## 技术栈
 
@@ -114,7 +114,7 @@ pnpm --filter @dk/client dev
 ## 验收与截图
 
 ```bash
-pnpm verify                            # typecheck + 346 测试 + vite build
+pnpm verify                            # typecheck + 347 测试 + vite build
 pnpm qa:smoke                          # 主界面→入场→暂停→回大厅→再入场
 pnpm qa:diff before.png after.png      # 同机位像素对比，带阈值与退出码
 ```
@@ -182,7 +182,7 @@ client/          Three.js 客户端
   main.ts        DOM 接线（换成 Vue 组件只需改这一个文件）
 
 tools/           qa-diff.mjs（PNG 像素对比）、qa-smoke.mjs（CDP 全路径冒烟）
-tests/           根测试；client/tests/ 另有 19 条；`pnpm test` 合计 346
+tests/           根测试；client/tests/ 另有 19 条；`pnpm test` 合计 347
 docs/            设计、渲染、AI、QA、部署与评审文档
 ```
 

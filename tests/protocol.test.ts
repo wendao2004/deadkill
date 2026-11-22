@@ -236,7 +236,7 @@ test('snapshot: 总长恰好是头 SNAPSHOT_HEADER + n * 玩家 + m * 怪物', (
   // v22-v25：昵称名单/多槽 build/天气 8 档；快照布局不变。
   // v26：Hello 加 profileId 尾段；新增个人结算 Result 与权威档案 Profile 包。
   // v27：Hello 再加 partyCode 尾段；服务端据此校验 partyId。
-  assert.equal(PROTOCOL_VERSION, 27)
+  assert.equal(PROTOCOL_VERSION, 28)
   assert.equal(SNAPSHOT_HEADER, 17)
   assert.equal(PLAYER_SNAPSHOT_SIZE, 37)
   assert.equal(MONSTER_SNAPSHOT_SIZE, 20)

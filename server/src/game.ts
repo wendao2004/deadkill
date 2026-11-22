@@ -617,6 +617,11 @@ export function registerGame(
         const party = parties.get(partyId)
         return !!party && code !== '' && party.members.some((member) => member.code === code)
       },
+      isPartyCodeOwner: (code, userId) => {
+        // 开发模式没有账号：码就是身份，保持原行为。
+        if (!options.authenticate) return true
+        return presenceOwners.get(code) === userId
+      },
     })
   })
 }
@@ -630,6 +635,8 @@ interface ConnectionContext {
   maxPerSecond: number
   authenticate?: (request: FastifyRequest) => GameAuthResult | null
   isPartyMember: (partyId: string, code: string) => boolean
+  /** 好友码是否属于该登录用户；开发模式（无 authenticate）放行。 */
+  isPartyCodeOwner: (code: string, userId: string) => boolean
 }
 
 function handleConnection(
@@ -865,7 +872,10 @@ function handleConnection(
     profileKey =
       !ctx.authenticate && requestedProfile ? requestedProfile : identity.userId
     // 好友码只用于校验 partyId；服务端不信任 Loadout 里自称的队伍。
+    // 生产环境还必须确认这个码属于当前登录用户：/api/presence 会公开
+    // 在线者的 code，光有 code 不足以证明你是队伍成员。
     partyCode = sanitizePresenceCode(hello.partyCode)
+    if (partyCode && !ctx.isPartyCodeOwner(partyCode, identity.userId)) partyCode = ''
 
     // 同一账号的连接上限：在握手成功后计数，断开时释放。
     if (!ctx.limiter.acquireUser(identity.userId)) {

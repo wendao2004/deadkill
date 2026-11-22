@@ -1626,15 +1626,20 @@ export class Game {
         // Hit/MonsterHit 负责（血雾 + 刀切声），这才是刀该有的样子。
         if (WEAPONS[event.weaponId]?.kind === 'knife') continue
         const distance = eye ? dist(eye, event.origin) : 999
-        if (!hitAttackers.has(event.playerId)) this.playShotImpact(event.origin, event.dir)
+        // 零方向是服务端“只准听、不准看”的音频事件哨兵（墙后枪声）：
+        // 不能画曳光/弹着点，否则客户端会沿 -Z 造出错误落点。
+        const audioOnly = event.dir.x === 0 && event.dir.y === 0 && event.dir.z === 0
+        if (!audioOnly && !hitAttackers.has(event.playerId)) {
+          this.playShotImpact(event.origin, event.dir)
+        }
         if (event.playerId === this.myId) {
           // 自己开火：声音已经在 onLocalFire 里放了，这里只画曳光。
-          this.renderer.addTracer(event.origin, event.dir, 40, true)
+          if (!audioOnly) this.renderer.addTracer(event.origin, event.dir, 40, true)
           continue
         }
         // 别人开枪：曳光 + 按距离衰减的枪声。远处是一声闷响而不是同样的爆响，
         // 这是这类游戏里"听声辨位"的全部技术基础。
-        this.renderer.addTracer(event.origin, event.dir, 40, false)
+        if (!audioOnly) this.renderer.addTracer(event.origin, event.dir, 40, false)
         // shotAt 带世界坐标：枪声要落在开火者那个方向上（HRTF 左右声道），
         // 只按距离衰减的话所有枪声都从正中冒出来，听不出东南西北。
         this.audio.shotAt(
@@ -1755,9 +1760,10 @@ export class Game {
         // 持枪行尸开枪：曳光 + 落在它那个方向上的枪声，和玩家那一枪完全同款。
         // 不做区分是有意的 —— 玩家该先听到"有人开枪"再判断那是人还是别的什么，
         // 一开始就能听出对面是 AI，这些行尸就白端枪了。
-        this.renderer.addTracer(event.origin, event.dir, event.distance, event.hit)
+        const audioOnly = event.dir.x === 0 && event.dir.y === 0 && event.dir.z === 0
+        if (!audioOnly) this.renderer.addTracer(event.origin, event.dir, event.distance, event.hit)
         this.audio.shotAt(1, event.origin, 1, this.heardThrough(event.origin))
-        if (!event.hit) {
+        if (!audioOnly && !event.hit) {
           // 打偏的子弹得在墙上留个坑：曳光的终点就是落点，不给碎屑会像打空。
           const p = {
             x: event.origin.x + event.dir.x * event.distance,

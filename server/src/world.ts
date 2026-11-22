@@ -457,6 +457,8 @@ interface PlayerState {
   team: number
   /** 是否选择了双人组队。 */
   squad: number
+  /** 本命是否已经用 Loadout 定过队伍；防止反复切 squad/partyId 传送。 */
+  teamLocked: boolean
   /** 大厅队伍 id：同 partyId 强制同队并共享出生点。 */
   partyId: string
   /** 队内槽位（0/1），决定共享出生点上的左右偏移。 */
@@ -1768,6 +1770,7 @@ export class World {
       lastLoot: null,
       team: 0,
       squad: 0,
+      teamLocked: false,
       partyId: partyId.slice(0, 24),
       teamSlot: 0,
       spawnIndex: spawnEntry.index,
@@ -1935,10 +1938,14 @@ export class World {
       const spec = contractOf(nextContract)
       if (spec.target > 0) this.sendText(player, `合同「${spec.name}」· ${spec.desc}（奖励 ${spec.reward}）`)
     }
-    // 组队偏好先于武器生效：它决定这个人和谁同队。
-    player.squad = squad > 0 ? 1 : 0
-    player.partyId = partyId.slice(0, 24)
-    this.assignTeam(player)
+    // 组队偏好只在一命的第一份 Loadout 生效：之后反复切 squad/partyId
+    // 不能把玩家重新传送回队伍出生点（那是一个客户端可控的脱险传送）。
+    if (!player.teamLocked) {
+      player.squad = squad > 0 ? 1 : 0
+      player.partyId = partyId.slice(0, 24)
+      this.assignTeam(player)
+      player.teamLocked = true
+    }
     const primary = isPrimaryChoice(weaponId) ? weaponId : DEFAULT_WEAPON_ID
     const attach = clampAttachment(attachment)
     const nextBuild = sanitizeBuild(primary, build?.slots)
@@ -2443,6 +2450,7 @@ export class World {
         player.reloading = false
         player.ads = false
         resetLoadout(player.loadout)
+        player.teamLocked = false
         player.respawnTick = 0
         player.extracted = false
         player.extractedAtTick = 0
@@ -3728,6 +3736,7 @@ export class World {
     }
 
     const nowMs = this.tick * TICK_MS
+    const monsterById = new Map(this.monsters.map((entity) => [entity.data.id, entity]))
     for (const receiver of this.players.values()) {
       const feet = receiver.character.feet
       // 可见玩家：同队/自己永远精确；敌人通视且 280m 内发精确位姿，
@@ -3774,12 +3783,12 @@ export class World {
           { full: INTEREST_FULL_RANGE, audio: 45 },
         )
         if (tier === 'full') monstersFor.push(view)
-        else if (
-          tier === 'audio' &&
-          view.state !== MonsterStateCode.Idle &&
-          view.state !== MonsterStateCode.Dead
-        ) {
-          monstersFor.push(this.audioOnlyMonsterView(view))
+        else if (tier === 'audio') {
+          const entity = monsterById.get(view.id)
+          const moving = entity ? Math.hypot(entity.data.vx, entity.data.vz) > 0.3 : false
+          const loud =
+            view.state === MonsterStateCode.Attack || view.state === MonsterStateCode.Special
+          if (moving || loud) monstersFor.push(this.audioOnlyMonsterView(view))
         }
       }
 

@@ -50,7 +50,7 @@ input → game flow → player → weapon → enemies → fx → level/backdrop/
   清零）；更远或站桩无声不下发。视线缓存 20Hz，只对静态几何做射线。
 - 事件也过兴趣层：枪声 120m 内给 4m 量化原点，命中/复活只给当事人/同队/
   可见者；Death/MonsterDeath 保留全局播报。
-- 协议 27：Hello 在 `profileId` 后再追加 `partyCode`；服务端用它校验
+- 协议 28：Hello 在 `profileId` 后再追加 `partyCode`；服务端用它校验
   Loadout 里的 `partyId` 是否真属于该好友码。26 追加稳定 `profileId`；
   新增 `Msg.Result`（个人结算）与 `Msg.Profile`（金币/已解锁天赋/配件/
   已付款补给）。24 加多槽位 build；

@@ -396,3 +396,28 @@ test('编队：重复 joinTeam 同一队不再传送回出生点', async () => {
   assert.deepEqual(player.character.feet, before, '同队重发配装不能瞬移回出生点')
   world.dispose()
 })
+
+
+test('配装：本命第一次 Loadout 后切 squad 不再传送', async () => {
+  await initPhysics()
+  const world = new World({ id: 'loadout-lock' })
+  const joined = world.addPlayer(fakeSocket() as unknown as WebSocket, '锁队', 'loadout-user')!
+  const internals = world as unknown as {
+    players: Map<
+      number,
+      {
+        character: {
+          feet: { x: number; y: number; z: number }
+          teleport(p: { x: number; y: number; z: number }): void
+        }
+      }
+    >
+  }
+  const player = internals.players.get(joined.id)!
+  world.receiveLoadout(joined.id, 1, 0, 0, 0, 0, 1, '', undefined)
+  player.character.teleport({ x: 40, y: 0, z: 40 })
+  const before = { ...player.character.feet }
+  world.receiveLoadout(joined.id, 1, 0, 0, 0, 0, 0, '', undefined)
+  assert.deepEqual(player.character.feet, before, '本命第二次 Loadout 不能改队传送')
+  world.dispose()
+})

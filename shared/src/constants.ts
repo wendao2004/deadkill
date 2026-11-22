@@ -38,7 +38,7 @@
 // 事件 8 还会被当成 Respawn 读 16 字节 —— 所以硬拒。
 // 25 = weather modifier 的含义扩成 8 档（4 种天气 × 昼夜）。包体没变，但旧客户端
 // 会把白昼 id 4..7 回落到"死寂"（夜晚），两端看到的天气不一致 —— 所以硬拒。
-export const PROTOCOL_VERSION = 27
+export const PROTOCOL_VERSION = 28
 
 /**
  * 服务端模拟频率（Hz）。
