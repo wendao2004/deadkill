@@ -75,7 +75,8 @@ export function buildLevelWorld(level: LevelDef): World {
   }
   DOOR_COLLIDERS.set(world, doorColliders)
 
-  addBounds(world, level)
+  // 地图边界由可见的 perimeterBerm（土堤/石堤）承担，不再额外加一圈
+  // 隐形墙：那圈墙在土堤内侧 0.4m，玩家贴着可见边缘会撞到空气。
   return world
 }
 
@@ -90,22 +91,3 @@ export function setDoorOpen(world: World, index: number, open: boolean): void {
   collider?.setEnabled(!open)
 }
 
-/**
- * 关卡边缘的隐形屏障，防止玩家跑出地图掉进虚空。
- * 单独函数是因为它不属于关卡数据（客户端不需要为它生成网格）。
- */
-export function addBounds(world: World, level: LevelDef): void {
-  const h = level.boundsHalf
-  const wallHeight = 12
-  const walls: [number, number, number, number, number, number][] = [
-    [0, wallHeight / 2, -h, h, wallHeight / 2, 0.5],
-    [0, wallHeight / 2, h, h, wallHeight / 2, 0.5],
-    [-h, wallHeight / 2, 0, 0.5, wallHeight / 2, h],
-    [h, wallHeight / 2, 0, 0.5, wallHeight / 2, h],
-  ]
-  for (const [x, y, z, hx, hy, hz] of walls) {
-    world.createCollider(
-      ColliderDescValue.cuboid(hx, hy, hz).setTranslation(x, y + level.groundY, z),
-    )
-  }
-}

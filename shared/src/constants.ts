@@ -215,6 +215,15 @@ export const CLIMB_SPEED = 2.4
  * 之前 1.1s（2.6m）+ 顶部自动翻越，配合普通箱子就能直接上楼顶。
  */
 export const CLIMB_TIME = 0.55
+/**
+ * 连续贴墙总时长上限（不因重新抓墙清零，落地才恢复）。
+ *
+ * 旧实现每次抓墙都把 climbTime 清零，0.55s 到期后 0.4s 冷却又能再抓，
+ * 玩家可以对着同一面墙无限“爬-掉-爬”。这条上限让长时间贴墙强制坠落。
+ */
+export const CLIMB_MAX_CONTACT = 1.15
+/** 体力耗尽后的再抓取冷却；比普通松手长得多。 */
+export const CLIMB_EXHAUST_COOLDOWN = 1.0
 /** 从胸口到墙面的探测距离。 */
 export const CLIMB_REACH = 0.62
 /** 松手/蹬墙跳后的再抓取冷却。 */

@@ -127,9 +127,12 @@ const heroes: HeroAnchor[] = [
  * 篝火是纯装饰（踩过去无所谓），刻意不给碰撞。
  */
 const PROP_COLLIDERS: Record<string, { hx: number; hy: number; hz: number; material: 'wood' | 'stone' | 'metal' | 'foliage' }> = {
-  log_pile: { hx: 1.35, hy: 0.6, hz: 0.75, material: 'wood' },
-  rock_a: { hx: 1.05, hy: 0.8, hz: 1.05, material: 'stone' },
-  stump: { hx: 0.45, hy: 0.4, hz: 0.45, material: 'wood' },
+  // 尺寸按 generated/manifest.json 的模型包围盒对齐：
+  // log_pile 2.5×1.32×3.336、rock_a 2.29×1.64×2.176、stump 1.616×0.894×1.569。
+  // 旧值把原木堆的 Z 向缩到 0.75（模型 1.67），玩家能走进可见原木里。
+  log_pile: { hx: 1.25, hy: 0.66, hz: 1.67, material: 'wood' },
+  rock_a: { hx: 1.12, hy: 0.82, hz: 1.09, material: 'stone' },
+  stump: { hx: 0.8, hy: 0.45, hz: 0.78, material: 'wood' },
   lantern_post: { hx: 0.13, hy: 1.8, hz: 0.13, material: 'metal' },
   pine_dead: { hx: 0.28, hy: 2.4, hz: 0.28, material: 'foliage' },
 }

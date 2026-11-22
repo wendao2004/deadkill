@@ -37,8 +37,11 @@ function ghost(s: BrushSet, x: number, z: number, hx: number, hz: number, bottom
 
 /** 可进入的木屋：四面墙 + 正面门洞。外观由 log_cabin_a 负责。 */
 function enterableCabin(s: BrushSet, x: number, z: number, rotY: number): void {
-  const HX = 3.0
-  const HZ = 2.25
+  // 与 log_cabin_a 的网格外沿对齐（模型 6.802×5.5，半长 3.401×2.75）。
+  // 旧值 3.0×2.25 让碰撞缩在可见墙里 0.4~0.5m：玩家先穿进模型才被挡，
+  // 从外面看就是“墙前有空气”。
+  const HX = 3.4
+  const HZ = 2.75
   const T = 0.22
   // 墙顶必须在 0.4m 网格上：它虽然不渲染，但仍然是可站立的碰撞体。
   const H = 2.8
@@ -106,9 +109,10 @@ function buildCamp(s: BrushSet): void {
 function buildSawmill(s: BrushSet): void {
   const X = 58
   const Z = -36
-  // 后墙在模型局部 -Z（北侧）、四根立柱：碰撞与 sawmill_a 的坐标系一致。
-  ghost(s, X, Z - 3.2, 4.2, 0.25, 0, 3.6)
-  for (const dz of [-3.2, 3.2]) {
+  // 与 sawmill_a 包围盒对齐（9.2×7.377，半长 4.6×3.689）：
+  // 后墙/立柱旧值缩在模型里约 0.5m，外面看会先撞到“空气”。
+  ghost(s, X, Z - 3.45, 4.5, 0.25, 0, 3.6)
+  for (const dz of [-3.45, 3.45]) {
     for (const dx of [-0.2, 4.2]) ghost(s, X + dx, Z + dz, 0.22, 0.22, 0, 3.6)
   }
   // 送料台

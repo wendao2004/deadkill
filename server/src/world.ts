@@ -186,7 +186,7 @@ import type { Collider, RigidBody, World as PhysicsWorld } from '@dimforge/rapie
 import { Capsule, ColliderDesc, Ray, RigidBodyDesc } from '@dimforge/rapier3d-compat'
 
 import { MatchDriver } from './match.ts'
-import { addBounds, createLevelWorld } from './physics.ts'
+import { createLevelWorld } from './physics.ts'
 
 /**
  * 服务端内核上下文。
@@ -705,7 +705,6 @@ export class World {
     this.onEmpty = options.onEmpty
     this.onSettle = options.onSettle
     this.physics = createLevelWorld(this.level)
-    addBounds(this.physics, this.level)
     // 油灯灯头：2.35m 高的实心小球。它高于角色胶囊，不会挡路，但会挡子弹。
     for (const [i, lamp] of (this.level.lamps ?? []).entries()) {
       const baseY = lamp.y ?? this.level.groundY

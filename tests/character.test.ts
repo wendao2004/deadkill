@@ -215,3 +215,29 @@ test('stateFlagsOf：冲刺位与音频层位是追加的，不改变既有姿�
   assert.ok((flags & StateFlags.AudioOnly) !== 0)
   assert.equal((flags & StateFlags.Crouching) !== 0, false)
 })
+
+
+test('长时间连续爬同一面墙会在体力耗尽后强制坠落', () => {
+  const wallLevel: LevelDef = {
+    ...FLAT,
+    id: 'wall-exhaust-test',
+    name: '爬墙体力测试场',
+    boxes: [{ x: 0, y: 3, z: -1.6, hx: 2, hy: 3, hz: 0.3, material: 'stone' }],
+  }
+  const world = buildLevelWorld(wallLevel)
+  const c = makeCharacter(world)
+  c.step(world, HELD_JUMP, DT)
+  world.step()
+  let climbed = false
+  let lockedWhileAirborne = false
+  for (let i = 0; i < 180; i++) {
+    c.step(world, RUN_FORWARD, DT)
+    world.step()
+    if (c.climbing) climbed = true
+    if (!c.climbing && !c.grounded) lockedWhileAirborne = true
+  }
+  world.free()
+  assert.ok(climbed, '应该先进入攀爬')
+  assert.ok(lockedWhileAirborne, '体力耗尽后应在空中强制脱手')
+  assert.ok(!c.climbing, '不能无限贴墙')
+})

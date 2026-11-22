@@ -131,10 +131,11 @@ test('每张图都能被 buildLevelWorld 建成物理世界，且盒子数在上
       `${level.id} 盒子数 ${level.boxes.length} 超过红线 ${MAX_BOXES}`,
     )
     const world = buildLevelWorld(level)
-    // 地面 + 每块可碰撞盒子 + 4 道边界墙
+    // 地面 + 每块可碰撞盒子 + 门；边界由可见土堤自身盒子承担，
+    // 不再有额外的 4 道隐形边界墙。
     assert.equal(
       world.colliders.len(),
-      solid(level.boxes).length + 5 + (level.doors?.length ?? 0),
+      solid(level.boxes).length + 1 + (level.doors?.length ?? 0),
       `${level.id} 的碰撞体数量对不上`,
     )
     world.free()

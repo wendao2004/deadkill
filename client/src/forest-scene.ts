@@ -128,8 +128,9 @@ export function decorateGenerated(
     const scale = Math.min(1.8, Math.max(0.45, height / asset.size.y))
     const tint = dead ? 0xffffff : hash2(b.x, b.z) % 3 === 0 ? 0xf0f8e6 : 0xffffff
     trees[dead ? 'pine_dead' : PINES[hash2(b.x, b.z) % 2]!].push({
-      x: b.x + (rng() - 0.5) * 0.5,
-      z: b.z + (rng() - 0.5) * 0.5,
+      // 视觉树干必须贴着碰撞盒：0.5m 的随机偏移会让玩家“撞到树旁边的空气”。
+      x: b.x + (rng() - 0.5) * 0.16,
+      z: b.z + (rng() - 0.5) * 0.16,
       y,
       rotY: rng() * Math.PI * 2,
       scale,

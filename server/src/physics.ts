@@ -6,4 +6,4 @@
  * 服务端特有的部分，避免两边各写一份 `createLevelWorld`。
  */
 
-export { addBounds, buildLevelWorld as createLevelWorld, initPhysics } from '@dk/shared'
+export { buildLevelWorld as createLevelWorld, initPhysics } from '@dk/shared'

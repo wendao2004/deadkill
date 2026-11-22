@@ -46,6 +46,8 @@ import {
   SLIDE_MIN_SPEED_TO_START,
   SLIDE_STEER,
   CLIMB_COOLDOWN,
+  CLIMB_EXHAUST_COOLDOWN,
+  CLIMB_MAX_CONTACT,
   CLIMB_REACH,
   CLIMB_SPEED,
   CLIMB_STICK,
@@ -142,6 +144,10 @@ export class Character {
   private climbNormalX = 0
   private climbNormalZ = 0
   private climbCooldown = 0
+  /** 本次离地后累计贴墙时长；落地才清零。 */
+  private wallContact = 0
+  /** 体力耗尽：落地前禁止再抓墙。 */
+  private climbLocked = false
   /** 跳跃容错窗口：预输入、coyote、冷却。三者都是"隐藏输入误差"的。 */
   private jumpBuffer = 0
   private jumpCooldown = 0
@@ -239,6 +245,8 @@ export class Character {
     this.climbing = false
     this.climbTime = 0
     this.climbCooldown = 0
+    this.wallContact = 0
+    this.climbLocked = false
     if (!keepInputState) {
       this.prevCrouchHeld = false
       this.jumpBuffer = 0
@@ -278,6 +286,11 @@ export class Character {
     this.landingLag = Math.max(0, this.landingLag - dt)
     const wantsCrouch = (input.buttons & Buttons.Crouch) !== 0
     const ads = (input.buttons & Buttons.Ads) !== 0
+    // 落地就恢复“贴墙体力”：连续爬墙只在一次离地期间受限。
+    if (this.grounded) {
+      this.wallContact = 0
+      this.climbLocked = false
+    }
     const crouchPressed = wantsCrouch && !this.prevCrouchHeld
     this.prevCrouchHeld = wantsCrouch
     this.slideCooldown = Math.max(0, this.slideCooldown - dt)
@@ -718,6 +731,7 @@ export class Character {
    * 墙面还必须比脚底高出一人多（1.6m 以上），否则交给翻越/攀沿处理。
    */
   private tryClimb(world: World, input: PlayerInput): boolean {
+    if (this.climbLocked) return false
     const feet = this.feet
     const fwd = yawToForward(input.yaw)
     const origin = {
@@ -769,6 +783,18 @@ export class Character {
    */
   private stepClimb(world: World, input: PlayerInput, dt: number): void {
     this.climbTime += dt
+    this.wallContact += dt
+    // 长时间贴同一面墙：强制脱手坠落。重新抓墙不会清 wallContact，
+    // 所以“爬-掉-再爬”也会在累计 1.15s 后失效，直到真正落地。
+    if (this.wallContact >= CLIMB_MAX_CONTACT) {
+      this.climbing = false
+      this.climbLocked = true
+      this.climbCooldown = CLIMB_EXHAUST_COOLDOWN
+      this.vx = 0
+      this.vz = 0
+      this.vy = -1.6
+      return
+    }
 
     // 跳跃：蹬墙跳。方向是墙面法线（朝外墙），加向上速度。
     const jumpHeld = (input.buttons & Buttons.Jump) !== 0
