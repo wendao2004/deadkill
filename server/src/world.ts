@@ -56,6 +56,7 @@ import {
   MAX_HEALTH,
   MAX_INPUTS_PER_TICK,
   MAX_PLAYERS,
+  MAX_REWIND_MS,
   HEAL_AMOUNT,
   HEAL_MS,
   SEARCH_MS,
@@ -349,6 +350,10 @@ interface PlayerSession {
   ackedTick: number
   /** 服务端最近一次真的发给这个玩家的快照 tick；伪造的 ackedTick 不能超过它。 */
   lastSnapshotTick: number
+  /** 最近一次快照发出的时间（performance.now），用于服务端估算 RTT。 */
+  lastSnapshotSentAt: number
+  /** 服务端估算的往返时延；0 = 还没测到。 */
+  rttMs: number
   /** 待消费输入队列（客户端会小批量补发）。 */
   queue: PlayerInput[]
   /** 本秒剩余的输入预算：防止 8 条/包刷冷却计时器。 */
@@ -1610,6 +1615,8 @@ export class World {
     existing.ackSeq = 0
     existing.ackedTick = 0
     existing.lastSnapshotTick = 0
+    existing.lastSnapshotSentAt = 0
+    existing.rttMs = 0
     existing.inputBudget = MAX_INPUTS_PER_SECOND
     existing.inputBudgetTick = this.tick
     existing.lastInput = { ...existing.lastInput, forward: 0, right: 0, buttons: 0 }
@@ -1725,6 +1732,8 @@ export class World {
       ackSeq: 0,
       ackedTick: 0,
       lastSnapshotTick: 0,
+      lastSnapshotSentAt: 0,
+      rttMs: 0,
       queue: [],
       inputBudget: MAX_INPUTS_PER_SECOND,
       inputBudgetTick: 0,
@@ -1940,6 +1949,12 @@ export class World {
     // 更早的 tick 都不会扩大回滚窗口；真正的 RTT 测量留给后续。
     const maxSent = player.lastSnapshotTick > 0 ? player.lastSnapshotTick : this.tick
     player.ackedTick = Math.max(0, Math.min(ackedTick, maxSent))
+    // 服务端自己估 RTT：从“快照发出”到“收到客户端下一包输入”的间隔。
+    // 不用客户端自报的数字；最多包含一个 20Hz 快照周期（50ms）的量化误差。
+    if (player.lastSnapshotSentAt > 0) {
+      const sample = Math.max(0, Math.min(500, performance.now() - player.lastSnapshotSentAt))
+      player.rttMs = player.rttMs === 0 ? sample : player.rttMs * 0.8 + sample * 0.2
+    }
     if (this.tick - player.inputBudgetTick >= TICK_RATE) {
       player.inputBudgetTick = this.tick
       player.inputBudget = MAX_INPUTS_PER_SECOND
@@ -3441,8 +3456,15 @@ export class World {
    * 就能把对手拽到五秒前的位置开枪，那是作弊而不是补偿。
    */
   private rewindTickFor(player: Player): number {
-    // 算法在 shared/src/lagcomp.ts：客户端画"这一枪判的是哪一帧"要用同一份。
-    return computeRewindTick(this.tick, player.ackedTick)
+    // 低延迟玩家不需要 150ms 的回滚窗口：按实测 RTT 收紧，减少“打掩体后旧位置”
+    // 的可利用空间；高延迟仍可到全局上限。最少保留一个插值延迟（90ms）。
+    // 低延迟玩家至少保留 120ms（7 tick），低于这个值会伤到正常插值补偿。
+    const maxMs =
+      player.rttMs > 0
+        ? Math.min(MAX_REWIND_MS, Math.max(120, player.rttMs * 0.6 + 30))
+        : MAX_REWIND_MS
+    // 算法在 shared/src/lagcomp.ts：客户端画“这一枪判的是哪一帧”要用同一份。
+    return computeRewindTick(this.tick, player.ackedTick, maxMs)
   }
 
   /**
@@ -3539,6 +3561,7 @@ export class World {
       // 每个人收到的快照只有 ackSeq 不同：就地贴、编完立刻复位，
       // 不为每个接收者重建整份数组（见 shared/src/snapshotView.ts）。
       receiver.lastSnapshotTick = this.tick
+      receiver.lastSnapshotSentAt = performance.now()
       const index = attachAck(view, receiver.id, receiver.ackSeq)
       this.send(
         receiver,

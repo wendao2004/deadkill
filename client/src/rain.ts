@@ -23,7 +23,6 @@
  */
 
 import {
-  AdditiveBlending,
   Color,
   DoubleSide,
   Group,
@@ -202,7 +201,8 @@ export function createRain(scene: Scene, groundY: number): Rain {
     depthWrite: false,
     depthTest: true,
     side: DoubleSide,
-    blending: AdditiveBlending,
+    // 溅射环是水，不是发光体：加色混合会在夜里变成一圈圈亮斑。
+    blending: NormalBlending,
   })
   const splashes = new InstancedMesh(splashGeo, splashMat, MAX_SPLASHES)
   splashGeo.setAttribute('aSeed', new InstancedBufferAttribute(splashSeeds, 4))

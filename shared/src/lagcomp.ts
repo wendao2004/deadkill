@@ -73,9 +73,14 @@ export interface RewindActor {
  * 上呈现的那一帧。按 `MAX_REWIND_MS` 夹住上限：不夹的话，玩家伪造一个很小
  * 的 ackedTick 就能把对手拽到五秒前的位置开枪，那是作弊而不是补偿。
  */
-export function rewindTickFor(currentTick: number, ackedTick: number): number {
+export function rewindTickFor(
+  currentTick: number,
+  ackedTick: number,
+  maxRewindMs: number = MAX_REWIND_MS,
+): number {
   if (ackedTick <= 0) return currentTick
-  const maxRewindTicks = Math.floor(MAX_REWIND_MS / TICK_MS)
+  const safeMax = Math.max(0, Math.min(MAX_REWIND_MS, maxRewindMs))
+  const maxRewindTicks = Math.floor(safeMax / TICK_MS)
   const floor = currentTick - maxRewindTicks
   const interpTicks = Math.round(INTERP_DELAY_MS / TICK_MS)
   const target = Math.max(ackedTick - interpTicks, floor)

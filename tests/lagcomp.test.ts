@@ -166,6 +166,15 @@ test('延迟补偿：回滚 tick 受窗口上限夹住，未来 tick 不会被"�
   assert.equal(rewindTickFor(1000, 2000), 1000)
 })
 
+test('延迟补偿：按实测 RTT 收紧低延迟玩家的回滚窗口', () => {
+  // ackedTick = 998，插值 5 tick，目标回滚到 993。
+  // 90ms 上限（5 tick）时最多只能回到 995；150ms（9 tick）才能到 993。
+  assert.equal(rewindTickFor(1000, 998, 90), 995)
+  assert.equal(rewindTickFor(1000, 998, 150), 993)
+  // 超过全局上限的值被夹回 MAX_REWIND_MS，不能无限回滚。
+  assert.equal(rewindTickFor(1000, 998, 10_000), 993)
+})
+
 test('延迟补偿：无历史帧时退化成当前位姿，且跳过自己与已死的人', () => {
   const halfHeight = PLAYER_HALF_HEIGHT
   const actors = [

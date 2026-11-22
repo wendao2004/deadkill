@@ -16,8 +16,9 @@ function fakeSocket(): {
   readyState: number
   bufferedAmount: number
   sent: ArrayBuffer[]
+  closedWith: { code?: number; reason?: string } | null
   send(buffer: ArrayBuffer): void
-  close(): void
+  close(code?: number, reason?: string): void
   terminate(): void
   ping(): void
 } {
@@ -25,10 +26,12 @@ function fakeSocket(): {
     readyState: 1,
     bufferedAmount: 0,
     sent: [],
+    closedWith: null,
     send(buffer: ArrayBuffer) {
       this.sent.push(buffer)
     },
-    close() {
+    close(code?: number, reason?: string) {
+      this.closedWith = { code, reason }
       this.readyState = 3
     },
     terminate() {
@@ -61,6 +64,43 @@ test('准入：RSS 超过水位时拒绝建新世界', () => {
   const admission = registry.admit('a')
   assert.equal(admission.ok, false)
   if (!admission.ok) assert.match(admission.reason, /内存/)
+})
+
+test('输入预算：一包 8 条、连发 20 包，每秒最多接受 66 条', async () => {
+  await initPhysics()
+  const world = new World({ id: 'input-budget' })
+  const socket = fakeSocket()
+  const joined = world.addPlayer(socket as unknown as WebSocket, '测试者', 'budget-user')!
+  const internals = world as unknown as {
+    players: Map<number, { queue: unknown[]; inputBudget: number }>
+  }
+  for (let packet = 0; packet < 20; packet++) {
+    const inputs = Array.from({ length: 8 }, (_, index) => ({
+      seq: packet * 8 + index + 1,
+      dtMs: 16.67,
+      forward: 1,
+      right: 0,
+      yaw: 0,
+      pitch: 0,
+      buttons: 0,
+    }))
+    world.receiveInput(joined.id, inputs, 0)
+  }
+  const player = internals.players.get(joined.id)!
+  // 160 条里只放行 66 条；队列本身还会裁到最多 8 条待消费。
+  assert.equal(player.inputBudget, 0)
+  assert.equal(player.queue.length, 8)
+  world.dispose()
+})
+
+test('下行背压：bufferedAmount 超过 256KB 时主动断开', async () => {
+  await initPhysics()
+  const world = new World({ id: 'backpressure' })
+  const socket = fakeSocket()
+  socket.bufferedAmount = 300 * 1024
+  world.addPlayer(socket as unknown as WebSocket, '慢消费者', 'slow-user')
+  assert.equal(socket.closedWith?.code, 4011)
+  world.dispose()
 })
 
 test('跨局重置：重建怪、重抽天气/战利品种子、清合同与开火锁', async () => {

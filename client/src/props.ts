@@ -636,8 +636,8 @@ function buildWater(
       '  float crest = smoothstep(0.55, 0.72, band);',
       '  float trough = smoothstep(-0.15, -0.45, min(r1, r2));',
       '  vec3 col = mix(uDeep, uPale, 0.24 + 0.28 * (r1 * 0.5 + 0.5));',
-      '  col = mix(col, uPale, crest * 0.35);',
-      '  col = mix(col, uCrest, smoothstep(0.90, 0.99, band) * 0.45);',
+      '  col = mix(col, uPale, crest * 0.24);',
+      '  col = mix(col, uCrest, smoothstep(0.90, 0.99, band) * 0.30);',
       '  col = mix(col, uDeep * 1.15, trough * 0.4);',
       '  // Algae mats: two scales of world-space noise drifting very slowly.',
       '  // This is what separates a swamp from a clean pond; without it the',
@@ -940,8 +940,8 @@ function buildDeadTrees(
   bag.add(hulls)
   // 外壳不参与射线：它纯粹是画面上的一圈墨，不该挡拾取。
   hulls.raycast = (): void => {}
-  // 容量按每棵 6 根算：4 根主枝 + 2 根分叉。
-  const branches = new InstancedMesh(branchGeo, branchMat, trees.length * 6)
+  // 容量按每棵 10 根算：3–5 根主枝 + 最多 5 根分叉。
+  const branches = new InstancedMesh(branchGeo, branchMat, trees.length * 10)
   bag.add(branches)
 
   const dummy = new Object3D()
@@ -964,14 +964,15 @@ function buildDeadTrees(
     // 墨线外壳共享同一份实例矩阵，描边于是严丝合缝地包住树干。
     hulls.setMatrixAt(i, trunkMatrix)
 
-    for (let b = 0; b < 4; b++) {
-      // 枝从树干 46%~78% 高度斜插出去；越高的枝越短，剪影才像枯树。
+    const branchCount = 3 + Math.floor(rng() * 3)
+    for (let b = 0; b < branchCount; b++) {
+      // 枝从树干 42%~78% 高度斜插出去；越高的枝越短，剪影才像枯树。
       // tilt 是离竖直方向的角度：0.45~0.8rad（26°~46°）才读成"斜上生长的枝"，
       // 上一版 0.85~1.3rad 几乎是水平的，横过头顶像两根晾衣杆。
-      const at = 0.46 + b * 0.15 + rng() * 0.05
-      const swing = tree.yaw + b * 2.1 + rng() * 0.6
-      const tilt = 0.45 + rng() * 0.35
-      const length = (0.78 - at * 0.34) * tree.height
+      const at = 0.42 + b * 0.36 / Math.max(1, branchCount - 1) + rng() * 0.04
+      const swing = tree.yaw + b * (Math.PI * 2 / branchCount) + rng() * 0.9
+      const tilt = 0.42 + rng() * 0.48
+      const length = (0.72 - at * 0.30) * tree.height * (0.78 + rng() * 0.34)
       dummy.position.set(tree.x, level.groundY + at * tree.height, tree.z)
       dummy.rotation.set(Math.cos(swing) * tilt, swing, Math.sin(swing) * tilt)
       dummy.scale.set(tree.radius * 0.9, length, tree.radius * 0.9)
@@ -980,9 +981,9 @@ function buildDeadTrees(
       branches.setMatrixAt(branchAt, dummy.matrix)
       branches.setColorAt(branchAt, treeTint)
 
-      // 分叉：四根直枝的剪影是"四根插在地上的棍子"，一根枝上再岔一根才读成树。
-      // 只长在第 1、3 根上，并且更细更短 —— 每根枝都对称地岔一下就成了模型标本。
-      if (b !== 1 && b !== 3) continue
+      // 分叉：直枝的剪影是"插在地上的棍子"，一根枝上再岔一根才读成树。
+      // 随机长在约一半的主枝上，并且更细更短 —— 每根都对称地岔就成了模型标本。
+      if (rng() > 0.48) continue
       // 几何是单位高的圆柱（y: 0→1），所以"枝的 62% 处"就是局部 y = 0.62。
       forkAt.set(0, 0.62, 0).applyMatrix4(dummy.matrix)
       const forkSwing = swing + 1 + rng() * 0.9
