@@ -357,7 +357,6 @@ export function registerGame(
             .filter((invite) => invite.toCode === code)
             .map((invite) => ({
               id: invite.id,
-              partyId: invite.partyId,
               fromCode: invite.fromCode,
               fromName: invite.fromName,
             }))
@@ -890,11 +889,15 @@ function handleConnection(
     // userId 仍按“本标签页/账号”用于重连；profileId 单独传给世界做结算。
     // 两者分开：同一浏览器开两个标签页互射时不能被重连接管成同一个人，
     // 但两局的金币仍应记到同一份本机档案。
+    // partyId 必须在 Hello 就校验：Loadout 不是强制包，不校验的话伪造
+    // partyId 再跳过 Loadout，就能永久拿到同队精确位姿/免友伤。
+    const requestedParty = hello.partyId ?? ''
+    const partyId = ctx.isPartyMember(requestedParty, partyCode) ? requestedParty : ''
     const joined = target.addPlayer(
       socket,
       identity.nickname,
       identity.userId,
-      hello.partyId ?? '',
+      partyId,
       profileKey,
     )
     if (!joined) {

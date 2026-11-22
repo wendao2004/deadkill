@@ -21,8 +21,12 @@ export interface InterestRanges {
   audio?: number
 }
 
-export const INTEREST_FULL_RANGE = 90
+// 精确层必须覆盖武器的最大命中距离（神射手 90m×3=270m），否则会出现
+// “看不见却能被打中”。墙后仍由视线射线决定，不会因此获得透视。
+export const INTEREST_FULL_RANGE = 280
 export const INTEREST_AUDIO_RANGE = 45
+/** 枪声/怪物枪声的可听事件半径；事件坐标会量化到 4m。 */
+export const INTEREST_EVENT_AUDIO_RANGE = 120
 /** 音频层的位置量化步长（米）：2m 足够听方向，不够做透视。 */
 export const INTEREST_AUDIO_QUANTUM = 2
 

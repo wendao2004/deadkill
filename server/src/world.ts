@@ -55,6 +55,8 @@ import {
   bossNameOf,
   HEAD_MIN_HEIGHT,
   INTEREST_AUDIO_QUANTUM,
+  INTEREST_EVENT_AUDIO_RANGE,
+  INTEREST_FULL_RANGE,
   interestPairKey,
   interestTier,
   MAX_HEALTH,
@@ -354,8 +356,10 @@ interface PlayerSession {
   ackedTick: number
   /** 服务端最近一次真的发给这个玩家的快照 tick；伪造的 ackedTick 不能超过它。 */
   lastSnapshotTick: number
-  /** 最近一次快照发出的时间（performance.now），用于服务端估算 RTT。 */
+  /** 最近一次快照发出的时间（performance.now），作为 RTT 的兜底。 */
   lastSnapshotSentAt: number
+  /** 最近 4 秒每个快照 tick 的发出时间，客户端 ack 该 tick 时用它算 RTT。 */
+  snapshotSentAt: Map<number, number>
   /** 服务端估算的往返时延；0 = 还没测到。 */
   rttMs: number
   /** 待消费输入队列（客户端会小批量补发）。 */
@@ -1623,6 +1627,7 @@ export class World {
     existing.ackedTick = 0
     existing.lastSnapshotTick = 0
     existing.lastSnapshotSentAt = 0
+    existing.snapshotSentAt.clear()
     existing.rttMs = 0
     existing.inputBudget = MAX_INPUTS_PER_SECOND
     existing.inputBudgetTick = this.tick
@@ -1740,6 +1745,7 @@ export class World {
       ackedTick: 0,
       lastSnapshotTick: 0,
       lastSnapshotSentAt: 0,
+      snapshotSentAt: new Map(),
       rttMs: 0,
       queue: [],
       inputBudget: MAX_INPUTS_PER_SECOND,
@@ -1956,10 +1962,13 @@ export class World {
     // 更早的 tick 都不会扩大回滚窗口；真正的 RTT 测量留给后续。
     const maxSent = player.lastSnapshotTick > 0 ? player.lastSnapshotTick : this.tick
     player.ackedTick = Math.max(0, Math.min(ackedTick, maxSent))
-    // 服务端自己估 RTT：从“快照发出”到“收到客户端下一包输入”的间隔。
-    // 不用客户端自报的数字；最多包含一个 20Hz 快照周期（50ms）的量化误差。
-    if (player.lastSnapshotSentAt > 0) {
-      const sample = Math.max(0, Math.min(500, performance.now() - player.lastSnapshotSentAt))
+    // 服务端自己估 RTT：客户端 ack 的快照 tick 是它真正收到的最后一帧，
+    // 用该帧的发出时间到现在的间隔做样本。比“距上一次快照发送”可靠得多
+    // ——后者在 60fps 客户端上只有 16ms，会把高延迟玩家的窗口恒定压到 120ms。
+    // 样本包含客户端一帧的处理/发包相位，最多 ~33ms，属可接受误差。
+    const sentAt = player.snapshotSentAt.get(player.ackedTick) ?? player.lastSnapshotSentAt
+    if (sentAt > 0) {
+      const sample = Math.max(0, Math.min(500, performance.now() - sentAt))
       player.rttMs = player.rttMs === 0 ? sample : player.rttMs * 0.8 + sample * 0.2
     }
     if (this.tick - player.inputBudgetTick >= TICK_RATE) {
@@ -2010,9 +2019,10 @@ export class World {
   /** 阶段 1：tick 计数、尸体过期、断线超时。 */
   private beginTick(): void {
     this.tick++
-    // 4Hz 刷新视线缓存：精确位姿只发给“90m 内且看得见”或同队的人；
-    // 墙后 45m 内只发量化音频层。5Hz 的射线量在 16 人局约 1.5k/s，可接受。
-    if (this.tick % 15 === 0) this.refreshInterest()
+    // 20Hz 刷新视线缓存：精确位姿只发给“通视且 280m 内”或同队的人；
+    // 墙后 45m 内只发量化音频层。20Hz 让探头/缩回的 tier 切换最多延迟
+    // 50ms，而不是旧 4Hz 的 250ms（那会让目标“隐形先手”或透墙残影）。
+    if (this.tick % 3 === 0) this.refreshInterest()
     // 尸体缓存到期就消失；如果它带着赏金，下一次 match.step 会看到
     // bountyOnGround()=false，把阶段退回 banish（赏金回到血巢）。
     if (this.bodyCaches.length > 0) {
@@ -2051,23 +2061,41 @@ export class World {
         if (this.tick >= player.respawnTick) this.respawn(player)
         continue
       }
-      let consumed = 0
-      let latest: PlayerInput | null = null
-      // 这一 tick 内任意一条输入按过的“离散/边沿”键。追帧包只保留最新
-      // 的移动意图，但开火/换弹/跳跃/交互不能因为被后面一条覆盖而丢掉。
-      let pressed = 0
-      while (player.queue.length > 0 && consumed < MAX_INPUTS_PER_TICK) {
+      // 正常情况每 tick 只消费**一条**最旧输入并只 ack 它：一条输入对应
+      // 一次 Character.step，客户端按 ack 重放时与服务端步数一致，不会
+      // “走一步退半步”。只有积压到一整个包（>=8）时才走追帧路径。
+      const burst = player.queue.length >= MAX_INPUTS_PER_TICK
+      if (burst) {
+        let consumed = 0
+        let latest: PlayerInput | null = null
+        // 这一 tick 内任意一条输入按过的“离散/边沿”键。追帧路径只保留
+        // 最新移动意图，但开火/换弹/跳跃/交互/开镜/蹲不能丢。
+        let pressed = 0
+        while (player.queue.length > 0 && consumed < MAX_INPUTS_PER_TICK) {
+          const input = player.queue.shift()!
+          consumed++
+          pressed |=
+            input.buttons &
+            (Buttons.Fire |
+              Buttons.Reload |
+              Buttons.Jump |
+              Buttons.Interact |
+              Buttons.Heal |
+              Buttons.Ads |
+              Buttons.Crouch)
+          player.ackSeq = input.seq
+          latest = input
+        }
+        if (latest !== null) {
+          // 追帧包：每 tick 只跑一次 Character.step，冷却不会按输入条数加速。
+          this.applyInput(player, { ...latest, buttons: latest.buttons | pressed })
+        } else {
+          this.characterStep(player, player.lastInput)
+        }
+      } else if (player.queue.length > 0) {
         const input = player.queue.shift()!
-        consumed++
-        pressed |= input.buttons & (Buttons.Fire | Buttons.Reload | Buttons.Jump | Buttons.Interact | Buttons.Heal)
         player.ackSeq = input.seq
-        latest = input
-      }
-      if (latest !== null) {
-        // **每 tick 只跑一次 Character.step**：8 条输入的 catch-up 只合并
-        // 按键与最新移动意图，不再把落地/跳跃/冲刺/滑铲冷却推进 8 倍。
-        // 位置由服务端 60Hz 自己的节奏推进，客户端多算的那部分交给和解。
-        this.applyInput(player, { ...latest, buttons: latest.buttons | pressed })
+        this.applyInput(player, input)
       } else {
         // 没有新输入也要推进物理，否则玩家会悬在空中。
         // 复用上一次的输入（速度继续、重力继续），而不是清零。
@@ -2130,6 +2158,15 @@ export class World {
         team = 1
         while (used.has(team) && team < 200) team++
       }
+      // 队伍上限 2：partyId 可被邀请/前队员持有，不能凭它把第 3、4 人
+      // 塞进同一队拿同队精确位姿与免友伤。
+      const members = [...this.players.values()].filter(
+        (other) => other.id !== player.id && other.team === team,
+      )
+      if (members.length >= 2) {
+        player.team = 1000 + player.id
+        return
+      }
       this.joinTeam(player, team)
       return
     }
@@ -2175,11 +2212,15 @@ export class World {
       }
       player.teamSlot = Math.min(1, slot)
     }
-    if (!this.teamSpawnIndex.has(team)) {
-      this.teamSpawnIndex.set(team, player.spawnIndex)
+    // 只有真正换队才传送。重发相同 Loadout / 已在原队时不能再瞬移回
+    // 出生点，否则未开火玩家可以靠重复配装包无限脱险。
+    if (!sameTeam) {
+      if (!this.teamSpawnIndex.has(team)) {
+        this.teamSpawnIndex.set(team, player.spawnIndex)
+      }
+      const spawn = this.teamSpawn(team, player.teamSlot)
+      if (spawn) player.character.teleport(spawn)
     }
-    const spawn = this.teamSpawn(team, player.teamSlot)
-    if (spawn) player.character.teleport(spawn)
   }
 
   private hasLivingTeammate(victim: Player): boolean {
@@ -3480,9 +3521,7 @@ export class World {
     // 的可利用空间；高延迟仍可到全局上限。最少保留一个插值延迟（90ms）。
     // 低延迟玩家至少保留 120ms（7 tick），低于这个值会伤到正常插值补偿。
     const maxMs =
-      player.rttMs > 0
-        ? Math.min(MAX_REWIND_MS, Math.max(120, player.rttMs * 0.6 + 30))
-        : MAX_REWIND_MS
+      player.rttMs > 0 ? Math.min(MAX_REWIND_MS, Math.max(120, player.rttMs)) : MAX_REWIND_MS
     // 算法在 shared/src/lagcomp.ts：客户端画“这一枪判的是哪一帧”要用同一份。
     return computeRewindTick(this.tick, player.ackedTick, maxMs)
   }
@@ -3521,7 +3560,7 @@ export class World {
   // ------------------------------------------------------------ 兴趣管理
 
   /**
-   * 4Hz 刷新玩家/怪物的相互可见性。
+   * 20Hz 刷新玩家/怪物的相互可见性。
    *
    * 只打静态几何：其他玩家/怪物的胶囊不应该挡住“我能不能看见他”，否则
    * 两个人中间夹第三个人时，前两个会互相消失。射线打不中或命中点接近目标
@@ -3541,8 +3580,8 @@ export class World {
           target.character.feet.x - feet.x,
           target.character.feet.z - feet.z,
         )
-        if (dist > 90) continue
-        if (this.hasLineOfSight(from, target.character.eye, 0.35)) {
+        if (dist > INTEREST_FULL_RANGE) continue
+        if (this.hasLineOfSight(from, target.character.eye, 0.05)) {
           this.visiblePlayers.add(interestPairKey(receiver.id, target.id))
         }
       }
@@ -3550,15 +3589,15 @@ export class World {
         if (isBossKind(entity.data.kind)) continue
         const hurt = monsterHurtbox(entity.data)
         const dist = Math.hypot(hurt.x - feet.x, hurt.z - feet.z)
-        if (dist > 70) continue
-        if (this.hasLineOfSight(from, { x: hurt.x, y: hurt.y, z: hurt.z }, 0.35)) {
+        if (dist > INTEREST_FULL_RANGE) continue
+        if (this.hasLineOfSight(from, { x: hurt.x, y: hurt.y, z: hurt.z }, 0.05)) {
           this.visibleMonsters.add(interestPairKey(receiver.id, entity.data.id))
         }
       }
     }
   }
 
-  /** 从 from 到 to 是否没有静态遮挡；允许最后 0.35m 内命中（目标自身/贴脸）。 */
+  /** 从 from 到 to 是否没有静态遮挡；只留 5cm 余量，贴墙目标也算被挡。 */
   private hasLineOfSight(from: Vec3, to: Vec3, slack: number): boolean {
     const dx = to.x - from.x
     const dy = to.y - from.y
@@ -3580,27 +3619,49 @@ export class World {
     return hit === null || hit.timeOfImpact >= distance - slack
   }
 
-  /** 音频层玩家：量化位置、藏起血量/弹药，只留脚步/换弹需要的字段。 */
+  /**
+   * 音频层玩家：只保留“播声音需要的最小集合”。
+   *
+   * 位置量化到 2m；速度、朝向、槽位、队伍全部清零/不下发，姿态位只留
+   * Alive/Crouching/Reloading/Sprinting/Moving/Downed。否则改客户端仍能
+   * 用精确 vx/vz 把 2m 网格积分回亚米级，量化就白做了。
+   */
   private audioOnlyPlayerView(view: PlayerSnapshot): PlayerSnapshot {
+    const flags =
+      view.flags &
+      (StateFlags.Alive |
+        StateFlags.Crouching |
+        StateFlags.Reloading |
+        StateFlags.Sprinting |
+        StateFlags.Moving |
+        StateFlags.Downed)
     return {
       ...view,
       x: quantizePosition(view.x, INTEREST_AUDIO_QUANTUM),
       y: quantizePosition(view.y, INTEREST_AUDIO_QUANTUM),
       z: quantizePosition(view.z, INTEREST_AUDIO_QUANTUM),
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      yaw: 0,
+      pitch: 0,
       health: 0,
       ammo: 0,
       reserve: 0,
-      flags: view.flags | StateFlags.AudioOnly,
+      slot: 0,
+      team: 0,
+      flags: flags | StateFlags.AudioOnly,
     }
   }
 
-  /** 音频层怪物：同样量化位置，客户端不画模型。 */
+  /** 音频层怪物：量化位置、清朝向，客户端不画模型。 */
   private audioOnlyMonsterView(view: MonsterSnapshot): MonsterSnapshot {
     return {
       ...view,
       x: quantizePosition(view.x, INTEREST_AUDIO_QUANTUM),
       y: quantizePosition(view.y, INTEREST_AUDIO_QUANTUM),
       z: quantizePosition(view.z, INTEREST_AUDIO_QUANTUM),
+      yaw: 0,
       health: 0,
       state: MonsterStateCode.AudioOnly,
     }
@@ -3639,6 +3700,7 @@ export class World {
             climbing: player.character.climbing,
             downed: player.downed,
             sprinting: player.character.sprinting,
+            moving: Math.hypot(player.character.vx, player.character.vz) > 0.35,
           }),
           team: player.team,
           weaponId: heldWeapon(player.loadout).id,
@@ -3668,8 +3730,8 @@ export class World {
     const nowMs = this.tick * TICK_MS
     for (const receiver of this.players.values()) {
       const feet = receiver.character.feet
-      // 可见玩家：同队/自己永远精确；敌人 90m 内且视线可见才发精确位姿，
-      // 墙后 45m 内只发量化音频层，其余不下发。
+      // 可见玩家：同队/自己永远精确；敌人通视且 280m 内发精确位姿，
+      // 墙后 45m 内只发量化音频层，且必须正在移动/换弹（无声目标不下发）。
       const playersFor: PlayerSnapshot[] = []
       for (const view of views) {
         const target = this.players.get(view.id)
@@ -3686,11 +3748,16 @@ export class World {
           false,
         )
         if (tier === 'full') playersFor.push(view)
-        else if (tier === 'audio') playersFor.push(this.audioOnlyPlayerView(view))
+        else if (
+          tier === 'audio' &&
+          (Math.hypot(target.character.vx, target.character.vz) > 0.35 || target.reloading)
+        ) {
+          playersFor.push(this.audioOnlyPlayerView(view))
+        }
       }
 
-      // 怪物：Boss 是全局目标（120m 内永远精确）；普通怪 70m 可见精确、
-      // 45m 墙后音频层，再远不下发。音频层用专属状态码让客户端跳过渲染。
+      // 怪物：Boss 是全局目标；普通怪通视且 280m 内精确、45m 墙后音频层，
+      // 且只对非 Idle/Dead 的怪发音频层（站桩不出声的怪不暴露位置）。
       const monstersFor: MonsterSnapshot[] = []
       for (const view of monsterViews) {
         const distance = Math.hypot(view.x - feet.x, view.z - feet.z)
@@ -3704,14 +3771,27 @@ export class World {
           distance,
           this.visibleMonsters.has(interestPairKey(receiver.id, view.id)),
           false,
-          { full: 70, audio: 45 },
+          { full: INTEREST_FULL_RANGE, audio: 45 },
         )
         if (tier === 'full') monstersFor.push(view)
-        else if (tier === 'audio') monstersFor.push(this.audioOnlyMonsterView(view))
+        else if (
+          tier === 'audio' &&
+          view.state !== MonsterStateCode.Idle &&
+          view.state !== MonsterStateCode.Dead
+        ) {
+          monstersFor.push(this.audioOnlyMonsterView(view))
+        }
       }
 
       receiver.lastSnapshotTick = this.tick
       receiver.lastSnapshotSentAt = performance.now()
+      receiver.snapshotSentAt.set(this.tick, receiver.lastSnapshotSentAt)
+      if (receiver.snapshotSentAt.size > 80) {
+        const cutoff = this.tick - 60
+        for (const tick of receiver.snapshotSentAt.keys()) {
+          if (tick < cutoff) receiver.snapshotSentAt.delete(tick)
+        }
+      }
       const index = attachAck(playersFor, receiver.id, receiver.ackSeq)
       this.send(
         receiver,
@@ -3758,10 +3838,98 @@ export class World {
     for (const player of this.players.values()) this.send(player, buffer)
   }
 
+  /**
+   * 事件也按兴趣层投影：精确事件只给当事人/同队/看得见的人，枪声在
+   * 120m 内给量化原点（保声音、不给厘米级雷达），其余直接不下发。
+   * Death/MonsterDeath 没有坐标，保留全局击杀播报。
+   */
   private flushEvents(): void {
-    const buffer = encodeEvents(this.pendingEvents)
-    for (const player of this.players.values()) this.send(player, buffer)
+    if (this.pendingEvents.length === 0) return
+    for (const player of this.players.values()) {
+      const events: GameEvent[] = []
+      for (const event of this.pendingEvents) {
+        const projected = this.projectEvent(player, event)
+        if (projected) events.push(projected)
+      }
+      if (events.length > 0) this.send(player, encodeEvents(events))
+    }
     this.pendingEvents = []
+  }
+
+  private sameTeamId(receiver: Player, id: number): boolean {
+    if (id === receiver.id) return true
+    const target = this.players.get(id)
+    return !!target && target.team > 0 && target.team === receiver.team
+  }
+
+  private eventDistance(receiver: Player, point: Vec3): number {
+    const eye = receiver.character.eye
+    return Math.hypot(point.x - eye.x, point.y - eye.y, point.z - eye.z)
+  }
+
+  private quantizeEventPoint(point: Vec3): Vec3 {
+    return {
+      x: quantizePosition(point.x, INTEREST_AUDIO_QUANTUM * 2),
+      y: quantizePosition(point.y, INTEREST_AUDIO_QUANTUM * 2),
+      z: quantizePosition(point.z, INTEREST_AUDIO_QUANTUM * 2),
+    }
+  }
+
+  private projectEvent(receiver: Player, event: GameEvent): GameEvent | null {
+    switch (event.kind) {
+      case EventKind.Shot: {
+        if (this.sameTeamId(receiver, event.playerId)) return event
+        if (this.visiblePlayers.has(interestPairKey(receiver.id, event.playerId))) return event
+        if (this.eventDistance(receiver, event.origin) > INTEREST_EVENT_AUDIO_RANGE) return null
+        return {
+          ...event,
+          origin: this.quantizeEventPoint(event.origin),
+          dir: { x: 0, y: 0, z: 0 },
+        }
+      }
+      case EventKind.Hit: {
+        if (
+          this.sameTeamId(receiver, event.attackerId) ||
+          this.sameTeamId(receiver, event.victimId) ||
+          this.visiblePlayers.has(interestPairKey(receiver.id, event.attackerId)) ||
+          this.visiblePlayers.has(interestPairKey(receiver.id, event.victimId))
+        ) {
+          return event
+        }
+        return null
+      }
+      case EventKind.Respawn: {
+        if (this.sameTeamId(receiver, event.playerId)) return event
+        if (this.visiblePlayers.has(interestPairKey(receiver.id, event.playerId))) return event
+        return null
+      }
+      case EventKind.MonsterHit: {
+        if (
+          this.sameTeamId(receiver, event.attackerId) ||
+          this.visibleMonsters.has(interestPairKey(receiver.id, event.monsterId))
+        ) {
+          return event
+        }
+        return null
+      }
+      case EventKind.MonsterShot: {
+        if (this.visibleMonsters.has(interestPairKey(receiver.id, event.monsterId))) return event
+        if (this.eventDistance(receiver, event.origin) > INTEREST_EVENT_AUDIO_RANGE) return null
+        return {
+          ...event,
+          origin: this.quantizeEventPoint(event.origin),
+          dir: { x: 0, y: 0, z: 0 },
+          distance: Math.round(event.distance / 4) * 4,
+        }
+      }
+      case EventKind.MonsterDeath:
+      case EventKind.Death:
+      case EventKind.BossPulse:
+        // 击杀播报无坐标；Boss 脉冲是全局目标音画，Boss 本身已全图下发。
+        return event
+      default:
+        return null
+    }
   }
 
   private send(player: PlayerSession, buffer: ArrayBuffer): void {

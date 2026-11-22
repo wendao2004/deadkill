@@ -23,6 +23,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: start server + client
+        shell: bash
         run: |
           pnpm --filter @dk/server start > /tmp/dk-server.log 2>&1 &
           pnpm --filter @dk/client dev -- --host 127.0.0.1 > /tmp/dk-client.log 2>&1 &
@@ -34,9 +35,24 @@ jobs:
             sleep 1
           done
 
+      - name: locate Chrome
+        shell: bash
+        run: |
+          if [ -z "${CHROME_PATH:-}" ]; then
+            for candidate in "/c/Program Files/Google/Chrome/Application/chrome.exe" "/usr/bin/google-chrome-stable" "/usr/bin/google-chrome" "/usr/bin/chromium"; do
+              if [ -x "$candidate" ] || [ -f "$candidate" ]; then
+                export CHROME_PATH="$candidate"
+                break
+              fi
+            done
+          fi
+          echo "CHROME_PATH=${CHROME_PATH:-}" >> "$GITHUB_ENV"
+
       - name: bench five maps at 1080p quality
+        shell: bash
         run: |
           mkdir -p bench
+          set +e
           for spec in "marsh-p0:marsh" "chapel-night:chapel" "quarry-dust:quarry" "station-dusk:station" "pine-camp-night:pine"; do
             map="${spec%%:*}"
             name="${spec##*:}"
@@ -44,6 +60,15 @@ jobs:
               --w 1920 --h 1080 --require-gpu \
               --out "bench/${name}-quality-1080.json" \
               --url "http://127.0.0.1:5173/?bench=1&q=quality&seed=4207&noaudio=1&map=${map}&match=ci-bench-${name}&scale=1&dt=16.67"
+            code=$?
+            if [ "$code" -eq 3 ]; then
+              echo "::error::self-hosted runner 没有可用独显（qa-bench exit 3）"
+              exit 1
+            fi
+            if [ "$code" -ne 0 ]; then
+              echo "::error::${name} 基准失败（exit $code）"
+              exit "$code"
+            fi
           done
 
       - uses: actions/upload-artifact@v4

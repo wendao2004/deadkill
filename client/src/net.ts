@@ -34,6 +34,7 @@ import {
   type Vec3,
 } from '@dk/shared'
 
+import { pageBase } from './base.ts'
 import { getPartyCode, getProfileId } from './identity.ts'
 import { followServerLevel } from './level-choice.ts'
 
@@ -124,7 +125,7 @@ function wsUrl(matchId: string): string {
   // 下，资源就在哪。socket 必须跟页面目录走：'/' → '/ws/game'，
   // '/dead-kill/' → '/dead-kill/ws/game'。不用 BASE_URL —— 它是 './'，
   // 换成路径只会得到一个点。
-  const base = location.pathname.replace(/[^/]*$/, '').replace(/\/$/, '')
+  const base = pageBase(location.pathname).replace(/\/$/, '')
   const params = new URLSearchParams({
     match: matchId,
     v: String(PROTOCOL_VERSION),

@@ -1299,7 +1299,10 @@ export class Game {
       }
       const audioOnly = (player.flags & StateFlags.AudioOnly) !== 0
       // 精确/音频层切换时丢掉旧样本：从 2m 网格滑到真实位姿会像瞬移。
-      if (state.audioOnly !== audioOnly) state.samples.length = 0
+      if (state.audioOnly !== audioOnly) {
+        state.samples.length = 0
+        state.stepAccum = 0
+      }
       state.audioOnly = audioOnly
       this.trackRemoteAudio(player, state, serverNow)
       state.samples.push({ time: serverNow, player })
@@ -1328,9 +1331,11 @@ export class Game {
     const moved = Math.hypot(dx, dz)
     const speed = dt > 1e-4 ? moved / dt : 0
     const crouching = (player.flags & StateFlags.Crouching) !== 0
-    // 音频层位置量化到 2m，位移/dt 会得到几十 m/s 的假速度；优先读服务端位。
+    // 音频层位置量化到 2m，位移/dt 会得到几十 m/s 的假速度；只信服务端位。
+    const audioOnly = (player.flags & StateFlags.AudioOnly) !== 0
     const sprinting =
-      (player.flags & StateFlags.Sprinting) !== 0 || (!crouching && speed > 5)
+      (player.flags & StateFlags.Sprinting) !== 0 ||
+      (!audioOnly && !crouching && speed > 5)
     const at = { x: player.x, y: player.y, z: player.z }
     const eye = this.character?.eye
     const distance = eye ? Math.hypot(at.x - eye.x, at.y - eye.y, at.z - eye.z) : Infinity
@@ -1338,8 +1343,15 @@ export class Game {
     // 传送/复活的一帧位移会达到几十米，不能当成一步。
     if (moved > 5) {
       state.stepAccum = 0
-    } else if (moved > 0.005 && distance <= 45) {
-      state.stepAccum += moved
+    } else if (distance <= 45) {
+      // 音频层不能用 2m 网格的位移累计：按服务端 Moving/Sprinting/Crouching
+      // 位与名义步速累计，避免“走一步退半步”或网格边界连续幻步。
+      const moving = (player.flags & StateFlags.Moving) !== 0
+      if (audioOnly) {
+        if (moving && dt > 0) state.stepAccum += dt * (sprinting ? 7.01 : crouching ? 2.44 : 4.57)
+      } else if (moved > 0.005) {
+        state.stepAccum += moved
+      }
       const stride = crouching ? 1.4 : sprinting ? STEP_DISTANCE_SPRINT : STEP_DISTANCE
       if (state.stepAccum >= stride) {
         state.stepAccum = 0

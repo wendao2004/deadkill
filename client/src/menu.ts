@@ -2505,7 +2505,6 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   interface PartyInviteView {
     id: string
-    partyId: string
     fromCode: string
     fromName: string
   }

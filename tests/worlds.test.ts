@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { initPhysics } from '../shared/src/worldbuild.ts'
 import { LEVELS } from '../shared/src/level.ts'
 import { StateFlags } from '../shared/src/constants.ts'
-import { Msg, decodeSnapshot } from '../shared/src/protocol.ts'
+import { EventKind, Msg, decodeEvents, decodeSnapshot } from '../shared/src/protocol.ts'
 import { World } from '../server/src/world.ts'
 import { WorldRegistry } from '../server/src/worlds.ts'
 import type { WebSocket } from 'ws'
@@ -52,9 +52,23 @@ test('准入：活跃世界达到上限后拒绝新 match，但已有 match 仍�
     rss: () => 0,
   })
   assert.equal(registry.admit('a').ok, true)
-  registry.get('a')
+  const worldA = registry.get('a')
+  worldA.addPlayer(fakeSocket() as unknown as WebSocket, '占位', 'admit-a')
   assert.equal(registry.admit('b').ok, false)
   assert.equal(registry.admit('a').ok, true)
+  registry.stop()
+})
+
+test('准入：空世界不占名额，两个弃房不能锁死新 match', async () => {
+  await initPhysics()
+  const registry = new WorldRegistry('marsh-p0', {
+    maxActiveWorlds: 2,
+    rssLimitMb: 380,
+    rss: () => 0,
+  })
+  registry.get('a')
+  registry.get('b')
+  assert.equal(registry.admit('c').ok, true, '空世界不应占活跃名额')
   registry.stop()
 })
 
@@ -148,7 +162,7 @@ test('兴趣管理：墙后 8m 的敌人只发量化音频层，不画模型', a
         x: 0,
         y: base.groundY + 1.5,
         z: -4,
-        hx: 3,
+        hx: 30,
         hy: 2,
         hz: 0.25,
         material: 'stone' as const,
@@ -169,21 +183,47 @@ test('兴趣管理：墙后 8m 的敌人只发量化音频层，不画模型', a
   const a = world.addPlayer(socketA as unknown as WebSocket, '甲', 'interest-a')!
   const b = world.addPlayer(socketB as unknown as WebSocket, '乙', 'interest-b')!
   const internals = world as unknown as {
-    players: Map<number, { character: { teleport(p: { x: number; y: number; z: number }): void } }>
+    players: Map<
+      number,
+      {
+        reloading: boolean
+        character: { teleport(p: { x: number; y: number; z: number }): void }
+      }
+    >
     step(): void
     broadcastSnapshot(): void
+    flushEvents(): void
+    pendingEvents: Array<{
+      kind: number
+      playerId: number
+      origin: { x: number; y: number; z: number }
+      dir: { x: number; y: number; z: number }
+      weaponId: number
+    }>
   }
   const ground = base.groundY
   internals.players.get(a.id)!.character.teleport({ x: 0, y: ground, z: 0 })
   // -7.3 量化到 -8：测试“量化”而不是“碰巧本来就是整数”。
   internals.players.get(b.id)!.character.teleport({ x: 0, y: ground, z: -7.3 })
-
   for (let i = 0; i < 20; i++) internals.step()
   internals.broadcastSnapshot()
-
-  const snapshotBuffer = socketA.sent.find(
-    (buffer) => new DataView(buffer).getUint8(0) === Msg.Snapshot,
+  const silentBuffer = socketA.sent
+    .filter((buffer) => new DataView(buffer).getUint8(0) === Msg.Snapshot)
+    .at(-1)
+  assert.equal(
+    decodeSnapshot(silentBuffer!).players.find((player) => player.id === b.id),
+    undefined,
+    '站桩且无声的墙后目标不应暴露位置',
   )
+
+  // 音频层只下发“正在移动/换弹”的敌人；站桩无声目标不该暴露位置。
+  // 放到 step 之后设置：reload 状态机会在 tick 里把没有换弹动作的标记清掉。
+  internals.players.get(b.id)!.reloading = true
+  internals.broadcastSnapshot()
+
+  const snapshotBuffer = socketA.sent
+    .filter((buffer) => new DataView(buffer).getUint8(0) === Msg.Snapshot)
+    .at(-1)
   assert.ok(snapshotBuffer, 'A 必须收到快照')
   const snapshot = decodeSnapshot(snapshotBuffer!)
   const bView = snapshot.players.find((player) => player.id === b.id)
@@ -191,6 +231,55 @@ test('兴趣管理：墙后 8m 的敌人只发量化音频层，不画模型', a
   assert.ok((bView!.flags & StateFlags.AudioOnly) !== 0, '必须标记为音频层')
   assert.equal(bView!.z, -8, '音频层位置必须量化到 2m 网格')
   assert.equal(bView!.health, 0, '音频层不能泄露精确血量')
+  assert.equal(bView!.vx, 0, '音频层不能泄露精确速度')
+  assert.equal(bView!.vz, 0, '音频层不能泄露精确速度')
+  assert.ok(Math.abs(bView!.yaw) < 0.01, '音频层不能泄露瞄准朝向')
+  assert.ok(Math.abs(bView!.pitch) < 0.01, '音频层不能泄露瞄准朝向')
+
+  // 通视控制组：同一侧、无遮挡的目标必须恢复精确位姿。
+  const bPlayer = internals.players.get(b.id)!
+  bPlayer.character.teleport({ x: 0, y: ground, z: -2 })
+  bPlayer.reloading = true
+  for (let i = 0; i < 6; i++) internals.step()
+  internals.broadcastSnapshot()
+  const visibleBuffer = socketA.sent
+    .filter((buffer) => new DataView(buffer).getUint8(0) === Msg.Snapshot)
+    .at(-1)
+  const visibleView = decodeSnapshot(visibleBuffer!).players.find((player) => player.id === b.id)
+  assert.ok(visibleView, '通视目标必须在快照里')
+  assert.equal((visibleView!.flags & StateFlags.AudioOnly) !== 0, false, '通视目标不能是音频层')
+  assert.equal(visibleView!.z, -2, '通视目标必须给精确位置')
+
+  // 距离控制组：>45m 且墙后，不再下发。
+  bPlayer.character.teleport({ x: 50, y: ground, z: -7.3 })
+  for (let i = 0; i < 6; i++) internals.step()
+  internals.broadcastSnapshot()
+  const farBuffer = socketA.sent
+    .filter((buffer) => new DataView(buffer).getUint8(0) === Msg.Snapshot)
+    .at(-1)
+  const farView = decodeSnapshot(farBuffer!).players.find((player) => player.id === b.id)
+  assert.equal(farView, undefined, '45m 外的墙后目标不应下发')
+
+  // 事件兴趣：墙后 7m 的枪声只给 4m 量化原点与零方向，不给精确眼位。
+  bPlayer.character.teleport({ x: 0, y: ground, z: -7.3 })
+  for (let i = 0; i < 3; i++) internals.step()
+  internals.pendingEvents.push({
+    kind: EventKind.Shot,
+    playerId: b.id,
+    origin: { x: 0.3, y: 1.6, z: -7.3 },
+    dir: { x: 0, y: 0, z: -1 },
+    weaponId: 1,
+  })
+  internals.flushEvents()
+  const eventBuffer = socketA.sent
+    .filter((buffer) => new DataView(buffer).getUint8(0) === Msg.Event)
+    .at(-1)
+  assert.ok(eventBuffer, '墙后枪声仍要作为可听事件下发')
+  const shot = decodeEvents(eventBuffer!).find((event) => event.kind === EventKind.Shot)
+  assert.ok(shot && shot.kind === EventKind.Shot)
+  assert.equal(shot!.origin.z, -8, '事件原点也必须量化到 4m 网格')
+  assert.deepEqual(shot!.dir, { x: 0, y: 0, z: 0 }, '音频事件不能泄露精确朝向')
+
   world.dispose()
 })
 
@@ -232,4 +321,78 @@ test('销毁：dispose 会释放物理世界，重复调用不抛错', async () 
   assert.doesNotThrow(() => world.dispose())
   assert.doesNotThrow(() => world.dispose())
   registry.stop()
+})
+
+
+test('RTT：按客户端 ack 的快照年龄估计，不被“距上次发送”压到 120ms', async () => {
+  await initPhysics()
+  const world = new World({ id: 'rtt-ack' })
+  const joined = world.addPlayer(fakeSocket() as unknown as WebSocket, '延迟', 'rtt-user')!
+  const internals = world as unknown as {
+    players: Map<
+      number,
+      {
+        rttMs: number
+        lastSnapshotTick: number
+        snapshotSentAt: Map<number, number>
+      }
+    >
+  }
+  const player = internals.players.get(joined.id)!
+  player.lastSnapshotTick = 10
+  player.snapshotSentAt.set(10, performance.now() - 160)
+  world.receiveInput(
+    joined.id,
+    [{ seq: 1, dtMs: 16.67, forward: 0, right: 0, yaw: 0, pitch: 0, buttons: 0 }],
+    10,
+  )
+  assert.ok(player.rttMs >= 140, `RTT 应接近 160ms，实际 ${player.rttMs.toFixed(0)}`)
+  world.dispose()
+})
+
+test('追帧输入：普通两条输入分两 tick 消费，ack 与 Character.step 同步', async () => {
+  await initPhysics()
+  const world = new World({ id: 'ack-step' })
+  const joined = world.addPlayer(fakeSocket() as unknown as WebSocket, '步进', 'ack-user')!
+  const internals = world as unknown as {
+    players: Map<number, { ackSeq: number }>
+    step(): void
+  }
+  const player = internals.players.get(joined.id)!
+  world.receiveInput(
+    joined.id,
+    [
+      { seq: 1, dtMs: 16.67, forward: 0, right: 0, yaw: 0, pitch: 0, buttons: 0 },
+      { seq: 2, dtMs: 16.67, forward: 0, right: 0, yaw: 0, pitch: 0, buttons: 0 },
+    ],
+    0,
+  )
+  internals.step()
+  assert.equal(player.ackSeq, 1, '第一条输入只 step 一次，只 ack 一条')
+  internals.step()
+  assert.equal(player.ackSeq, 2, '第二条在下一 tick 被消费并 ack')
+  world.dispose()
+})
+
+
+test('编队：重复 joinTeam 同一队不再传送回出生点', async () => {
+  await initPhysics()
+  const world = new World({ id: 'team-teleport' })
+  const joined = world.addPlayer(fakeSocket() as unknown as WebSocket, '不回城', 'team-user')!
+  const internals = world as unknown as {
+    players: Map<
+      number,
+      {
+        team: number
+        character: { feet: { x: number; y: number; z: number }; teleport(p: { x: number; y: number; z: number }): void }
+      }
+    >
+    joinTeam(player: unknown, team: number): void
+  }
+  const player = internals.players.get(joined.id)!
+  player.character.teleport({ x: 12, y: 0, z: 12 })
+  const before = { ...player.character.feet }
+  internals.joinTeam(player, player.team)
+  assert.deepEqual(player.character.feet, before, '同队重发配装不能瞬移回出生点')
+  world.dispose()
 })

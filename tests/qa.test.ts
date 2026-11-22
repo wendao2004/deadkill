@@ -123,3 +123,10 @@ test('基准统计：p99 取排序后的 99% 位置，且不改原数组', () =>
 test('基准统计：空样本返回 null，不产生 NaN', () => {
   assert.equal(summarizeFrames([], 'x'), null)
 })
+
+
+test('基准统计：>50ms 的帧计入 hitches，50ms 本身不算', () => {
+  const result = summarizeFrames([16, 50, 50.1, 60, 16], 'gpu')
+  assert.ok(result)
+  assert.equal(result.hitches, 2)
+})

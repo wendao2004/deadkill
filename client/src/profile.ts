@@ -6,6 +6,7 @@
  * 任何购买都走 `/api/profile/buy`，本地不再自行扣款。
  */
 
+import { pageBase } from './base.ts'
 import { getProfileId } from './identity.ts'
 
 export interface ProfileView {
@@ -52,8 +53,7 @@ export function cacheProfile(profile: ProfileView): void {
  * 写死 `/api/profile` 会让线上请求打到宿主根路由（404），菜单只能退回缓存。
  */
 function apiUrl(path: string): string {
-  const base = location.pathname.replace(/[^/]*$/, '')
-  return `${base}${path}`
+  return `${pageBase(location.pathname)}${path}`
 }
 
 export async function fetchProfile(): Promise<ProfileView | null> {

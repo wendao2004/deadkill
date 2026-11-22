@@ -19,14 +19,17 @@ test('兴趣层级：同队永远精确，哪怕墙后', () => {
   assert.equal(interestTier(200, false, true), 'full')
 })
 
-test('兴趣层级：可见且在 90m 内精确，否则 45m 内音频层，再远不下发', () => {
+test('兴趣层级：可见且在 280m 内精确，否则 45m 内音频层，再远不下发', () => {
   assert.equal(interestTier(30, true, false), 'full')
   assert.equal(interestTier(INTEREST_FULL_RANGE, true, false), 'full')
   // 墙后但超出听觉半径：不下发。可见但超出 90m：也不下发。
   assert.equal(interestTier(80, false, false), 'none')
   assert.equal(interestTier(30, false, false), 'audio')
   assert.equal(interestTier(INTEREST_AUDIO_RANGE + 0.1, false, false), 'none')
-  assert.equal(interestTier(100, true, false), 'none')
+  // 100m 通视仍在武器命中射程内，必须给精确位姿。
+  assert.equal(interestTier(100, true, false), 'full')
+  assert.equal(interestTier(INTEREST_FULL_RANGE, true, false), 'full')
+  assert.equal(interestTier(INTEREST_FULL_RANGE + 1, true, false), 'none')
 })
 
 test('兴趣层级：可覆盖距离，用于怪物/Boss 的单独预算', () => {

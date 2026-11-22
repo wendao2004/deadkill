@@ -117,10 +117,16 @@ export class WorldRegistry {
    */
   admit(matchId: string): { ok: true } | { ok: false; reason: string } {
     if (this.worlds.has(matchId)) return { ok: true }
-    if (this.worlds.size >= this.maxActiveWorlds) {
+    // 只统计**有玩家**的世界。空世界会保留 5 分钟给重连，如果也算名额，
+    // 两条“进房后退”的连接就能让新 match 五分钟全部被拒（低成本 DoS）。
+    let active = 0
+    for (const world of this.worlds.values()) {
+      if (world.playerCount > 0) active++
+    }
+    if (active >= this.maxActiveWorlds) {
       return {
         ok: false,
-        reason: `活跃世界已达上限（${this.worlds.size}/${this.maxActiveWorlds}）`,
+        reason: `活跃世界已达上限（${active}/${this.maxActiveWorlds}）`,
       }
     }
     const rssMb = Math.round(this.rss() / (1024 * 1024))

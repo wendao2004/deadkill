@@ -895,6 +895,8 @@ export function stateFlagsOf(c: {
   audioOnly?: boolean
   /** 冲刺中。可选：旧调用方不传时保持原行为。 */
   sprinting?: boolean
+  /** 正在移动（水平速度 > 0.35m/s）。可选。 */
+  moving?: boolean
 }): number {
   let f = 0
   if (c.grounded) f |= StateFlags.Grounded
@@ -909,6 +911,7 @@ export function stateFlagsOf(c: {
   if (c.downed) f |= StateFlags.Downed
   if (c.audioOnly) f |= StateFlags.AudioOnly
   if (c.sprinting) f |= StateFlags.Sprinting
+  if (c.moving) f |= StateFlags.Moving
   return f
 }
 
