@@ -52,6 +52,7 @@ import {
   lairOf,
   loreOf,
   monsterKindFromCode,
+  MonsterStateCode,
   bossNameOf,
   MONSTER_ID_BASE,
   traceShot,
@@ -214,6 +215,8 @@ interface RemoteState {
   stepAccum: number
   /** 上一帧是否在换弹：只在翻转时放一次开仓/上膛。 */
   reloading: boolean
+  /** 仅音频层：服务端没给精确位姿，客户端不能渲染这个模型。 */
+  audioOnly: boolean
 }
 
 export interface GameOptions {
@@ -1232,6 +1235,8 @@ export class Game {
     // 怪物不做客户端预测：它们由服务端独占地推进，且 20Hz 的快照 + 渲染器
     // 内部插值已经足够顺。这里只把最新一帧递过去。
     this.currentMonsters = snapshot.monsters
+    // 音频层怪物不渲染；但保留在 currentMonsters 里给脚步/嚎叫与 Boss 判定用。
+    this.renderMonsters = snapshot.monsters.filter((m) => m.state !== MonsterStateCode.AudioOnly)
     // 怪物脚步：之前完全没接音频，玩家只能听见吼叫和枪声，一只猎犬绕后
     // 贴到脸上之前没有任何声音线索。这里按快照位移触发脚步，体型决定重量。
     this.trackMonsterAudio(snapshot.monsters, snapshot.serverTime)
@@ -1288,9 +1293,14 @@ export class Game {
           lastTime: serverNow,
           stepAccum: 0,
           reloading: (player.flags & StateFlags.Reloading) !== 0,
+          audioOnly: (player.flags & StateFlags.AudioOnly) !== 0,
         }
         this.remote.set(player.id, state)
       }
+      const audioOnly = (player.flags & StateFlags.AudioOnly) !== 0
+      // 精确/音频层切换时丢掉旧样本：从 2m 网格滑到真实位姿会像瞬移。
+      if (state.audioOnly !== audioOnly) state.samples.length = 0
+      state.audioOnly = audioOnly
       this.trackRemoteAudio(player, state, serverNow)
       state.samples.push({ time: serverNow, player })
       const cutoff = serverNow - SNAPSHOT_BUFFER_MS
@@ -1480,6 +1490,7 @@ export class Game {
 
     const players: PlayerSnapshot[] = []
     for (const [id, state] of this.remote) {
+      if (state.audioOnly) continue
       const interpolated = sampleAt(state.samples, renderAt)
       if (interpolated) players.push(interpolated)
       void id
@@ -1538,6 +1549,7 @@ export class Game {
   /** 打空的次数（只在真的放出那声「咔」时 +1）。探针用它区分「没反应」与「空仓」。 */
   private dryShots = 0
   private currentMonsters: MonsterView[] = []
+  private renderMonsters: MonsterView[] = []
   /** 每只怪物上一次快照的位置与累计步幅（20Hz 位移驱动脚步）。 */
   private readonly monsterAudio = new Map<
     number,
@@ -2613,7 +2625,7 @@ export class Game {
     this.markerView.myY = feet.y
     this.markerView.myZ = feet.z
     this.renderer.syncAvatars(this.currentRemote, this.myId, dt)
-    this.renderer.syncMonsters(this.currentMonsters, dt)
+    this.renderer.syncMonsters(this.renderMonsters, dt)
     this.tickGrowls(dt)
     this.renderer.syncObjective(this.markerView, dt)
     this.renderer.render()

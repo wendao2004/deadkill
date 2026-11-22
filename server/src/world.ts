@@ -44,6 +44,7 @@ import {
   MONSTER_ID_BASE,
   MonsterKindCode,
   MonsterStateCode,
+  quantizePosition,
   damageMonster,
   MONSTER_SPECS,
   monsterHurtbox,
@@ -53,6 +54,9 @@ import {
   isBossKind,
   bossNameOf,
   HEAD_MIN_HEIGHT,
+  INTEREST_AUDIO_QUANTUM,
+  interestPairKey,
+  interestTier,
   MAX_HEALTH,
   MAX_INPUTS_PER_TICK,
   MAX_PLAYERS,
@@ -655,6 +659,9 @@ export class World {
   private matchSettled = false
   /** 已经报过错的阶段：同一处每 tick 刷屏会把日志和性能一起拖死。 */
   private readonly phaseErrors = new Set<string>()
+  /** 兴趣管理：4Hz 刷新的视线缓存（接收者:目标）。 */
+  private readonly visiblePlayers = new Set<string>()
+  private readonly visibleMonsters = new Set<string>()
 
   private nextPlayerId = 1
   private tick = 0
@@ -2003,6 +2010,9 @@ export class World {
   /** 阶段 1：tick 计数、尸体过期、断线超时。 */
   private beginTick(): void {
     this.tick++
+    // 4Hz 刷新视线缓存：精确位姿只发给“90m 内且看得见”或同队的人；
+    // 墙后 45m 内只发量化音频层。5Hz 的射线量在 16 人局约 1.5k/s，可接受。
+    if (this.tick % 15 === 0) this.refreshInterest()
     // 尸体缓存到期就消失；如果它带着赏金，下一次 match.step 会看到
     // bountyOnGround()=false，把阶段退回 banish（赏金回到血巢）。
     if (this.bodyCaches.length > 0) {
@@ -3498,16 +3508,104 @@ export class World {
     if (this.history.length > SNAPSHOT_HISTORY) this.history.shift()
   }
 
+  // ------------------------------------------------------------ 兴趣管理
+
+  /**
+   * 4Hz 刷新玩家/怪物的相互可见性。
+   *
+   * 只打静态几何：其他玩家/怪物的胶囊不应该挡住“我能不能看见他”，否则
+   * 两个人中间夹第三个人时，前两个会互相消失。射线打不中或命中点接近目标
+   * 都算可见；命中更早的墙/箱子算遮挡。
+   */
+  private refreshInterest(): void {
+    this.visiblePlayers.clear()
+    this.visibleMonsters.clear()
+    const receivers = [...this.players.values()]
+    for (const receiver of receivers) {
+      const from = receiver.character.eye
+      const feet = receiver.character.feet
+      for (const target of receivers) {
+        if (target.id === receiver.id) continue
+        if (target.team > 0 && target.team === receiver.team) continue
+        const dist = Math.hypot(
+          target.character.feet.x - feet.x,
+          target.character.feet.z - feet.z,
+        )
+        if (dist > 90) continue
+        if (this.hasLineOfSight(from, target.character.eye, 0.35)) {
+          this.visiblePlayers.add(interestPairKey(receiver.id, target.id))
+        }
+      }
+      for (const entity of this.monsters) {
+        if (isBossKind(entity.data.kind)) continue
+        const hurt = monsterHurtbox(entity.data)
+        const dist = Math.hypot(hurt.x - feet.x, hurt.z - feet.z)
+        if (dist > 70) continue
+        if (this.hasLineOfSight(from, { x: hurt.x, y: hurt.y, z: hurt.z }, 0.35)) {
+          this.visibleMonsters.add(interestPairKey(receiver.id, entity.data.id))
+        }
+      }
+    }
+  }
+
+  /** 从 from 到 to 是否没有静态遮挡；允许最后 0.35m 内命中（目标自身/贴脸）。 */
+  private hasLineOfSight(from: Vec3, to: Vec3, slack: number): boolean {
+    const dx = to.x - from.x
+    const dy = to.y - from.y
+    const dz = to.z - from.z
+    const distance = Math.hypot(dx, dy, dz)
+    if (distance < 0.5) return true
+    const ray = new Ray(from, { x: dx / distance, y: dy / distance, z: dz / distance })
+    const hit = this.physics.castRay(
+      ray,
+      distance,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (collider) =>
+        !this.byCollider.has(collider.handle) && !this.monstersByCollider.has(collider.handle),
+    )
+    return hit === null || hit.timeOfImpact >= distance - slack
+  }
+
+  /** 音频层玩家：量化位置、藏起血量/弹药，只留脚步/换弹需要的字段。 */
+  private audioOnlyPlayerView(view: PlayerSnapshot): PlayerSnapshot {
+    return {
+      ...view,
+      x: quantizePosition(view.x, INTEREST_AUDIO_QUANTUM),
+      y: quantizePosition(view.y, INTEREST_AUDIO_QUANTUM),
+      z: quantizePosition(view.z, INTEREST_AUDIO_QUANTUM),
+      health: 0,
+      ammo: 0,
+      reserve: 0,
+      flags: view.flags | StateFlags.AudioOnly,
+    }
+  }
+
+  /** 音频层怪物：同样量化位置，客户端不画模型。 */
+  private audioOnlyMonsterView(view: MonsterSnapshot): MonsterSnapshot {
+    return {
+      ...view,
+      x: quantizePosition(view.x, INTEREST_AUDIO_QUANTUM),
+      y: quantizePosition(view.y, INTEREST_AUDIO_QUANTUM),
+      z: quantizePosition(view.z, INTEREST_AUDIO_QUANTUM),
+      health: 0,
+      state: MonsterStateCode.AudioOnly,
+    }
+  }
+
   // ------------------------------------------------------------ 下行
 
   private broadcastSnapshot(): void {
     // flags 只和本人姿态有关，与接收者无关 —— 先算好，避免每个接收者重算一遍。
-    const view: PlayerSnapshot[] = []
+    const views: PlayerSnapshot[] = []
     for (const player of this.players.values()) {
       // 已撤离的人不再出现在快照里：留一个“尸体”在撤离点会误导别人。
       if (player.extracted) continue
       const feet = player.character.feet
-      view.push(
+      views.push(
         projectPlayer({
           id: player.id,
           x: feet.x,
@@ -3540,7 +3638,7 @@ export class World {
       )
     }
 
-    // 怪物段对所有人完全相同（没有隐藏信息），一套数组所有人共用。
+    // 怪物先建全量视图；每个接收者再按兴趣层级筛成精确/音频层。
     const monsterViews: MonsterSnapshot[] = []
     for (const entity of this.monsters) {
       const data = entity.data
@@ -3558,16 +3656,60 @@ export class World {
 
     const nowMs = this.tick * TICK_MS
     for (const receiver of this.players.values()) {
-      // 每个人收到的快照只有 ackSeq 不同：就地贴、编完立刻复位，
-      // 不为每个接收者重建整份数组（见 shared/src/snapshotView.ts）。
+      const feet = receiver.character.feet
+      // 可见玩家：同队/自己永远精确；敌人 90m 内且视线可见才发精确位姿，
+      // 墙后 45m 内只发量化音频层，其余不下发。
+      const playersFor: PlayerSnapshot[] = []
+      for (const view of views) {
+        const target = this.players.get(view.id)
+        if (!target) continue
+        const sameTeam = target.team > 0 && target.team === receiver.team
+        if (view.id === receiver.id || sameTeam) {
+          playersFor.push(view)
+          continue
+        }
+        const distance = Math.hypot(view.x - feet.x, view.z - feet.z)
+        const tier = interestTier(
+          distance,
+          this.visiblePlayers.has(interestPairKey(receiver.id, view.id)),
+          false,
+        )
+        if (tier === 'full') playersFor.push(view)
+        else if (tier === 'audio') playersFor.push(this.audioOnlyPlayerView(view))
+      }
+
+      // 怪物：Boss 是全局目标（120m 内永远精确）；普通怪 70m 可见精确、
+      // 45m 墙后音频层，再远不下发。音频层用专属状态码让客户端跳过渲染。
+      const monstersFor: MonsterSnapshot[] = []
+      for (const view of monsterViews) {
+        const distance = Math.hypot(view.x - feet.x, view.z - feet.z)
+        if (view.kind >= 3) {
+          if (distance <= 120) monstersFor.push(view)
+          continue
+        }
+        const tier = interestTier(
+          distance,
+          this.visibleMonsters.has(interestPairKey(receiver.id, view.id)),
+          false,
+          { full: 70, audio: 45 },
+        )
+        if (tier === 'full') monstersFor.push(view)
+        else if (tier === 'audio') monstersFor.push(this.audioOnlyMonsterView(view))
+      }
+
       receiver.lastSnapshotTick = this.tick
       receiver.lastSnapshotSentAt = performance.now()
-      const index = attachAck(view, receiver.id, receiver.ackSeq)
+      const index = attachAck(playersFor, receiver.id, receiver.ackSeq)
       this.send(
         receiver,
-        encodeSnapshot({ tick: this.tick, serverTime: nowMs, players: view, monsters: monsterViews }),
+        encodeSnapshot({
+          tick: this.tick,
+          serverTime: nowMs,
+          players: playersFor,
+          monsters: monstersFor,
+        }),
       )
-      if (index >= 0) clearAck(view, index)
+      if (index >= 0) clearAck(playersFor, index)
     }
   }
 

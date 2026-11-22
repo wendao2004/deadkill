@@ -42,8 +42,12 @@ input → game flow → player → weapon → enemies → fx → level/backdrop/
 
 - 服务端权威：位置、命中、伤害、战利品、目标、毒圈、Boss。
 - 客户端预测 + 服务端和解；远端延迟插值。
-- 延迟补偿：开火按射击者最后收到的快照 tick 回滚玩家胶囊，解析求交。
+- 延迟补偿：开火按射击者最后收到的快照 tick 回滚玩家胶囊，解析求交；
+  回滚窗口按服务端实测 RTT 收紧（低延迟 120ms，高延迟最多 150ms）。
 - 快照 20Hz；昵称名单、目标状态、战利品走独立低频包。
+- 兴趣管理：自己/同队/90m 内可见 → 精确位姿；墙后 45m 内 → 2m 量化
+  `AudioOnly` 层（客户端不渲染，只播声音）；更远不下发。视线缓存 4Hz，
+  只对静态几何做射线。
 - 协议 27：Hello 在 `profileId` 后再追加 `partyCode`；服务端用它校验
   Loadout 里的 `partyId` 是否真属于该好友码。26 追加稳定 `profileId`；
   新增 `Msg.Result`（个人结算）与 `Msg.Profile`（金币/已解锁天赋/配件/

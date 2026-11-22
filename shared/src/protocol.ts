@@ -519,6 +519,11 @@ export const MonsterStateCode = {
   Investigate: 5,
   /** 到达后绕圈搜索。客户端暂时复用 idle 呼吸。 */
   Search: 6,
+  /**
+   * 音频层：位置已量化，客户端不渲染模型，只用来播脚步/嚎叫。
+   * 追加的 u8 状态码，快照布局不变；旧客户端会落到 idle 分支。
+   */
+  AudioOnly: 7,
 } as const
 
 export interface MonsterSnapshot {

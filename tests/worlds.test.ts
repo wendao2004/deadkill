@@ -8,6 +8,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { initPhysics } from '../shared/src/worldbuild.ts'
+import { LEVELS } from '../shared/src/level.ts'
+import { StateFlags } from '../shared/src/constants.ts'
+import { Msg, decodeSnapshot } from '../shared/src/protocol.ts'
 import { World } from '../server/src/world.ts'
 import { WorldRegistry } from '../server/src/worlds.ts'
 import type { WebSocket } from 'ws'
@@ -100,6 +103,63 @@ test('下行背压：bufferedAmount 超过 256KB 时主动断开', async () => {
   socket.bufferedAmount = 300 * 1024
   world.addPlayer(socket as unknown as WebSocket, '慢消费者', 'slow-user')
   assert.equal(socket.closedWith?.code, 4011)
+  world.dispose()
+})
+
+test('兴趣管理：墙后 8m 的敌人只发量化音频层，不画模型', async () => {
+  await initPhysics()
+  const base = LEVELS['marsh-p0']!
+  const level = {
+    ...base,
+    id: 'interest-test',
+    boxes: [
+      {
+        x: 0,
+        y: base.groundY + 1.5,
+        z: -4,
+        hx: 3,
+        hy: 2,
+        hz: 0.25,
+        material: 'stone' as const,
+      },
+    ],
+    nests: [],
+    clues: [],
+    extracts: [],
+    searchSpots: [],
+    doors: [],
+    traps: [],
+    lamps: [],
+    spawns: [{ x: 0, y: base.groundY, z: 0 }],
+  } as never
+  const world = new World({ id: 'interest-test', level })
+  const socketA = fakeSocket()
+  const socketB = fakeSocket()
+  const a = world.addPlayer(socketA as unknown as WebSocket, '甲', 'interest-a')!
+  const b = world.addPlayer(socketB as unknown as WebSocket, '乙', 'interest-b')!
+  const internals = world as unknown as {
+    players: Map<number, { character: { teleport(p: { x: number; y: number; z: number }): void } }>
+    step(): void
+    broadcastSnapshot(): void
+  }
+  const ground = base.groundY
+  internals.players.get(a.id)!.character.teleport({ x: 0, y: ground, z: 0 })
+  // -7.3 量化到 -8：测试“量化”而不是“碰巧本来就是整数”。
+  internals.players.get(b.id)!.character.teleport({ x: 0, y: ground, z: -7.3 })
+
+  for (let i = 0; i < 20; i++) internals.step()
+  internals.broadcastSnapshot()
+
+  const snapshotBuffer = socketA.sent.find(
+    (buffer) => new DataView(buffer).getUint8(0) === Msg.Snapshot,
+  )
+  assert.ok(snapshotBuffer, 'A 必须收到快照')
+  const snapshot = decodeSnapshot(snapshotBuffer!)
+  const bView = snapshot.players.find((player) => player.id === b.id)
+  assert.ok(bView, '墙后的敌人仍要以音频层出现在快照里')
+  assert.ok((bView!.flags & StateFlags.AudioOnly) !== 0, '必须标记为音频层')
+  assert.equal(bView!.z, -8, '音频层位置必须量化到 2m 网格')
+  assert.equal(bView!.health, 0, '音频层不能泄露精确血量')
   world.dispose()
 })
 

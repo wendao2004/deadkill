@@ -9,6 +9,7 @@
 export * from './math.ts'
 export * from './kernel/index.ts'
 export * from './constants.ts'
+export * from './interest.ts'
 export * from './loadout.ts'
 export * from './protocol.ts'
 export * from './loot.ts'
