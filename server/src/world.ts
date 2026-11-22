@@ -2052,13 +2052,23 @@ export class World {
         continue
       }
       let consumed = 0
+      let latest: PlayerInput | null = null
+      // 这一 tick 内任意一条输入按过的“离散/边沿”键。追帧包只保留最新
+      // 的移动意图，但开火/换弹/跳跃/交互不能因为被后面一条覆盖而丢掉。
+      let pressed = 0
       while (player.queue.length > 0 && consumed < MAX_INPUTS_PER_TICK) {
         const input = player.queue.shift()!
         consumed++
-        this.applyInput(player, input)
+        pressed |= input.buttons & (Buttons.Fire | Buttons.Reload | Buttons.Jump | Buttons.Interact | Buttons.Heal)
         player.ackSeq = input.seq
+        latest = input
       }
-      if (consumed === 0) {
+      if (latest !== null) {
+        // **每 tick 只跑一次 Character.step**：8 条输入的 catch-up 只合并
+        // 按键与最新移动意图，不再把落地/跳跃/冲刺/滑铲冷却推进 8 倍。
+        // 位置由服务端 60Hz 自己的节奏推进，客户端多算的那部分交给和解。
+        this.applyInput(player, { ...latest, buttons: latest.buttons | pressed })
+      } else {
         // 没有新输入也要推进物理，否则玩家会悬在空中。
         // 复用上一次的输入（速度继续、重力继续），而不是清零。
         this.characterStep(player, player.lastInput)

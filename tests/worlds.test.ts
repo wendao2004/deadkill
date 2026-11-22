@@ -106,6 +106,37 @@ test('下行背压：bufferedAmount 超过 256KB 时主动断开', async () => {
   world.dispose()
 })
 
+test('追帧输入：一包 8 条每 tick 只推进一次 Character.step，冷却不加速', async () => {
+  await initPhysics()
+  const world = new World({ id: 'input-cooldown' })
+  const socket = fakeSocket()
+  const joined = world.addPlayer(socket as unknown as WebSocket, '追帧者', 'cooldown-user')!
+  const internals = world as unknown as {
+    step(): void
+    players: Map<number, { ackSeq: number; character: { jumpCooldown: number } }>
+  }
+  const player = internals.players.get(joined.id)!
+  player.character.jumpCooldown = 1
+  world.receiveInput(
+    joined.id,
+    Array.from({ length: 8 }, (_, index) => ({
+      seq: index + 1,
+      dtMs: 16.67,
+      forward: 1,
+      right: 0,
+      yaw: 0,
+      pitch: 0,
+      buttons: 0,
+    })),
+    0,
+  )
+  internals.step()
+  // 只跑一次 TICK_DT（约 0.0167s）；旧实现会跑 8 次，剩约 0.866。
+  assert.ok(player.character.jumpCooldown > 0.95, `冷却被推进了多次：${player.character.jumpCooldown}`)
+  assert.equal(player.ackSeq, 8, '最新输入序号必须被确认')
+  world.dispose()
+})
+
 test('兴趣管理：墙后 8m 的敌人只发量化音频层，不画模型', async () => {
   await initPhysics()
   const base = LEVELS['marsh-p0']!
