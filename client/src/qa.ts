@@ -339,6 +339,8 @@ export interface BenchResult {
   p99: number
   min: number
   max: number
+  /** 超过 50ms 的帧数：avg/p99 会被一次 100ms 尖峰稀释，这个数不会。 */
+  hitches: number
   gpu: string
 }
 
@@ -360,6 +362,7 @@ export function summarizeFrames(samples: readonly number[], gpu: string): BenchR
     p99: Math.round(at(0.99) * 100) / 100,
     min: Math.round(sorted[0]! * 100) / 100,
     max: Math.round(sorted[sorted.length - 1]! * 100) / 100,
+    hitches: samples.reduce((count, ms) => count + (ms > 50 ? 1 : 0), 0),
     gpu,
   }
 }

@@ -9,7 +9,7 @@
  * CI 容器没有 GPU，用硬件阈值会把所有 PR 判红。
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gpuLaunchArgs, installChromeCleanup, isSoftwareGpu, killChromeTree } from './chrome-flags.mjs'
@@ -26,8 +26,12 @@ const width = Number(readFlag('--w') ?? 1280)
 const height = Number(readFlag('--h') ?? 720)
 const p99Limit = Number(readFlag('--p99') ?? 25)
 const avgLimit = Number(readFlag('--avg') ?? 16.7)
+const maxHitches = Number(readFlag('--max-hitches') ?? 0)
+const outJson = readFlag('--out')
 /** 软件渲染默认只警告；CI 需要“必须是独显”时传 --require-gpu，跳过时退出 3。 */
 const requireGpu = process.argv.includes('--require-gpu')
+/** 允许动态分辨率改档（默认不允许：基准必须固定 scale 才能跨版本比较）。 */
+const allowAdaptive = process.argv.includes('--allow-adaptive')
 const timeoutMs = Number(readFlag('--timeout') ?? 300000)
 const port = 9500 + Math.floor(Math.random() * 300)
 const profile = mkdtempSync(join(tmpdir(), 'dkqa-bench-'))
@@ -83,11 +87,12 @@ async function connect() {
   await send('Page.enable')
   try { await send('Page.bringToFront') } catch {}
   try { await send('Page.setWebLifecycleState', { state: 'active' }) } catch {}
-  return async (expression) => {
+  const evaluate = async (expression) => {
     const reply = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
     if (reply.result?.exceptionDetails) throw new Error(reply.result.exceptionDetails.text)
     return reply.result?.result?.value
   }
+  return { evaluate, send }
 }
 
 async function main() {
@@ -99,7 +104,16 @@ async function main() {
     ...gpuLaunchArgs(),
     '--autoplay-policy=no-user-gesture-required', url,
   ], { stdio: 'ignore' })
-  const evaluate = await connect()
+  const { evaluate, send } = await connect()
+  // 钉住视口：--window-size 只是外框，实际 canvas 会少掉浏览器边框。
+  await send('Emulation.setDeviceMetricsOverride', {
+    width,
+    height,
+    deviceScaleFactor: 1,
+    mobile: false,
+  })
+  await send('Page.reload')
+  await sleep(500)
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
     if (await evaluate('window.__benchDone === true')) break
@@ -154,11 +168,45 @@ async function main() {
       console.error(`qa-bench: avg ${result.avg}ms > ${avgLimit}ms（+0.5ms 容差）`)
       failed = true
     }
+    if (Number(result?.hitches) > maxHitches) {
+      console.error(`qa-bench: hitches ${result.hitches} > ${maxHitches}（>50ms 的帧）`)
+      failed = true
+    }
   }
   const errorsArr = JSON.parse(errors)
   if (errorsArr.length > 0) {
     console.error(`qa-bench: __errors 非空（${errorsArr.length}）`)
     failed = true
+  }
+  // 基准必须固定分辨率：否则 p99 是 0.65/0.6/0.5 几种 scale 的混合值，
+  // 跨版本比较没有意义。固定画质的 QA URL 应带 scale=1&dt=16.67。
+  const scale = Number(statsObj?.scale ?? NaN)
+  const upscales = Number(statsObj?.resolution?.upscales ?? 0)
+  const downscales = Number(statsObj?.resolution?.downscales ?? 0)
+  if (!allowAdaptive && (scale !== 1 || upscales > 0 || downscales > 0)) {
+    console.error(
+      `qa-bench: 动态分辨率改档（scale=${scale}, up=${upscales}, down=${downscales}）；` +
+        '基准 URL 请加 scale=1&dt=16.67，或显式 --allow-adaptive',
+    )
+    failed = true
+  }
+  if (outJson) {
+    writeFileSync(
+      outJson,
+      JSON.stringify(
+        {
+          url,
+          width,
+          height,
+          bench: result,
+          stats: statsObj,
+          errors: errorsArr,
+        },
+        null,
+        2,
+      ),
+    )
+    console.log(`qa-bench: wrote ${outJson}`)
   }
   process.exitCode = failed ? 1 : 0
 }

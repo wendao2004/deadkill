@@ -150,6 +150,11 @@ const DRY_FIRE_GAP_MS = 320
 
 /** QA 基准：预热帧数（跳过着色器编译/纹理上传）与采样帧数（约 10 秒）。 */
 const BENCH_WARMUP = 90
+/**
+ * 预热必须至少绕完一整圈：只预热 90 帧时相机才转过约 80°，背面的材质会在
+ * 采样开始后才第一次编译，p99 里就会出现 33/100ms 的冷启动尖峰。
+ */
+const BENCH_WARMUP_ANGLE = Math.PI * 2
 const BENCH_FRAMES = 600
 
 /**
@@ -780,6 +785,10 @@ export class Game {
       tick: this.lastSnapshot?.tick ?? 0,
       ping: this.estimatePing(),
       quality: this.qualityTier,
+      levelId: this.options.level.id,
+      modifier: this.modifierId >= 0 ? this.modifierId : 0,
+      modifierHour: getModifier(this.modifierId >= 0 ? this.modifierId : 0).hour,
+      seed: qa.seed,
       gpu: this.renderer.gpuLabel(),
       // 原始适配器串：QA 必须能证明这一帧真的跑在哪张卡上，而不是只看"核显/独显"。
       gpuName: this.renderer.gpuInfo().renderer,
@@ -951,7 +960,7 @@ export class Game {
       tz: target.z,
     })
 
-    if (diag.frames < BENCH_WARMUP) return
+    if (diag.frames < BENCH_WARMUP || this.benchAngle < BENCH_WARMUP_ANGLE) return
     this.benchSamples.push(realDt * 1000)
     if (this.benchSamples.length < BENCH_FRAMES) return
 

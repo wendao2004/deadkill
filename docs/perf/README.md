@@ -1,0 +1,40 @@
+# 1080p 性能基线（2026-11-22）
+
+环境：Windows 10 / Chrome headless（新 headless）/ NVIDIA GTX 1660 SUPER /
+quality 档 / 1920×1080（`Emulation.setDeviceMetricsOverride` 钉死）/
+`scale=1&dt=16.67` / 600 帧 / 无音频 / 完整绕 360° 预热后再采样。
+
+| 地图 | 天气（本次抽到） | avg | p99 | max | >50ms | calls | tris |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 沼泽农舍 `marsh-p0` | 19:00 死寂 | 16.67 | 16.8 | 16.8 | 0 | 174 | 157,771 |
+| 教堂墓园 `chapel-night` | 07:00 白昼 | 16.67 | 16.8 | 17.0 | 0 | 408 | 200,507 |
+| 采石场 `quarry-dust` | 07:00 日间虫潮 | 16.67 | 16.8 | 16.9 | 0 | 286 | 183,030 |
+| 火车站 `station-dusk` | 07:00 白昼骤雨 | 16.67 | 16.8 | 16.9 | 0 | 307 | 154,167 |
+| 松林营地 `pine-camp-night` | 19:00 虫潮 | 16.72 | 16.8 | 33.3 | 0 | 536 | 279,926 |
+
+结论：五图在 1080p quality 档均锁 60fps，p99 16.8ms，无 >50ms 卡顿。
+松林单次 33.3ms 双帧但未构成 hitch；draw calls 536 是五图最高，来自虫潮怪量与
+松林植被，仍在预算内。
+
+## 复现
+
+```bash
+# 先启动 server/client
+pnpm --filter @dk/server dev
+pnpm --filter @dk/client dev
+
+# 逐图跑；--out 会把 gpuName/scale/calls/tris/errors 一起归档
+node tools/qa-bench.mjs --w 1920 --h 1080 --require-gpu \
+  --out docs/perf/marsh-quality-1080-final.json \
+  --url "http://localhost:5173/?bench=1&q=quality&seed=4207&noaudio=1&map=marsh-p0&match=perf-marsh&scale=1&dt=16.67"
+```
+
+注意：
+
+- 天气按 `matchId` 哈希抽取；两次跑同一张图可能抽到不同天气，calls/tris 会变。
+  对比性能时固定 `match=` 或记录 JSON 里的 `stats.modifier`。
+- 旧版 `qa-bench` 只预热 90 帧（约 80°），背面材质会在采样阶段首次编译，
+  station/pine 曾出现 100/50ms 尖峰。现在预热至少绕满 360°，并要求
+  `hitches === 0`（>50ms 的帧）才算通过。
+- 这是 GTX 1660 SUPER 的单机基线，不代表核显/移动端。核显默认进 balanced；
+  用 `?q=balanced` 另跑一份。

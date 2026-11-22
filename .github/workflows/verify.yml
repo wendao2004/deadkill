@@ -1,0 +1,62 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  smoke:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: start server + client
+        run: |
+          pnpm --filter @dk/server start > /tmp/dk-server.log 2>&1 &
+          pnpm --filter @dk/client dev -- --host 127.0.0.1 > /tmp/dk-client.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8787/api/game/status >/dev/null 2>&1 \
+              && curl -fsS http://127.0.0.1:5173/ >/dev/null 2>&1; then
+              echo "ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8787/api/game/status
+
+      - name: smoke (software GPU)
+        run: |
+          export CHROME_PATH=$(command -v google-chrome || command -v chromium || command -v chromium-browser)
+          echo "chrome: $CHROME_PATH"
+          QA_GPU=0 pnpm qa:smoke -- --url http://127.0.0.1:5173/
+
+      - name: logs on failure
+        if: failure()
+        run: tail -80 /tmp/dk-server.log /tmp/dk-client.log

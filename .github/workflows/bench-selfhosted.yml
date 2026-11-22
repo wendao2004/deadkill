@@ -1,0 +1,52 @@
+name: bench-selfhosted
+
+# 硬件基准必须跑在有独显的 self-hosted runner 上：
+#   1. 启动 server + client（同 verify.yml）
+#   2. 对五张图跑 1080p quality，产物上传 artifact
+# 不要在 GitHub hosted runner 上跑：那里只有软件光栅化，p99 没有意义。
+on:
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: start server + client
+        run: |
+          pnpm --filter @dk/server start > /tmp/dk-server.log 2>&1 &
+          pnpm --filter @dk/client dev -- --host 127.0.0.1 > /tmp/dk-client.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8787/api/game/status >/dev/null 2>&1 \
+              && curl -fsS http://127.0.0.1:5173/ >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+      - name: bench five maps at 1080p quality
+        run: |
+          mkdir -p bench
+          for spec in "marsh-p0:marsh" "chapel-night:chapel" "quarry-dust:quarry" "station-dusk:station" "pine-camp-night:pine"; do
+            map="${spec%%:*}"
+            name="${spec##*:}"
+            node tools/qa-bench.mjs \
+              --w 1920 --h 1080 --require-gpu \
+              --out "bench/${name}-quality-1080.json" \
+              --url "http://127.0.0.1:5173/?bench=1&q=quality&seed=4207&noaudio=1&map=${map}&match=ci-bench-${name}&scale=1&dt=16.67"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dead-kill-bench
+          path: bench/

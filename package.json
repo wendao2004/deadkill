@@ -6,7 +6,10 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"pnpm -F @dk/server dev\" \"pnpm -F @dk/client dev\"",
-    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "test": "node --test --experimental-strip-types tests/*.test.ts client/tests/*.test.ts",
+    "build": "pnpm -F @dk/client build",
+    "verify": "pnpm typecheck && pnpm test && pnpm build",
+    "qa:verify": "pnpm verify && pnpm qa:smoke",
     "qa:diff": "node tools/qa-diff.mjs",
     "qa:smoke": "node tools/qa-smoke.mjs",
     "qa:bench": "node tools/qa-bench.mjs",

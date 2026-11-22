@@ -105,18 +105,30 @@ await page.waitForFunction(() => window.__benchDone === true, { timeout: 600000 
 
 截图前再读一次 `window.__stats()` 并随图存档：`errors` 必须为 0，`kernelErrors` 必须为 0，draw calls / 三角形要和上一次同机位对比。
 
+### 4.3.1 显卡与证据链（2026-11-22 起）
+
+- 四个无头工具默认强制高性能 GPU：`--use-angle=d3d11 --enable-gpu --ignore-gpu-blocklist --disable-software-rasterizer`；`QA_GPU=0` 才回退 SwiftShader。没有 GPU 的 CI 必须显式设 `QA_GPU=0`。
+- `qa-shot` / `qa-smoke` / `qa-bench` 会读 `__stats().gpuName`；`qa-bench --require-gpu` 在软件渲染时退出 3（SKIPPED），不会把 CPU 数据当硬件结果。
+- `qa-shot` / `qa-menu-shot` 用 `Emulation.setDeviceMetricsOverride` 钉住视口，并校验 PNG 实际尺寸等于 `--w/--h`；过去 `--w 1600 --h 900` 实际产出 1584×749。
+- 每张截图旁写同名 JSON（`<out>.json`）：GPU、levelId、modifier/hour、seed、quality、scale、calls/tris/programs/textures、sceneHash、errors。
+- `qa-shot --expect-level=marsh-p0 --expect-modifier=4` 可以把“拍错图/拍错天气”变成非零退出。
+- `qa-shot` / `qa-menu-shot` 在 `__errors` / `__fatal` / `__kernelErrors` 非空时直接失败；不再产出“看起来正常”的坏帧。
+- 测试结束按临时 `user-data-dir` 反查并清理整套 Chrome；正常退出、异常、Ctrl+C 都有钩子。被外部强杀（TaskStop/SIGKILL）时仍可能遗留，验收前用 `Get-CimInstance Win32_Process` 按 `dkqa-` 前缀清一次。
+
 ### 4.4 基准
 
 ```text
-?autostart=1&noaudio=1&seed=4207&q=performance&scale=0.5&hud=0&vm=0&bench=1
+?autostart=1&noaudio=1&seed=4207&q=quality&map=marsh-p0&match=bench-marsh&scale=1&dt=16.67&bench=1
 ```
+
+固定 `scale=1&dt=16.67` 是必须的：不钉住时动态分辨率会在 600 帧里改档，p99 会变成几种 scale 的混合值。`qa-bench` 默认会拒绝这种基准（可用 `--allow-adaptive` 显式放行）。
 
 - 预热 90 帧，跳过着色器编译与纹理上传；
 - 采样 600 帧（约 10 秒@60fps）；
 - 相机绕玩家转 360°，覆盖背面/侧面的 draw call；
 - 输出 `avg / median / p99 / min / max`。**p99 比 avg 重要**：平均 16ms、每两秒一次 80ms 卡顿，玩家感受到的是后者。
 
-软件渲染（SwiftShader）下只有约 10fps，一次基准约需 70 秒；这是正常现象，不代表目标平台性能。
+软件渲染（SwiftShader）下只有约 10fps；这只用于无 GPU 的 CI 冒烟，不代表目标平台性能。硬件基准请在有独显的机器上跑 `--require-gpu`，并归档同名 JSON（`--out docs/perf/...json`）。
 
 ### 4.5 截图对比
 
@@ -200,14 +212,25 @@ node tools/qa-smoke.mjs --url http://127.0.0.1:5173/
 ### 基准（可进 CI）
 
 ```bash
-pnpm qa:bench
-# 或指定完整 URL / 阈值
-pnpm qa:bench -- --url "http://127.0.0.1:5173/?bench=1&q=quality&seed=4207&noaudio=1" --p99 22 --avg 15
+pnpm qa:bench -- --w 1920 --h 1080 --require-gpu \
+  --out docs/perf/marsh-quality-1080.json \
+  --url "http://127.0.0.1:5173/?bench=1&q=quality&seed=4207&noaudio=1&map=marsh-p0&match=bench-marsh&scale=1&dt=16.67"
 ```
 
-输出 `__bench` 的 frames/avg/median/p99/min/max 与 `__stats()`。软件渲染
-（SwiftShader/llvmpipe）只警告、不按硬件阈值失败；CI 容器没有 GPU 时不会误判。
-脚本结束会清理整套 Chrome 子进程。
+输出 `__bench` 的 frames/avg/median/p99/min/max 与 `__stats()`；`--out` 归档
+gpuName/scale/resolution/calls/tris/errors。`--require-gpu` 在软件渲染时退出 3；
+默认拒绝动态分辨率改档。脚本结束会清理整套 Chrome 子进程。
+
+### 一键验证
+
+```bash
+pnpm verify        # typecheck + 329 条测试（含 client/tests）+ vite build
+pnpm qa:verify     # verify + 全路径冒烟（需要 server/client 已启动）
+```
+
+GitHub Actions：`.github/workflows/verify.yml` 在 hosted runner 上跑
+typecheck/test/build + `QA_GPU=0` 冒烟；硬件基准在 `bench-selfhosted.yml`
+（workflow_dispatch，需 `[self-hosted, gpu]` runner）。
 
 
 ---

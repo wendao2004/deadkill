@@ -35,6 +35,27 @@ function readFlag(name) {
   return index === -1 ? null : (process.argv[index + 1] ?? null)
 }
 
+const expectLevel = readFlag('--expect-level')
+const expectModifierRaw = readFlag('--expect-modifier')
+const expectModifier = expectModifierRaw === null ? null : Number(expectModifierRaw)
+
+/** PNG IHDR 宽高：截图落盘前确认不是 1584×749 这种“窗口边框版”。 */
+function pngSize(buffer) {
+  if (buffer.length < 24 || buffer.toString('ascii', 1, 4) !== 'PNG') return null
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
+}
+
+function sidecarPath(pngPath) {
+  return pngPath.toLowerCase().endsWith('.png') ? pngPath.slice(0, -4) + '.json' : pngPath + '.json'
+}
+
+function assertHealthy(stats) {
+  if (!stats) throw new Error('__stats() 不可读')
+  if (stats.fatal) throw new Error(`__fatal: ${stats.fatal}`)
+  if (Number(stats.errors) > 0) throw new Error(`__errors=${stats.errors}`)
+  if (Number(stats.kernelErrors) > 0) throw new Error(`kernelErrors=${stats.kernelErrors}`)
+}
+
 async function preflight() {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) })
@@ -129,6 +150,17 @@ async function main() {
   )
   const page = await connect()
 
+  // 钉住视口再重载：--window-size 是外框，直接截会少掉浏览器边框的高度，
+  // 产出 1584×749 而不是 1600×900；qa-diff 会因尺寸不同直接失败。
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width,
+    height,
+    deviceScaleFactor: 1,
+    mobile: false,
+  })
+  await page.send('Page.reload')
+  await sleep(500)
+
   const deadline = Date.now() + 120000
   while (Date.now() < deadline) {
     if (await page.evaluate('window.__shotReady === true')) break
@@ -146,16 +178,55 @@ async function main() {
 
   const stats = await page.evaluate('JSON.stringify(window.__stats ? window.__stats() : null)')
   const parsed = stats === null ? null : JSON.parse(stats)
+  assertHealthy(parsed)
   // GPU 模式下的静默回退是最坏的：截图看起来正常，但所有性能/画质判断都建立在 CPU 上。
   if (process.env.QA_GPU !== '0' && isSoftwareGpu(parsed?.gpu)) {
     throw new Error(`期望独显但仍在软件渲染：${parsed?.gpu ?? 'unknown'}（QA_GPU=0 才允许 CPU）`)
   }
+  if (expectLevel !== null && parsed.levelId !== expectLevel) {
+    throw new Error(`期望关卡 ${expectLevel}，实际 ${parsed.levelId}`)
+  }
+  if (expectModifier !== null && Number(parsed.modifier) !== expectModifier) {
+    throw new Error(`期望天气 ${expectModifier}，实际 ${parsed.modifier}`)
+  }
   const shot = await page.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
   const data = shot.result?.data
   if (!data) throw new Error('截图返回为空')
-  writeFileSync(out, Buffer.from(data, 'base64'))
-  console.log(`qa-shot: ${out} ${width}x${height}`)
+  const png = Buffer.from(data, 'base64')
+  const size = pngSize(png)
+  if (!size || size.width !== width || size.height !== height) {
+    throw new Error(`截图尺寸 ${size?.width ?? '?'}x${size?.height ?? '?'}，期望 ${width}x${height}`)
+  }
+  writeFileSync(out, png)
+  writeFileSync(
+    sidecarPath(out),
+    JSON.stringify(
+      {
+        file: out,
+        width: size.width,
+        height: size.height,
+        gpu: parsed.gpuName ?? parsed.gpu,
+        levelId: parsed.levelId,
+        modifier: parsed.modifier,
+        modifierHour: parsed.modifierHour,
+        seed: parsed.seed,
+        quality: parsed.quality,
+        scale: parsed.scale,
+        calls: parsed.calls,
+        triangles: parsed.triangles,
+        programs: parsed.programs,
+        textures: parsed.textures,
+        sceneHash: parsed.scene?.hash,
+        errors: parsed.errors,
+        kernelErrors: parsed.kernelErrors,
+      },
+      null,
+      2,
+    ),
+  )
+  console.log(`qa-shot: ${out} ${size.width}x${size.height}`)
   console.log(`qa-shot: stats ${stats}`)
+  console.log(`qa-shot: sidecar ${sidecarPath(out)}`)
 }
 
 main()

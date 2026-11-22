@@ -72,8 +72,7 @@
   `pnpm qa:diff` 像素对比；`pnpm qa:smoke` 全路径冒烟。
 - 鲁棒性：指针锁不可用时自动降级为移动鼠标转向；后处理链启动自检，
   失败或 `?postfail=1` 时回退 ACES 前向直出（`__stats().renderPath`）。
-- `pnpm test` 310 条根测试 + `pnpm -F @dk/client test:parts` 19 条客户端测试，
-  合计 329 条纯函数与集成测试。
+- `pnpm test` **329** 条纯函数与集成测试（根 `tests/` 与 `client/tests/` 一起跑）。
 
 ## 技术栈
 
@@ -115,8 +114,9 @@ pnpm --filter @dk/client dev
 ## 验收与截图
 
 ```bash
-pnpm qa:diff before.png after.png      # 同机位像素对比，带阈值与退出码
+pnpm verify                            # typecheck + 329 测试 + vite build
 pnpm qa:smoke                          # 主界面→入场→暂停→回大厅→再入场
+pnpm qa:diff before.png after.png      # 同机位像素对比，带阈值与退出码
 ```
 
 固定场景示例：
@@ -182,7 +182,7 @@ client/          Three.js 客户端
   main.ts        DOM 接线（换成 Vue 组件只需改这一个文件）
 
 tools/           qa-diff.mjs（PNG 像素对比）、qa-smoke.mjs（CDP 全路径冒烟）
-tests/           310 条根测试；client/tests/ 另有 19 条（合计 329）
+tests/           根测试；client/tests/ 另有 19 条；`pnpm test` 合计 329
 docs/            设计、渲染、AI、QA、部署与评审文档
 ```
 
@@ -193,6 +193,7 @@ docs/            设计、渲染、AI、QA、部署与评审文档
 | [方向定调](docs/direction.md) | 一句话幻想、三根支柱、三色/两字体/一母题、约束与输入矩阵 |
 | [开发团队](docs/开发团队.md) | 六个常驻角色、证据标准、固定验收动作、节奏与“现在不做什么” |
 | [团队评审 2026-11-22](docs/团队评审-2026-11-22.md) | 六角色评审、P0/P1 清单、四周路线与验收清单 |
+| [发布检查清单](docs/发布检查清单.md) | verify/冒烟/基准/截图证据、NAS 发布与回滚 |
 | [架构与运行契约](docs/architecture.md) | 分层、启动/更新顺序、权威网络、降级、QA、已知缺口 |
 | [技术栈决策](docs/技术栈决策.md) | 为什么是 Three/Rapier/Fastify，被否决的方案与代价 |
 | [内核](docs/内核.md) | 固定步、帧相位、确定性随机、共享层边界 |

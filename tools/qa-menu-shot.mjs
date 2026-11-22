@@ -38,6 +38,15 @@ function readFlag(name) {
   return index === -1 ? null : (process.argv[index + 1] ?? null)
 }
 
+function pngSize(buffer) {
+  if (buffer.length < 24 || buffer.toString('ascii', 1, 4) !== 'PNG') return null
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
+}
+
+function sidecarPath(pngPath) {
+  return pngPath.toLowerCase().endsWith('.png') ? pngPath.slice(0, -4) + '.json' : pngPath + '.json'
+}
+
 async function preflight() {
   try {
     const res = await fetch(base, { signal: AbortSignal.timeout(15000) })
@@ -123,6 +132,12 @@ async function main() {
   // 昵称引导层会盖住整个菜单。预置存档是首选（reload 后仍然有效），
   // 但 headless 下首次导航时机不稳，所以再加一道"实在弹出来了就填掉"的兜底。
   await send('Page.enable')
+  await send('Emulation.setDeviceMetricsOverride', {
+    width,
+    height,
+    deviceScaleFactor: 1,
+    mobile: false,
+  })
   await evaluate(`(() => {
     localStorage.setItem('dk.nickname', 'QA')
     localStorage.setItem('dk.matchId', 'qa')
@@ -206,12 +221,38 @@ async function main() {
   }
 
   const stats = await evaluate('JSON.stringify(window.__stats ? window.__stats() : null)')
+  const errors = JSON.parse((await evaluate('JSON.stringify(window.__errors ?? [])')) ?? '[]')
+  const fatal = await evaluate('window.__fatal ?? null')
+  if (fatal) throw new Error(`__fatal: ${fatal}`)
+  if (Array.isArray(errors) && errors.length > 0) {
+    throw new Error(`__errors=${errors.length}: ${errors[0]}`)
+  }
   const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
   const data = shot.result?.data
   if (!data) throw new Error('截图失败：没有返回图像数据')
-  writeFileSync(out, Buffer.from(data, 'base64'))
-  console.log(`qa-menu-shot: ${out} ${width}x${height}`)
+  const png = Buffer.from(data, 'base64')
+  const size = pngSize(png)
+  if (!size || size.width !== width || size.height !== height) {
+    throw new Error(`截图尺寸 ${size?.width ?? '?'}x${size?.height ?? '?'}，期望 ${width}x${height}`)
+  }
+  writeFileSync(out, png)
+  writeFileSync(
+    sidecarPath(out),
+    JSON.stringify(
+      {
+        file: out,
+        width: size.width,
+        height: size.height,
+        state: stats === null ? null : JSON.parse(stats).state,
+        errors: 0,
+      },
+      null,
+      2,
+    ),
+  )
+  console.log(`qa-menu-shot: ${out} ${size.width}x${size.height}`)
   if (stats) console.log(`qa-menu-shot: stats ${stats}`)
+  console.log(`qa-menu-shot: sidecar ${sidecarPath(out)}`)
 }
 
 main()

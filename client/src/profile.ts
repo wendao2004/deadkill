@@ -47,9 +47,18 @@ export function cacheProfile(profile: ProfileView): void {
   }
 }
 
+/**
+ * 档案接口必须跟着页面挂载点走：开发在 `/`，宿主部署在 `/dead-kill/`。
+ * 写死 `/api/profile` 会让线上请求打到宿主根路由（404），菜单只能退回缓存。
+ */
+function apiUrl(path: string): string {
+  const base = location.pathname.replace(/[^/]*$/, '')
+  return `${base}${path}`
+}
+
 export async function fetchProfile(): Promise<ProfileView | null> {
   try {
-    const res = await fetch(`/api/profile?profileId=${encodeURIComponent(getProfileId())}`, {
+    const res = await fetch(apiUrl(`api/profile?profileId=${encodeURIComponent(getProfileId())}`), {
       headers: { accept: 'application/json' },
     })
     if (!res.ok) return null
@@ -75,7 +84,7 @@ export async function buyProfile(
   id: number,
 ): Promise<{ ok: true; profile: ProfileView; cost: number } | { ok: false; error: string }> {
   try {
-    const res = await fetch('/api/profile/buy', {
+    const res = await fetch(apiUrl('api/profile/buy'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ profileId: getProfileId(), kind, id }),
