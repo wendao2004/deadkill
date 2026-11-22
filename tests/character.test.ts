@@ -2,8 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { initPhysics, buildLevelWorld } from '../shared/src/worldbuild.ts'
-import { Character } from '../shared/src/character.ts'
-import { Buttons } from '../shared/src/constants.ts'
+import { Character, stateFlagsOf } from '../shared/src/character.ts'
+import { Buttons, StateFlags } from '../shared/src/constants.ts'
 import type { LevelDef } from '../shared/src/level.ts'
 
 /**
@@ -196,4 +196,22 @@ test('空中贴着 0.9m 台面会自动攀沿', () => {
   world.free()
   assert.ok(vaulted, '应该触发一次空中攀沿')
   assert.ok(top > 0.7, `攀沿后应该站上台面（feet.y=${top.toFixed(2)}）`)
+})
+
+
+test('stateFlagsOf：冲刺位与音频层位是追加的，不改变既有姿态位', () => {
+  const flags = stateFlagsOf({
+    grounded: true,
+    crouching: false,
+    ads: false,
+    alive: true,
+    reloading: false,
+    sprinting: true,
+    audioOnly: true,
+  })
+  assert.ok((flags & StateFlags.Alive) !== 0)
+  assert.ok((flags & StateFlags.Grounded) !== 0)
+  assert.ok((flags & StateFlags.Sprinting) !== 0)
+  assert.ok((flags & StateFlags.AudioOnly) !== 0)
+  assert.equal((flags & StateFlags.Crouching) !== 0, false)
 })

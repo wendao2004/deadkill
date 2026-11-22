@@ -893,6 +893,8 @@ export function stateFlagsOf(c: {
   downed?: boolean
   /** 只用于音频的量化实体。可选：正常快照不传。 */
   audioOnly?: boolean
+  /** 冲刺中。可选：旧调用方不传时保持原行为。 */
+  sprinting?: boolean
 }): number {
   let f = 0
   if (c.grounded) f |= StateFlags.Grounded
@@ -906,6 +908,7 @@ export function stateFlagsOf(c: {
   if (c.climbing) f |= StateFlags.Climbing
   if (c.downed) f |= StateFlags.Downed
   if (c.audioOnly) f |= StateFlags.AudioOnly
+  if (c.sprinting) f |= StateFlags.Sprinting
   return f
 }
 

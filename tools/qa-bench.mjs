@@ -178,14 +178,16 @@ async function main() {
     console.error(`qa-bench: __errors 非空（${errorsArr.length}）`)
     failed = true
   }
-  // 基准必须固定分辨率：否则 p99 是 0.65/0.6/0.5 几种 scale 的混合值，
-  // 跨版本比较没有意义。固定画质的 QA URL 应带 scale=1&dt=16.67。
+  // 基准必须固定分辨率：balanced/performance 档本来就有 0.85/0.65 的
+  // 固定上限，scale 不一定是 1；关键是 governor 没有在采样期改档。
+  // QA URL 仍应带 scale=1&dt=16.67，让实际 scale = 本档固定上限。
   const scale = Number(statsObj?.scale ?? NaN)
   const upscales = Number(statsObj?.resolution?.upscales ?? 0)
   const downscales = Number(statsObj?.resolution?.downscales ?? 0)
-  if (!allowAdaptive && (scale !== 1 || upscales > 0 || downscales > 0)) {
+  const qualityDrops = Number(statsObj?.resolution?.qualityDrops ?? 0)
+  if (!allowAdaptive && (upscales > 0 || downscales > 0 || qualityDrops > 0)) {
     console.error(
-      `qa-bench: 动态分辨率改档（scale=${scale}, up=${upscales}, down=${downscales}）；` +
+      `qa-bench: 动态分辨率改档（scale=${scale}, up=${upscales}, down=${downscales}, drops=${qualityDrops}）；` +
         '基准 URL 请加 scale=1&dt=16.67，或显式 --allow-adaptive',
     )
     failed = true

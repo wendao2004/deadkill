@@ -1328,7 +1328,9 @@ export class Game {
     const moved = Math.hypot(dx, dz)
     const speed = dt > 1e-4 ? moved / dt : 0
     const crouching = (player.flags & StateFlags.Crouching) !== 0
-    const sprinting = !crouching && speed > 5
+    // 音频层位置量化到 2m，位移/dt 会得到几十 m/s 的假速度；优先读服务端位。
+    const sprinting =
+      (player.flags & StateFlags.Sprinting) !== 0 || (!crouching && speed > 5)
     const at = { x: player.x, y: player.y, z: player.z }
     const eye = this.character?.eye
     const distance = eye ? Math.hypot(at.x - eye.x, at.y - eye.y, at.z - eye.z) : Infinity

@@ -224,7 +224,7 @@ gpuName/scale/resolution/calls/tris/errors。`--require-gpu` 在软件渲染时�
 ### 一键验证
 
 ```bash
-pnpm verify        # typecheck + 339 条测试（含 client/tests）+ vite build
+pnpm verify        # typecheck + 340 条测试（含 client/tests）+ vite build
 pnpm qa:verify     # verify + 全路径冒烟（需要 server/client 已启动）
 ```
 

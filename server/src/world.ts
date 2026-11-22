@@ -3638,6 +3638,7 @@ export class World {
             vaulting: player.character.vaulting,
             climbing: player.character.climbing,
             downed: player.downed,
+            sprinting: player.character.sprinting,
           }),
           team: player.team,
           weaponId: heldWeapon(player.loadout).id,
@@ -3694,7 +3695,9 @@ export class World {
       for (const view of monsterViews) {
         const distance = Math.hypot(view.x - feet.x, view.z - feet.z)
         if (view.kind >= 3) {
-          if (distance <= 120) monstersFor.push(view)
+          // Boss 是全局目标：位置本身已由线索/地图公开。若按距离过滤，
+          // 玩家走出 120m 时客户端会误判“Boss 倒下”，血条与吼声全错。
+          monstersFor.push(view)
           continue
         }
         const tier = interestTier(
