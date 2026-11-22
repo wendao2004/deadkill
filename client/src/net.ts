@@ -12,6 +12,8 @@ import {
   decodeLoot,
   decodeNames,
   decodeObjective,
+  decodeProfile,
+  decodeResult,
   decodeSnapshot,
   decodeText,
   decodeWelcome,
@@ -24,12 +26,15 @@ import {
   type LootPacket,
   type NameEntry,
   type ObjectivePacket,
+  type ProfilePacket,
+  type ResultPacket,
   type WeaponBuild,
   type PlayerInput,
   type Snapshot,
   type Vec3,
 } from '@dk/shared'
 
+import { getPartyCode, getProfileId } from './identity.ts'
 import { followServerLevel } from './level-choice.ts'
 
 export interface WelcomeInfo {
@@ -58,6 +63,10 @@ export interface NetHandlers {
   onText: (text: string) => void
   /** 全场昵称名单。加入/离开/改名时全量到达。 */
   onNames?: (entries: NameEntry[]) => void
+  /** 个人结算：撤离/失败、战利品、金币收入。只发给本人。 */
+  onResult?: (result: ResultPacket) => void
+  /** 服务端权威档案：金币/已解锁天赋/配件/已付款补给。 */
+  onProfile?: (profile: ProfilePacket) => void
   onClose: (info: CloseInfo) => void
 }
 
@@ -188,7 +197,10 @@ export class Net {
     socket.binaryType = 'arraybuffer'
     this.socket = socket
 
-    socket.onopen = () => socket.send(encodeHello(nickname, levelId, this.partyId))
+    socket.onopen = () =>
+      socket.send(
+        encodeHello(nickname, levelId, this.partyId, getProfileId(), getPartyCode()),
+      )
 
     socket.onmessage = (event: MessageEvent) => {
       const buffer = event.data as ArrayBuffer
@@ -239,6 +251,12 @@ export class Net {
             break
           case Msg.Names:
             this.handlers?.onNames?.(decodeNames(buffer))
+            break
+          case Msg.Result:
+            this.handlers?.onResult?.(decodeResult(buffer))
+            break
+          case Msg.Profile:
+            this.handlers?.onProfile?.(decodeProfile(buffer))
             break
           default:
             break

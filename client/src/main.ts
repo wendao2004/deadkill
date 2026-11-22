@@ -35,6 +35,7 @@ import {
   type Menu,
   type MenuConfig,
 } from './menu.ts'
+import { cacheProfile } from './profile.ts'
 import {
   createBossBar,
   createInteractPrompt,
@@ -101,16 +102,6 @@ let lastHealth = 150
 /** 跨局金币。键名与大厅商店共用（client/src/menu.ts 读同一个键）。 */
 const COIN_KEY = 'dk.coins'
 const OWNED_KEY = 'dk.traitOwned'
-
-function readCoins(): number {
-  try {
-    const raw = localStorage.getItem(COIN_KEY)
-    const n = raw === null ? 0 : Number(raw)
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
-  } catch {
-    return 0
-  }
-}
 
 function writeCoins(value: number): void {
   try {
@@ -277,6 +268,11 @@ function maybeShowControls(): void {
     list.append(line)
   }
   card.append(list)
+  const goal = document.createElement('div')
+  goal.className = 'dk-controls-card__goal'
+  goal.textContent =
+    '目标：找 3 条线索 → 打掉守巢 Boss → 放逐血巢 → 带回赏金 → 从撤离点离开'
+  card.insertBefore(goal, list)
   document.body.append(card)
   controlsCard = card
   const close = (): void => {
@@ -336,6 +332,7 @@ function setHud(hud: HudState): void {
   const canHeal = !healing && !searching && hud.bandages > 0 && hud.health < MAX_HEALTH
   if (healing) prompt?.update(true, '包扎中', hud.healPct, keyName(liveKeymap.heal))
   else if (searching) prompt?.update(true, '搜索中', hud.searchPct, keyName(liveKeymap.interact))
+  else if (hud.extractPct > 0) prompt?.update(true, '撤离中 · 站住别动', hud.extractPct)
   else if (hud.clueNear)
     prompt?.update(
       true,
@@ -530,22 +527,31 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
       // 结算卡是"这一局已经结束"的宣告：鼠标锁必须放开，否则玩家想点
       // 「返回大厅」却发现指针被锁在画面里。
       document.exitPointerLock()
-      // 金币 = 带出来的身价 ÷ 5。除的是"节奏"：一局搜满约 $500~$900，
-      // 折 100~180 金币，一级天赋 120 —— 打一局半能解锁一条，不会一次全开。
-      const earned = result.escaped ? Math.floor((result.lootValue + result.bountyValue) / 5) : 0
-      const total = readCoins() + earned
-      if (earned > 0) writeCoins(total)
+      // 金币收入与总余额都由服务端结算；客户端只更新显示缓存。
+      const total = result.coinsTotal
+      writeCoins(total)
       // 菜单里的余额是构造时读的快照；不同步的话它在下次 saveConfig 时会写回旧值。
       menu?.setCoins(total)
       settlement?.show(
         {
           ...result,
-          coins: earned,
+          coins: result.coinsEarned,
           coinsTotal: total,
           modifierName: lastModifier,
         },
         () => exitToMenu(''),
       )
+    },
+    onProfile: (profile) => {
+      if (mine !== sessionId) return
+      const view = {
+        coins: profile.coins,
+        traitOwned: profile.traitOwned,
+        attachmentOwned: profile.attachmentOwned,
+        extrasOwned: profile.extrasOwned,
+      }
+      cacheProfile(view)
+      menu?.syncProfile(view)
     },
     onText: (text) => {
       if (mine !== sessionId) return

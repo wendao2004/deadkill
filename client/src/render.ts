@@ -60,6 +60,7 @@ import {
   ACESFilmicToneMapping,
   PCFShadowMap,
   PerspectiveCamera,
+  PlaneGeometry,
   PointLight,
   RedFormat,
   Scene,
@@ -578,6 +579,8 @@ export class Renderer {
    */
   private readonly viewScene: Scene
   private readonly viewCamera: PerspectiveCamera
+  /** `?show=weapon` 的棚拍背景：没有它，枪身与纯黑背景同值，细节无法验收。 */
+  private weaponBackdrop: Mesh | null = null
   /** HDR 后处理管线：世界 RT → 泛光 → 合成 → FXAA。 */
   private readonly post: PostFX
   /** 启动时探测到的 GPU；只用于自动画质与诊断，不参与渲染。 */
@@ -937,6 +940,38 @@ export class Renderer {
     this.scene.add(this.hemi)
     this.viewScene.environment = this.environment.environment
     this.viewScene.environmentIntensity = 1.0
+
+    // 武器棚拍背景：一块自发光渐变幕布 + 中心柔光。它只服务 `show=weapon`，
+    // 正常游戏不可见；没有它时枪身与纯黑背景同值，验收图里读不出枪托/机匣分界。
+    const backdropGeo = new PlaneGeometry(12, 7)
+    const backdropMat = new ShaderMaterial({
+      depthWrite: true,
+      depthTest: true,
+      fog: false,
+      uniforms: {},
+      vertexShader: [
+        'varying vec2 vUv;',
+        'void main() {',
+        '  vUv = uv;',
+        '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+        '}',
+      ].join('\n'),
+      fragmentShader: [
+        'varying vec2 vUv;',
+        'void main() {',
+        '  vec2 p = vUv - vec2(0.5, 0.58);',
+        '  float r = length(p * vec2(1.12, 1.0));',
+        '  vec3 base = mix(vec3(0.030, 0.032, 0.030), vec3(0.145, 0.135, 0.115), smoothstep(0.0, 1.0, vUv.y));',
+        '  base += vec3(0.11, 0.09, 0.06) * smoothstep(0.72, 0.0, r);',
+        '  gl_FragColor = vec4(base, 1.0);',
+        '}',
+      ].join('\n'),
+    })
+    this.weaponBackdrop = new Mesh(backdropGeo, backdropMat)
+    this.weaponBackdrop.position.set(0, 0.15, -2.4)
+    this.weaponBackdrop.visible = false
+    this.viewScene.add(this.weaponBackdrop)
+    this.disposables.push(backdropGeo, backdropMat)
     // 假高光的方向 = 月光方向。世界材质用它；武器场景在 render() 里会临时
     // 换成固定的"棚拍"方向（见 render 末尾），两套光照各自自洽。
     setInkKeyDirection(
@@ -1169,6 +1204,7 @@ export class Renderer {
     this.showcase = mode
     // 每次切回正常游戏都要把世界恢复；只有 weapon 需要关掉它。
     this.scene.visible = mode !== 'weapon'
+    if (this.weaponBackdrop) this.weaponBackdrop.visible = mode === 'weapon'
     // 展示模式只照一把枪，画面里 95% 是纯黑，自动曝光会把整把枪压成剪影。
     // 这里直接给一档固定曝光，让近景能看清倒角/配件接缝。
     // 退出展示时回到**本图**的曝光，而不是写死的 1.22；同时把颗粒/暗角一起
@@ -3299,6 +3335,10 @@ export class Renderer {
     this.isDay = day
     this.atmo.setDaylight(day)
     this.post.setFogOrb(day, this.art.lightScale)
+    const fog = this.scene.fog
+    if (fog instanceof FogExp2) {
+      this.props?.setEnvironment(fog.color.getHex(), fog.density, day ? 1 : 0, this.art.lightScale)
+    }
     this.hemi.color.setHex(day ? 0x9fb6d0 : 0x3d5270)
     this.hemi.groundColor.setHex(day ? 0x4a4438 : 0x181410)
     this.hemi.intensity = day ? 0.5 : 0.16
@@ -3322,6 +3362,12 @@ export class Renderer {
       )
       // setVolumetricFog 会把雾的光源重置成冷月；白天要重新盖上暖阳。
       this.post.setFogOrb(this.isDay, this.art.lightScale)
+      this.props?.setEnvironment(
+        fog.color.getHex(),
+        this.fogBase.density * scaled,
+        this.isDay ? 1 : 0,
+        this.art.lightScale,
+      )
       this.atmo.setLevel(fog.color.getHex(), this.fogBase.density * scaled)
       // 解析雾只承担近景过渡；体积雾才是能见度的主判据。
       this.atmo.setAnalyticFogScale(this.directRender ? 1 : 0.25)

@@ -22,6 +22,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gpuLaunchArgs, installChromeCleanup, isSoftwareGpu, killChromeTree } from './chrome-flags.mjs'
 
 const CHROME = process.env.CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 const url = readFlag('--url') ?? 'http://127.0.0.1:5173/'
@@ -36,7 +37,7 @@ function readFlag(name) {
 
 async function preflight() {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
   } catch (error) {
     console.error(`qa-smoke: 无法访问 ${url}（先启动 server 与 client）：${error.message}`)
@@ -51,28 +52,12 @@ function cleanup() {
   try {
     ws?.close()
   } catch {}
-  if (chrome !== null) {
-    // 同步等待：异步 taskkill 常常在 node 进程退出后才跑完，浏览器子进程
-    // 会被留在后台。无头 Chrome 一个实例就是十几个进程，漏一次能明显拖慢机器。
-    spawnSync('taskkill', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore' })
-  }
-  // 兜底：Chrome 在 Windows 上可能用另一个进程当浏览器主进程，父 PID 的
-  // /T 打不到它。按 user-data-dir 反查命令行，把整套子进程一起收掉。
-  if (process.platform === 'win32') {
-    const listing = spawnSync(
-      'wmic',
-      ['process', 'where', "name='chrome.exe'", 'get', 'processid,commandline'],
-      { encoding: 'utf8' },
-    )
-    for (const line of (listing.stdout ?? '').split('\n')) {
-      if (!line.includes(profile)) continue
-      const pid = line.trim().match(/(\d+)\s*$/)
-      if (pid !== null) spawnSync('taskkill', ['/PID', pid[1], '/T', '/F'], { stdio: 'ignore' })
-    }
-  } else {
-    spawnSync('pkill', ['-f', profile], { stdio: 'ignore' })
-  }
+  // 同步等待：异步 taskkill 常常在 node 进程退出后才跑完，浏览器子进程
+  // 会被留在后台。按 profile 反查可兜住“Chrome 换了主进程 PID”的情况。
+  killChromeTree(chrome, profile)
+  ws = null
 }
+installChromeCleanup(() => chrome, profile)
 
 async function connect() {
   let target = null
@@ -151,8 +136,7 @@ async function main() {
       '--no-sandbox',
       '--window-size=1280,720',
       '--hide-scrollbars',
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
+      ...gpuLaunchArgs(),
       '--autoplay-policy=no-user-gesture-required',
       url,
     ],
@@ -223,6 +207,11 @@ async function main() {
   pass('再次出击')
 
   const stats = await evaluate('JSON.stringify(window.__stats())')
+  const parsedStats = JSON.parse(stats)
+  // 冒烟也必须是“真显卡”的冒烟：软件渲染下通过不能代表玩家机器的画面路径。
+  if (process.env.QA_GPU !== '0' && isSoftwareGpu(parsedStats?.gpuName)) {
+    throw new Error(`冒烟跑在软件渲染上：${parsedStats?.gpuName ?? 'unknown'}（QA_GPU=0 才允许）`)
+  }
   const errors = await evaluate('JSON.stringify(window.__errors)')
   const parsedErrors = JSON.parse(errors)
   if (parsedErrors.length > 0) throw new Error(`控制台有 ${parsedErrors.length} 条错误: ${errors}`)

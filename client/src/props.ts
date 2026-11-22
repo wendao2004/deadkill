@@ -84,6 +84,8 @@ export interface Props {
   setNatureVisible(visible: boolean): void
   /** 天气湿度 0..1：驱动水面雨圈（骤雨才有，死寂没有）。 */
   setWetness(value: number): void
+  /** 把昼夜/天气同步到水面（雾色、雾密度、亮度）。 */
+  setEnvironment(fogColor: number, fogDensity: number, daylight: number, lightScale: number): void
   dispose(): void
 }
 
@@ -202,6 +204,9 @@ export function buildProps(scene: Scene, level: LevelDef, options?: PropsOptions
     },
     setWetness(value: number): void {
       if (water) water.wet.value = Math.min(1, Math.max(0, value))
+    },
+    setEnvironment(fogColor: number, fogDensity: number, daylight: number, lightScale: number): void {
+      water?.setEnvironment(fogColor, fogDensity, daylight, lightScale)
     },
     update(dt: number): void {
       // 夹住 dt：切后台回来时 dt 可能是好几秒，草会瞬间抽一下。
@@ -440,9 +445,8 @@ function makeInkMaterial(bag: GpuBag, width = INK_BASE): ShaderMaterial {
       '}',
     ].join('\n'),
   })
-  // 写实档不再给道具描边：关卡是 PBR，黑边会把树/栅栏读成贴纸。
-  // 不删几何、不改调用方，只让材质不参与渲染（Mesh 会被整棵跳过）。
-  mat.visible = false
+  // 手绘档必须保留道具描边：枯树/栅栏/墓碑没有外轮廓会读成低模白盒。
+  // 写实分支当前被冻结（render.ts realistic=false），不再用 visible=false 全局关。
   bag.add(mat)
   return mat
 }
@@ -544,7 +548,11 @@ function buildWater(
   level: LevelDef,
   bag: GpuBag,
   wetness: (x: number, z: number) => number,
-): { time: { value: number }; wet: { value: number } } {
+): {
+  time: { value: number }
+  wet: { value: number }
+  setEnvironment(fogColor: number, fogDensity: number, daylight: number, lightScale: number): void
+} {
   const size = level.boundsHalf * 2
   const segments = 64
   const geo = new PlaneGeometry(size, size, segments, segments)
@@ -682,7 +690,20 @@ function buildWater(
   // 透明队列里画得最早 → 层次是"雾墙 → 水 → 其他透明物"。
   mesh.renderOrder = -5
   root.add(mesh)
-  return { time, wet }
+  const setEnvironment = (
+    fogColor: number,
+    fogDensity: number,
+    daylight: number,
+    lightScale: number,
+  ): void => {
+    mat.uniforms.uFogColor!.value.setHex(fogColor)
+    mat.uniforms.uFogDensity!.value = Math.max(0, fogDensity)
+    // 水面高光也跟着昼夜/光照走：夜里不能比猎人脸还亮。
+    const dim = (daylight > 0.5 ? 1 : 0.72) * Math.max(0.5, lightScale)
+    mat.uniforms.uCrest!.value.setHex(WATER_CREST).multiplyScalar(dim)
+    mat.uniforms.uPale!.value.setHex(WATER_PALE).multiplyScalar(dim)
+  }
+  return { time, wet, setEnvironment }
 }
 
 // ------------------------------------------------------------------ 芦苇

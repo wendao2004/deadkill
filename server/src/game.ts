@@ -28,12 +28,16 @@ import {
   TICK_RATE,
   decodeHello,
   decodeInputPacket,
+  clampSelectionToOwned,
   decodeLoadout,
   decodeSwitchSlot,
+  encodeProfile,
   encodeWelcome,
+  sanitizeOwnedBuild,
   type PlayerInput,
 } from '@dk/shared'
 
+import { ProfileStore, sanitizeProfileId } from './profile.ts'
 import { WorldRegistry, resolveLevelId } from './worlds.ts'
 
 export interface GameAuthResult {
@@ -54,10 +58,70 @@ export interface GameOptions {
   allowAnonymous?: boolean
   /** 每个连接每秒允许的消息数上限，超过直接断开。 */
   maxMessagesPerSecond?: number
+  /** 档案文件路径；null = 纯内存（测试），undefined = 默认 server/.data/profiles.json。 */
+  profilePath?: string | null
 }
 
 /** 每秒允许的输入包数量。客户端按 60Hz 发，留一倍余量。 */
 const DEFAULT_MAX_MSG_PER_SEC = 120
+
+/** 环境变量里的正整数；非法值回落默认。 */
+function envInt(name: string, fallback: number): number {
+  const n = Number(process.env[name])
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback
+}
+
+/**
+ * WS 连接数限制：同一 IP/同一账号不能无限开连接。
+ *
+ * 匿名开发模式下 userId 带标签页 id，按 IP 的 8 条才是真正的闸；生产环境
+ * 按账号 4 条，避免一个人用脚本把世界/内存占满。
+ */
+class ConnectionLimiter {
+  private readonly byIp = new Map<string, number>()
+  private readonly byUser = new Map<string, number>()
+  private readonly maxPerIp: number
+  private readonly maxPerUser: number
+
+  constructor(
+    maxPerIp = envInt('DK_MAX_WS_PER_IP', 8),
+    maxPerUser = envInt('DK_MAX_WS_PER_USER', 4),
+  ) {
+    // 不写 TS 参数属性：服务端用 node --experimental-strip-types 跑，
+    // 参数属性是少数 strip-only 不支持的语法，编译型 typecheck 发现不了。
+    this.maxPerIp = maxPerIp
+    this.maxPerUser = maxPerUser
+  }
+
+  private take(map: Map<string, number>, key: string, max: number): boolean {
+    const count = map.get(key) ?? 0
+    if (count >= max) return false
+    map.set(key, count + 1)
+    return true
+  }
+
+  private drop(map: Map<string, number>, key: string): void {
+    const count = map.get(key) ?? 0
+    if (count <= 1) map.delete(key)
+    else map.set(key, count - 1)
+  }
+
+  acquireIp(ip: string): boolean {
+    return this.take(this.byIp, ip, this.maxPerIp)
+  }
+
+  releaseIp(ip: string): void {
+    this.drop(this.byIp, ip)
+  }
+
+  acquireUser(userId: string): boolean {
+    return this.take(this.byUser, userId, this.maxPerUser)
+  }
+
+  releaseUser(userId: string): void {
+    this.drop(this.byUser, userId)
+  }
+}
 
 /** 单条 WebSocket 消息的大小上限，防止有人发个 10MB 的包把堆打满。 */
 const MAX_MESSAGE_BYTES = 4096
@@ -68,7 +132,17 @@ export function registerGame(
 ): void {
   const allowAnonymous = options.allowAnonymous ?? false
   const maxPerSecond = options.maxMessagesPerSecond ?? DEFAULT_MAX_MSG_PER_SEC
-  const registry = new WorldRegistry()
+  // 服务端唯一账本：金币、已解锁天赋/配件、已付款补给。客户端 localStorage
+  // 只是显示缓存；任何“我有这个天赋/配件”的声明都要在这里对账。
+  const profiles = new ProfileStore(
+    options.profilePath === undefined ? undefined : options.profilePath,
+  )
+  const registry = new WorldRegistry(undefined, {
+    onSettle: (userId, earned) => profiles.settle(userId, earned).coins,
+    maxActiveWorlds: envInt('DK_MAX_WORLDS', 2),
+    rssLimitMb: envInt('DK_MAX_RSS_MB', 380),
+  })
+  const limiter = new ConnectionLimiter()
 
   registry.startSweeper()
   app.addHook('onClose', async () => registry.stop())
@@ -86,11 +160,30 @@ export function registerGame(
    * 它是纯内存、45 秒 TTL 的轻量目录，不参与对局权威。
    */
   const presences = new Map<string, PresenceEntry>()
+  /**
+   * 好友码 → 首次登记它的登录用户。
+   *
+   * 开发模式（没有 authenticate）没有账号，码就是身份；生产环境必须把码
+   * 绑定到会话用户，否则任何人从 `/api/presence` 读到别人的码后，就能用
+   * 那个码改队伍、接受邀请、以队长身份出击。
+   */
+  const presenceOwners = new Map<string, string>()
   const PRESENCE_TTL_MS = 45_000
   const MAX_PRESENCE = 256
+  const sessionUser = (request: FastifyRequest): string | null =>
+    options.authenticate?.(request)?.userId ?? null
+  const codeOwned = (request: FastifyRequest, code: string): boolean => {
+    const user = sessionUser(request)
+    if (!user) return true // 开发模式：保持原来的好友码行为
+    const owner = presenceOwners.get(code)
+    return owner === undefined || owner === user
+  }
   const cleanPresence = (now: number): void => {
     for (const [code, entry] of presences) {
-      if (now - entry.at > PRESENCE_TTL_MS) presences.delete(code)
+      if (now - entry.at > PRESENCE_TTL_MS) {
+        presences.delete(code)
+        presenceOwners.delete(code)
+      }
     }
   }
 
@@ -118,8 +211,13 @@ export function registerGame(
       reply.code(400)
       return { ok: false as const, error: '好友码无效' }
     }
+    if (!codeOwned(request, code)) {
+      reply.code(403)
+      return { ok: false as const, error: '该好友码已被其他账号使用' }
+    }
     if (body.leave === true) {
       presences.delete(code)
+      presenceOwners.delete(code)
       return { ok: true as const }
     }
     const now = Date.now()
@@ -128,6 +226,8 @@ export function registerGame(
       reply.code(429)
       return { ok: false as const, error: '在线目录已满' }
     }
+    const user = sessionUser(request)
+    if (user) presenceOwners.set(code, user)
     presences.set(code, {
       code,
       name: sanitizePresenceName(body.name),
@@ -136,6 +236,65 @@ export function registerGame(
       at: now,
     })
     return { ok: true as const }
+  })
+
+  /**
+   * 权威档案：大厅进场前读一次，进局后再由 Profile 包同步。
+   *
+   * 生产环境走宿主 authenticate（cookie/会话）；开发模式没有账号，用客户端
+   * localStorage 里的稳定 profileId。只要配置了 authenticate，就**不**回落到
+   * profileId —— 否则未登录请求可以随便读/花别人的档案。
+   */
+  const resolveProfileKey = (request: FastifyRequest, raw: unknown): string | null => {
+    if (options.authenticate) {
+      const auth = options.authenticate(request)
+      return auth ? sanitizeProfileId(auth.userId) : null
+    }
+    return sanitizeProfileId(raw)
+  }
+
+  app.get('/api/profile', async (request, reply) => {
+    const id = resolveProfileKey(
+      request,
+      (request.query as { profileId?: unknown }).profileId,
+    )
+    if (!id) {
+      reply.code(options.authenticate ? 401 : 400)
+      return { ok: false as const, error: options.authenticate ? '未登录' : '档案 id 无效' }
+    }
+    return { ok: true as const, profile: profiles.view(id) }
+  })
+
+  app.post('/api/profile/buy', async (request, reply) => {
+    const body = (request.body ?? {}) as { profileId?: unknown; kind?: unknown; id?: unknown }
+    const id = resolveProfileKey(request, body.profileId)
+    const kind = typeof body.kind === 'string' ? body.kind : ''
+    const item = typeof body.id === 'number' ? Math.floor(body.id) : Number(body.id)
+    if (!id || !Number.isInteger(item)) {
+      reply.code(400)
+      return { ok: false as const, error: '档案/条目无效' }
+    }
+    const result =
+      kind === 'trait'
+        ? profiles.buyTrait(id, item)
+        : kind === 'attachment'
+          ? profiles.buyAttachment(id, item)
+          : kind === 'extras'
+            ? profiles.buyExtras(id, item)
+            : null
+    if (!result) {
+      reply.code(400)
+      return { ok: false as const, error: '未知购买类型' }
+    }
+    if (!result.ok) {
+      reply.code(409)
+      return { ok: false as const, error: result.error, profile: profiles.view(id) }
+    }
+    return {
+      ok: true as const,
+      cost: result.cost,
+      profile: profiles.view(id),
+    }
   })
 
   /**
@@ -181,8 +340,12 @@ export function registerGame(
     launchedAt: party.launchedAt,
   })
 
-  app.get('/api/party/state', async (request) => {
+  app.get('/api/party/state', async (request, reply) => {
     const code = sanitizePresenceCode((request.query as { code?: unknown }).code)
+    if (code && !codeOwned(request, code)) {
+      reply.code(403)
+      return { ok: false as const, error: '无权查看该好友码的队伍' }
+    }
     const now = Date.now()
     cleanParties(now)
     const party = code ? partyOf(code) : null
@@ -209,6 +372,10 @@ export function registerGame(
       reply.code(400)
       return { ok: false as const, error: '好友码无效' }
     }
+    if (!codeOwned(request, code)) {
+      reply.code(403)
+      return { ok: false as const, error: '该好友码已被其他账号使用' }
+    }
     const now = Date.now()
     cleanParties(now)
     const existing = partyOf(code)
@@ -231,6 +398,10 @@ export function registerGame(
     const body = (request.body ?? {}) as { fromCode?: unknown; toCode?: unknown }
     const from = sanitizePresenceCode(body.fromCode)
     const to = sanitizePresenceCode(body.toCode)
+    if (!codeOwned(request, from)) {
+      reply.code(403)
+      return { ok: false as const, error: '该好友码已被其他账号使用' }
+    }
     const now = Date.now()
     cleanParties(now)
     const party = partyOf(from)
@@ -275,6 +446,10 @@ export function registerGame(
     const body = (request.body ?? {}) as { code?: unknown; inviteId?: unknown }
     const code = sanitizePresenceCode(body.code)
     const inviteId = typeof body.inviteId === 'string' ? body.inviteId : ''
+    if (!codeOwned(request, code)) {
+      reply.code(403)
+      return { ok: false as const, error: '该好友码已被其他账号使用' }
+    }
     const now = Date.now()
     cleanParties(now)
     const invite = partyInvites.get(inviteId)
@@ -317,18 +492,26 @@ export function registerGame(
     return { ok: true as const, party: partyView(party) }
   })
 
-  app.post('/api/party/decline', async (request) => {
+  app.post('/api/party/decline', async (request, reply) => {
     const body = (request.body ?? {}) as { code?: unknown; inviteId?: unknown }
     const code = sanitizePresenceCode(body.code)
+    if (!codeOwned(request, code)) {
+      reply.code(403)
+      return { ok: false as const, error: '该好友码已被其他账号使用' }
+    }
     const inviteId = typeof body.inviteId === 'string' ? body.inviteId : ''
     const invite = partyInvites.get(inviteId)
     if (invite && invite.toCode === code) partyInvites.delete(inviteId)
     return { ok: true as const }
   })
 
-  app.post('/api/party/leave', async (request) => {
+  app.post('/api/party/leave', async (request, reply) => {
     const body = (request.body ?? {}) as { code?: unknown }
     const code = sanitizePresenceCode(body.code)
+    if (!codeOwned(request, code)) {
+      reply.code(403)
+      return { ok: false as const, error: '该好友码已被其他账号使用' }
+    }
     const now = Date.now()
     cleanParties(now)
     const party = partyOf(code)
@@ -347,6 +530,10 @@ export function registerGame(
   app.post('/api/party/room', async (request, reply) => {
     const body = (request.body ?? {}) as { code?: unknown; roomId?: unknown; levelId?: unknown }
     const code = sanitizePresenceCode(body.code)
+    if (!codeOwned(request, code)) {
+      reply.code(403)
+      return { ok: false as const, error: '该好友码已被其他账号使用' }
+    }
     const party = partyOf(code)
     if (!party || party.leader !== code) {
       reply.code(403)
@@ -362,6 +549,10 @@ export function registerGame(
   app.post('/api/party/launch', async (request, reply) => {
     const body = (request.body ?? {}) as { code?: unknown; roomId?: unknown; levelId?: unknown }
     const code = sanitizePresenceCode(body.code)
+    if (!codeOwned(request, code)) {
+      reply.code(403)
+      return { ok: false as const, error: '该好友码已被其他账号使用' }
+    }
     const party = partyOf(code)
     if (!party || party.leader !== code) {
       reply.code(403)
@@ -412,16 +603,34 @@ export function registerGame(
   })
 
   app.get('/ws/game', { websocket: true }, (socket, request) => {
-    handleConnection(socket, request, { registry, physicsReady, allowAnonymous, maxPerSecond, authenticate: options.authenticate })
+    handleConnection(socket, request, {
+      registry,
+      profiles,
+      limiter,
+      physicsReady,
+      allowAnonymous,
+      maxPerSecond,
+      authenticate: options.authenticate,
+      // partyId 只接受“这个好友码确实在该队伍里”的声明，不再让客户端
+      // 随便填一个 id 就共享出生点/免友伤。
+      isPartyMember: (partyId, code) => {
+        if (!partyId) return true
+        const party = parties.get(partyId)
+        return !!party && code !== '' && party.members.some((member) => member.code === code)
+      },
+    })
   })
 }
 
 interface ConnectionContext {
   registry: WorldRegistry
+  profiles: ProfileStore
+  limiter: ConnectionLimiter
   physicsReady: Promise<void>
   allowAnonymous: boolean
   maxPerSecond: number
   authenticate?: (request: FastifyRequest) => GameAuthResult | null
+  isPartyMember: (partyId: string, code: string) => boolean
 }
 
 function handleConnection(
@@ -434,9 +643,20 @@ function handleConnection(
   // 匿名开发模式的"每个标签页一个身份"。生产环境走 authenticate，用不到它。
   const clientId = sanitizeClientId(query.cid)
 
+  if (!ctx.limiter.acquireIp(request.ip)) {
+    socket.close(4029, '连接数过多 · 请稍后再试')
+    return
+  }
+  let ipHeld = true
+  let userHeld = ''
+
   let playerId = 0
   let world: ReturnType<WorldRegistry['get']> | null = null
   let closed = false
+  /** 本连接的档案键；Hello 里确定，Loadout 时对账。 */
+  let profileKey = ''
+  /** 本连接的大厅好友码；用于校验 Loadout 里的 partyId 是否真属于它。 */
+  let partyCode = ''
 
   // 令牌桶：每秒补满一次。比"每个包都查一次时间戳"便宜，
   // 而且能容许 60Hz 客户端的正常抖动。
@@ -472,6 +692,14 @@ function handleConnection(
     closed = true
     clearInterval(refill)
     clearInterval(heartbeat)
+    if (ipHeld) {
+      ctx.limiter.releaseIp(request.ip)
+      ipHeld = false
+    }
+    if (userHeld !== '') {
+      ctx.limiter.releaseUser(userHeld)
+      userHeld = ''
+    }
     if (world && playerId) {
       // 正常退出（客户端 close(1000)）立刻移除；网络断开先保留 60 秒等重连。
       if (detach) world.detachPlayer(playerId, socket)
@@ -546,16 +774,40 @@ function handleConnection(
     if (kind === Msg.Loadout) {
       try {
         const loadout = decodeLoadout(buffer)
+        const profile = ctx.profiles.get(profileKey || clientId || request.ip)
+        // 天赋/配件只接受“已拥有”的部分；未拥有的直接洗掉，不让客户端
+        // 通过改 localStorage/手写配装包带入 PvP。
+        const traits = clampSelectionToOwned(loadout.traits, profile.traitOwned)
+        const build = sanitizeOwnedBuild(
+          loadout.weaponId,
+          loadout.build?.slots,
+          profile.attachmentOwned,
+        )
+        // 随身补给是“已付款、待领取”的位图；只在这次 Loadout 真会发放时消耗。
+        const extras = world.canLoadExtras(playerId)
+          ? ctx.profiles.consumeExtras(profile.id, loadout.extras)
+          : 0
+        const requestedParty = loadout.partyId ?? ''
+        const partyId = ctx.isPartyMember(requestedParty, partyCode) ? requestedParty : ''
         world.receiveLoadout(
           playerId,
           loadout.weaponId,
-          loadout.traits,
+          traits,
           loadout.contract,
-          loadout.extras,
+          extras,
           loadout.attachment,
           loadout.squad,
-          loadout.partyId ?? '',
-          loadout.build,
+          partyId,
+          build,
+        )
+        socket.send(
+          encodeProfile({
+            coins: profile.coins,
+            traitOwned: profile.traitOwned,
+            attachmentOwned: profile.attachmentOwned,
+            extrasOwned: profile.extrasOwned,
+            activeTraits: traits,
+          }),
         )
       } catch {
         socket.close(4003, '选枪包解析失败')
@@ -608,13 +860,43 @@ function handleConnection(
       return
     }
 
+    // 档案键：生产环境用宿主 userId；匿名开发模式优先用客户端 localStorage
+    // 里的稳定 profileId，换标签页/重开浏览器仍能拿回同一份进度。
+    const requestedProfile = sanitizeProfileId(hello.profileId)
+    profileKey =
+      !ctx.authenticate && requestedProfile ? requestedProfile : identity.userId
+    // 好友码只用于校验 partyId；服务端不信任 Loadout 里自称的队伍。
+    partyCode = sanitizePresenceCode(hello.partyCode)
+
+    // 同一账号的连接上限：在握手成功后计数，断开时释放。
+    if (!ctx.limiter.acquireUser(identity.userId)) {
+      socket.close(4029, '该账号连接数过多')
+      return
+    }
+    userHeld = identity.userId
+
     await ctx.physicsReady
+    // 世界准入：WS 路径不经过 POST /api/rooms，必须在懒创建之前拦。
+    const admission = ctx.registry.admit(matchId)
+    if (!admission.ok) {
+      socket.close(4010, admission.reason)
+      return
+    }
     // 先登记"这个 matchId 要进哪张图"，再取世界 —— 反过来的话第一个进来的人
     // 会先被塞进默认图的世界里，而世界一旦建好就不能换图。
     // 旧客户端的 Hello 里没有这一段（decodeHello 给 null），登记的就是默认图。
     ctx.registry.registerLevel(matchId, hello.levelId)
     const target = ctx.registry.get(matchId)
-    const joined = target.addPlayer(socket, identity.nickname, identity.userId, hello.partyId ?? '')
+    // userId 仍按“本标签页/账号”用于重连；profileId 单独传给世界做结算。
+    // 两者分开：同一浏览器开两个标签页互射时不能被重连接管成同一个人，
+    // 但两局的金币仍应记到同一份本机档案。
+    const joined = target.addPlayer(
+      socket,
+      identity.nickname,
+      identity.userId,
+      hello.partyId ?? '',
+      profileKey,
+    )
     if (!joined) {
       socket.close(4009, '房间已满')
       return

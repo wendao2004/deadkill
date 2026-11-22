@@ -816,6 +816,34 @@ test('听到枪声（noise）后转 investigate 并走向声源', () => {
   assert.equal(result.hit, null)
 })
 
+test('senseScale：浓雾把 grunt 的 16m 索敌缩到 11m', () => {
+  const player = standingStill(9, 14, 0)
+
+  const foggy = monsterAtPosition('grunt', HOME, 1)
+  const foggyRng = mulberry32(23)
+  for (let tick = 1; tick <= WINDUP_TICKS + 5; tick++) {
+    stepMonster(
+      foggy,
+      { players: [player], tick, dtMs: TICK_MS, senseScale: 0.7, visible: () => true },
+      foggyRng,
+    )
+    integrate(foggy)
+  }
+  assert.equal(foggy.targetId, 0, '14m 在浓雾（11.2m 视距）外，不该锁定')
+
+  const clear = monsterAtPosition('grunt', HOME, 2)
+  const clearRng = mulberry32(29)
+  for (let tick = 1; tick <= WINDUP_TICKS + 5; tick++) {
+    stepMonster(
+      clear,
+      { players: [player], tick, dtMs: TICK_MS, senseScale: 1, visible: () => true },
+      clearRng,
+    )
+    integrate(clear)
+  }
+  assert.equal(clear.targetId, player.id, '14m 在标准视距内，应该锁定')
+})
+
 test('视线采样按 120ms 节流：远处目标不会每 tick 打一条 LOS', () => {
   const monster = monsterAtPosition('grunt', HOME, 1)
   const rng = mulberry32(19)

@@ -40,8 +40,12 @@ import type { Vec3 } from './math.ts'
 
 /** 推进器需要的世界访问，用接口而不是直接吃 World，避免循环依赖。 */
 export interface MatchActors {
-  /** 所有玩家的脚底位置与存活状态。每 tick 调一次，实现里别分配大对象。 */
-  players(): Iterable<{ id: number; alive: boolean; feet: Vec3 }>
+  /**
+   * 所有玩家的脚底位置与存活状态。每 tick 调一次，实现里别分配大对象。
+   *
+   * `downed` 可选：倒地的人还能被救，但不能继续收集线索/放逐/撤离。
+   */
+  players(): Iterable<{ id: number; alive: boolean; downed?: boolean; feet: Vec3 }>
   /**
    * 血巢的 Boss 是否已经被打死。
    *
@@ -212,7 +216,7 @@ export class MatchDriver {
       if ((s.clueMask & (1 << i)) !== 0) continue
       const clue = clues[i]!
       for (const actor of this.actors.players()) {
-        if (!actor.alive) continue
+        if (!actor.alive || actor.downed === true) continue
         const dx = actor.feet.x - clue.x
         const dz = actor.feet.z - clue.z
         const distance = dx * dx + dz * dz
@@ -307,6 +311,15 @@ export class MatchDriver {
       return
     }
 
+    // 携带者倒地：赏金还挂在他身上，只是不能推进撤离。这里不能走上面的
+    // “carrier === null”分支，否则赏金会被静默清掉、阶段退回 banish，
+    // 队友把他救起来后目标已经丢了。
+    if (carrier.downed) {
+      s.extractIndex = -1
+      s.extractProgress = Math.max(0, s.extractProgress - (TICK_MS / EXTRACT_MS) * CLUE_DECAY_RATE)
+      return
+    }
+
     let bestIndex = -1
     let bestDistance = EXTRACT_RADIUS * EXTRACT_RADIUS
     for (let i = 0; i < extracts.length; i++) {
@@ -338,12 +351,17 @@ export class MatchDriver {
 
   // ------------------------------------------------------------ 内部
 
-  private carrier(): { id: number; x: number; z: number } | null {
+  private carrier(): { id: number; x: number; z: number; downed: boolean } | null {
     if (this.state.bountyCarrier === 0) return null
     for (const actor of this.actors.players()) {
       if (actor.id !== this.state.bountyCarrier) continue
       if (!actor.alive) return null
-      return { id: actor.id, x: actor.feet.x, z: actor.feet.z }
+      return {
+        id: actor.id,
+        x: actor.feet.x,
+        z: actor.feet.z,
+        downed: actor.downed === true,
+      }
     }
     return null
   }

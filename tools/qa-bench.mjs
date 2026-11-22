@@ -12,15 +12,22 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gpuLaunchArgs, installChromeCleanup, isSoftwareGpu, killChromeTree } from './chrome-flags.mjs'
 
 const CHROME = process.env.CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 const readFlag = (name) => {
   const index = process.argv.indexOf(name)
   return index === -1 ? null : (process.argv[index + 1] ?? null)
 }
-const url = readFlag('--url') ?? 'http://127.0.0.1:5173/?bench=1&q=performance&seed=4207&noaudio=1'
+const url =
+  readFlag('--url') ??
+  'http://127.0.0.1:5173/?bench=1&q=performance&seed=4207&noaudio=1&scale=1&dt=16.67'
+const width = Number(readFlag('--w') ?? 1280)
+const height = Number(readFlag('--h') ?? 720)
 const p99Limit = Number(readFlag('--p99') ?? 25)
 const avgLimit = Number(readFlag('--avg') ?? 16.7)
+/** 软件渲染默认只警告；CI 需要“必须是独显”时传 --require-gpu，跳过时退出 3。 */
+const requireGpu = process.argv.includes('--require-gpu')
 const timeoutMs = Number(readFlag('--timeout') ?? 300000)
 const port = 9500 + Math.floor(Math.random() * 300)
 const profile = mkdtempSync(join(tmpdir(), 'dkqa-bench-'))
@@ -30,24 +37,14 @@ let chrome = null
 let ws = null
 function cleanup() {
   try { ws?.close() } catch {}
-  if (chrome !== null) {
-    spawnSync('taskkill', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore' })
-  }
-  if (process.platform === 'win32') {
-    const listing = spawnSync('wmic', ['process', 'where', "name='chrome.exe'", 'get', 'processid,commandline'], {
-      encoding: 'utf8',
-    })
-    for (const line of (listing.stdout ?? '').split('\n')) {
-      if (!line.includes(profile)) continue
-      const pid = line.trim().match(/(\d+)\s*$/)
-      if (pid !== null) spawnSync('taskkill', ['/PID', pid[1], '/T', '/F'], { stdio: 'ignore' })
-    }
-  }
+  killChromeTree(chrome, profile)
+  ws = null
 }
+installChromeCleanup(() => chrome, profile)
 
 async function preflight() {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
   } catch (error) {
     console.error(`qa-bench: 无法访问 ${url}（先启动 server 与 client）：${error.message}`)
@@ -98,8 +95,8 @@ async function main() {
   chrome = spawn(CHROME, [
     '--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`,
     '--no-first-run', '--no-default-browser-check', '--no-sandbox',
-    '--window-size=1280,720', '--hide-scrollbars',
-    '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+    `--window-size=${width},${height}`, '--hide-scrollbars',
+    ...gpuLaunchArgs(),
     '--autoplay-policy=no-user-gesture-required', url,
   ], { stdio: 'ignore' })
   const evaluate = await connect()
@@ -135,18 +132,26 @@ async function main() {
   const stats = await evaluate('JSON.stringify(window.__stats())')
   console.log(JSON.stringify({ bench: result, errors: JSON.parse(errors), stats: JSON.parse(stats) }, null, 2))
 
-  const gpu = String(result?.gpu ?? '')
-  const software = /软件|swiftshader|llvmpipe|software/i.test(gpu)
+  const statsObj = JSON.parse(stats)
+  const gpuName = String(statsObj?.gpuName ?? result?.gpuName ?? '')
+  const gpuLabel = String(result?.gpu ?? '')
+  const software = isSoftwareGpu(gpuName) || isSoftwareGpu(gpuLabel)
   let failed = false
-  if (software) {
-    console.warn(`qa-bench: 软件渲染（${gpu}），跳过硬件阈值`)
+  if (software || (requireGpu && gpuName.trim() === '')) {
+    if (requireGpu) {
+      console.error(`qa-bench: SKIPPED —— 要求独显，但当前是 ${gpuName || gpuLabel || '未知 GPU'}`)
+      process.exitCode = 3
+      return
+    }
+    console.warn(`qa-bench: 软件渲染（${gpuName || gpuLabel}），跳过硬件阈值`)
   } else {
     if (Number(result?.p99) > p99Limit) {
       console.error(`qa-bench: p99 ${result.p99}ms > ${p99Limit}ms`)
       failed = true
     }
-    if (Number(result?.avg) > avgLimit) {
-      console.error(`qa-bench: avg ${result.avg}ms > ${avgLimit}ms`)
+    // 0.5ms 容差：vsync 下 16.67/16.8 的采样抖动不该把一次正常基准判红。
+    if (Number(result?.avg) > avgLimit + 0.5) {
+      console.error(`qa-bench: avg ${result.avg}ms > ${avgLimit}ms（+0.5ms 容差）`)
       failed = true
     }
   }

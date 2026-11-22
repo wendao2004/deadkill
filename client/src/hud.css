@@ -1568,6 +1568,18 @@ body:has(> .dko-death-ui.is-on) #crosshair {
   color: var(--ash, #8d8578);
 }
 
+.dk-controls-card__goal {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(217, 154, 74, 0.45);
+  border-left: 3px solid var(--amber, #d99a4a);
+  background: rgba(217, 154, 74, 0.07);
+  color: var(--bone, #d8cfba);
+  font-size: 11.5px;
+  line-height: 1.55;
+  letter-spacing: 0.04em;
+}
+
 .dk-controls-card__list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1591,6 +1603,22 @@ body:has(> .dko-death-ui.is-on) #crosshair {
   font-weight: 600;
   color: var(--bone, #d8cfba);
   letter-spacing: 0.08em;
+}
+
+.dkfb-dead-info {
+  position: absolute;
+  left: 50%;
+  bottom: 22%;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border: 1px solid rgba(216, 207, 186, 0.22);
+  background: rgba(10, 9, 8, 0.72);
+  color: var(--bone, #d8cfba);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* ------------------------------------------------------------------ 世界事件 / 合同 */

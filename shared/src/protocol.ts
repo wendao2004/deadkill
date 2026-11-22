@@ -87,6 +87,20 @@ export const Msg = {
    * 一次性的独立指令，单独一个包最省事。
    */
   Loadout: 12,
+  /**
+   * S→C 个人结算。只发给本人：撤离成功/失败、战利品与赏金、金币收入。
+   *
+   * 以前客户端拿全局 `outcome` 推自己的结果，非携带者会“被撤离成功”；
+   * 现在服务端按每个人是否真的走出去结算，客户端只显示服务端给的账。
+   */
+  Result: 13,
+  /**
+   * S→C 权威档案：金币、已解锁天赋、已解锁配件、已购买随身补给。
+   *
+   * 大厅在进场前用 HTTP `/api/profile` 读同一份；进局后再发一次，是为了让
+   * “服务端把未拥有天赋/配件洗掉”这件事对客户端可见。
+   */
+  Profile: 14,
 } as const
 
 export const EventKind = {
@@ -317,6 +331,108 @@ export function decodeLoadout(buffer: ArrayBuffer): LoadoutRequest {
     squad,
     partyId,
     build,
+  }
+}
+
+// ---------------------------------------------------------------- 结算 / 档案
+
+/** 结算原因：走出去、时间耗尽、全队阵亡（暂未使用）、断线。 */
+export const RESULT_REASON_EXTRACT = 0
+export const RESULT_REASON_TIME = 1
+export const RESULT_REASON_LEFT = 2
+
+export const RESULT_FLAG_ESCAPED = 1 << 0
+export const RESULT_FLAG_BOUNTY = 1 << 1
+
+/**
+ * 个人结算包：u8 kind + u8 flags + u16 loot + u16 bounty + u16 earned +
+ * u32 coinsTotal + u8 reason。定长 13 字节。
+ *
+ * `loot`/`bounty` 是本局带出的美元；`earned` 是折成金币后的收入；
+ * `coinsTotal` 是结算后的总金币（服务端账本）。
+ */
+export interface ResultPacket {
+  escaped: boolean
+  bounty: boolean
+  lootValue: number
+  bountyValue: number
+  coinsEarned: number
+  coinsTotal: number
+  reason: number
+}
+
+export const RESULT_SIZE = 13
+
+export function encodeResult(packet: ResultPacket): ArrayBuffer {
+  const buffer = new ArrayBuffer(RESULT_SIZE)
+  const view = new DataView(buffer)
+  view.setUint8(0, Msg.Result)
+  let flags = 0
+  if (packet.escaped) flags |= RESULT_FLAG_ESCAPED
+  if (packet.bounty) flags |= RESULT_FLAG_BOUNTY
+  view.setUint8(1, flags)
+  view.setUint16(2, Math.max(0, Math.min(65535, Math.round(packet.lootValue))), true)
+  view.setUint16(4, Math.max(0, Math.min(65535, Math.round(packet.bountyValue))), true)
+  view.setUint16(6, Math.max(0, Math.min(65535, Math.round(packet.coinsEarned))), true)
+  view.setUint32(8, Math.max(0, Math.round(packet.coinsTotal)) >>> 0, true)
+  view.setUint8(12, Math.max(0, Math.min(255, packet.reason)))
+  return buffer
+}
+
+export function decodeResult(buffer: ArrayBuffer): ResultPacket {
+  const view = new DataView(buffer)
+  if (view.getUint8(0) !== Msg.Result) throw new Error('不是结算包')
+  const flags = view.getUint8(1)
+  return {
+    escaped: (flags & RESULT_FLAG_ESCAPED) !== 0,
+    bounty: (flags & RESULT_FLAG_BOUNTY) !== 0,
+    lootValue: view.getUint16(2, true),
+    bountyValue: view.getUint16(4, true),
+    coinsEarned: view.getUint16(6, true),
+    coinsTotal: view.getUint32(8, true),
+    reason: view.getUint8(12),
+  }
+}
+
+/**
+ * 权威档案包：u8 kind + u32 coins + u32 traitOwned + u32 attachmentOwned +
+ * u8 extrasOwned + u32 activeTraits。定长 18 字节。
+ *
+ * `attachmentOwned` 是按 `WEAPON_ATTACHMENTS` 下标的位图；`extrasOwned` 是
+ * 已付款、尚未在某一局领取的随身补给位图；`activeTraits` 是服务端实际采纳的
+ * 天赋选择（客户端可能因为未拥有而被洗掉）。
+ */
+export interface ProfilePacket {
+  coins: number
+  traitOwned: number
+  attachmentOwned: number
+  extrasOwned: number
+  activeTraits: number
+}
+
+export const PROFILE_SIZE = 18
+
+export function encodeProfile(packet: ProfilePacket): ArrayBuffer {
+  const buffer = new ArrayBuffer(PROFILE_SIZE)
+  const view = new DataView(buffer)
+  view.setUint8(0, Msg.Profile)
+  view.setUint32(1, Math.max(0, Math.round(packet.coins)) >>> 0, true)
+  view.setUint32(5, packet.traitOwned >>> 0, true)
+  view.setUint32(9, packet.attachmentOwned >>> 0, true)
+  view.setUint8(13, packet.extrasOwned & 0xff)
+  view.setUint32(14, packet.activeTraits >>> 0, true)
+  return buffer
+}
+
+export function decodeProfile(buffer: ArrayBuffer): ProfilePacket {
+  const view = new DataView(buffer)
+  if (view.getUint8(0) !== Msg.Profile) throw new Error('不是档案包')
+  return {
+    coins: view.getUint32(1, true),
+    traitOwned: view.getUint32(5, true),
+    attachmentOwned: view.getUint32(9, true),
+    extrasOwned: view.getUint8(13),
+    activeTraits: view.getUint32(14, true),
   }
 }
 
@@ -942,22 +1058,38 @@ export function encodeHello(
   nickname: string,
   levelId?: string | null,
   partyId?: string | null,
+  profileId?: string | null,
+  partyCode?: string | null,
 ): ArrayBuffer {
   const bytes = new TextEncoder().encode(truncateUtf8(nickname, NICKNAME_MAX_BYTES))
   const level = clampLevelId(levelId)
   const party = (partyId ?? '').slice(0, 24)
-  const levelPart = level ? tailByteLength(level) : party ? 1 : 0
-  const partyPart = tailByteLength(party)
-  const buffer = new ArrayBuffer(4 + bytes.length + levelPart + partyPart)
+  const profile = (profileId ?? '').slice(0, 64)
+  const code = (partyCode ?? '').slice(0, 24)
+  // 可选段按顺序写；缺省段用一个 0 长度字节占位，否则后面的段会被读串。
+  const levelPart = level ? tailByteLength(level) : party || profile || code ? 1 : 0
+  const partyPart = party ? tailByteLength(party) : profile || code ? 1 : 0
+  const profilePart = profile ? tailByteLength(profile) : code ? 1 : 0
+  const codePart = tailByteLength(code)
+  const buffer = new ArrayBuffer(
+    4 + bytes.length + levelPart + partyPart + profilePart + codePart,
+  )
   const view = new DataView(buffer)
   view.setUint8(0, Msg.Hello)
   view.setUint16(1, PROTOCOL_VERSION, true)
   view.setUint8(3, bytes.length)
   new Uint8Array(buffer, 4).set(bytes)
-  const offset = 4 + bytes.length
+  let offset = 4 + bytes.length
   if (level) writeTail(view, offset, level)
-  else if (party) view.setUint8(offset, 0)
-  if (party) writeTail(view, offset + levelPart, party)
+  else if (party || profile || code) view.setUint8(offset, 0)
+  offset += levelPart
+  if (party) writeTail(view, offset, party)
+  else if (profile || code) view.setUint8(offset, 0)
+  offset += partyPart
+  if (profile) writeTail(view, offset, profile)
+  else if (code) view.setUint8(offset, 0)
+  offset += profilePart
+  if (code) writeTail(view, offset, code)
   return buffer
 }
 
@@ -968,6 +1100,10 @@ export function decodeHello(buffer: ArrayBuffer): {
   levelId: string | null
   /** 大厅队伍 id；null = 单人/旧客户端。 */
   partyId: string | null
+  /** 稳定的本机档案 id；null = 旧客户端（服务端回落到 cid/IP）。 */
+  profileId: string | null
+  /** 大厅好友码；服务端用它校验 partyId 是否真的是这个成员的队伍。 */
+  partyCode: string | null
 } {
   const view = new DataView(buffer)
   if (view.getUint8(0) !== Msg.Hello) throw new Error('不是握手包')
@@ -984,8 +1120,26 @@ export function decodeHello(buffer: ArrayBuffer): {
     }
     offset += levelLen
   }
-  const partyId = readTail(view, offset)
-  return { version, nickname, levelId, partyId }
+  let partyId: string | null = null
+  if (offset + 1 <= view.byteLength) {
+    const partyLen = view.getUint8(offset)
+    offset += 1
+    if (partyLen > 0 && offset + partyLen <= view.byteLength) {
+      partyId = new TextDecoder().decode(new Uint8Array(buffer, offset, partyLen))
+    }
+    offset += partyLen
+  }
+  let profileId: string | null = null
+  if (offset < view.byteLength) {
+    const profileLen = view.getUint8(offset)
+    offset += 1
+    if (profileLen > 0 && offset + profileLen <= view.byteLength) {
+      profileId = new TextDecoder().decode(new Uint8Array(buffer, offset, profileLen))
+    }
+    offset += profileLen
+  }
+  const partyCode = readTail(view, offset)
+  return { version, nickname, levelId, partyId, profileId, partyCode }
 }
 
 /**

@@ -98,6 +98,15 @@ test('build: 转轮只能用转轮供弹，霰弹没有可用的枪口消音', (
   assert.equal(shotgun.magazine + 0, effectiveWeaponSpec(shotgun, sanitizeBuild(2, {})).magazine)
 })
 
+test('镜倍率不叠乘：神射手 3.8× 装 4× 镜仍取较大值 3.8×', () => {
+  const scoped = sanitizeBuild(4, { sight: 102 })
+  assert.equal(effectiveWeaponSpec(WEAPONS[4]!, scoped).adsZoom, 3.8)
+})
+
+test('消音卡宾不再全距离压过默认步枪：射击间隔 280ms', () => {
+  assert.equal(WEAPONS[6]!.fireIntervalMs, 280)
+})
+
 test('开镜倍率：build 只对它的 weaponId 生效，4× 镜达到镜筒阈值', () => {
   const scope4 = sanitizeBuild(1, { sight: 102 })
   assert.ok(adsZoomFor(1, scope4) >= SCOPE_MIN_ZOOM, '4× 镜应触发镜筒遮罩')

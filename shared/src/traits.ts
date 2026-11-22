@@ -82,7 +82,8 @@ export const TRAITS: readonly TraitSpec[] = [
     index: 3,
     name: '硬皮',
     en: 'BULWARK',
-    levels: ['受到的伤害 -6%', '受到的伤害 -11%', '受到的伤害 -15%'],
+    // 爆头不吃减伤：这条只保护躯干/四肢，避免“满级硬皮吃步枪爆头不死”。
+    levels: ['躯干受到的伤害 -6%', '躯干受到的伤害 -11%', '躯干受到的伤害 -15%'],
   },
   {
     bit: Trait.Vigor,
@@ -202,6 +203,22 @@ export function traitCount(packed: number): number {
 }
 
 /** 按表顺序只留前 limit 条：多出来的直接丢掉，而不是让越界值带出隐形天赋。 */
+/**
+ * 把客户端选择的天赋等级夹到服务端已拥有的等级。
+ *
+ * `selected` 与 `owned` 都是每 2 bit 一条的等级包；结果取两者较小值。
+ * 这是 PvP 公平性的最后一道闸：客户端改 localStorage/配装包只能“选择”，
+ * 不能“获得”。
+ */
+export function clampSelectionToOwned(selected: number, owned: number): number {
+  let out = 0
+  for (const spec of TRAITS) {
+    const level = Math.min(traitLevel(selected, spec.bit), traitLevel(owned, spec.bit))
+    if (level > 0) out = setTraitLevel(out, spec.bit, level)
+  }
+  return clampTraitLevels(out)
+}
+
 export function clampTraitLevels(packed: number, limit: number = MAX_TRAITS): number {
   const valid = normalizeTraitLevels(packed)
   let out = 0

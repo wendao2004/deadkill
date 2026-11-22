@@ -15,7 +15,6 @@
  */
 
 import {
-  BOUNTY_VALUE,
   Buttons,
   Character,
   EventBus,
@@ -43,16 +42,18 @@ import {
   attachmentOf,
   clampAttachment,
   CONTRACTS,
+  EXTRACT_MS,
+  EXTRACT_RADIUS,
   setDoorOpen,
   clamp,
   getModifier,
   initPhysics,
   isBossKind,
-  isPersonalEscape,
   lairOf,
   loreOf,
   monsterKindFromCode,
   bossNameOf,
+  MONSTER_ID_BASE,
   traceShot,
   weaponForSlot,
   wrapAngle,
@@ -62,12 +63,15 @@ import {
   type LootItem,
   type LootPacket,
   type ObjectivePacket,
+  type ProfilePacket,
   type PlayerInput,
   type PlayerSnapshot,
+  type ResultPacket,
   type Snapshot,
   type Vec3,
   type WeaponBuild,
   buildStats,
+  effectiveWeaponSpec,
   adsZoomFor,
   sanitizeBuild,
 } from '@dk/shared'
@@ -253,6 +257,8 @@ export interface GameOptions {
    * 再盖结算卡。同帧弹卡片会把那句话吞掉，玩家只记得"突然一片黑"。
    */
   onResult: (result: MatchResult) => void
+  /** 服务端权威档案：金币/已解锁天赋/配件/已付款补给。 */
+  onProfile?: (profile: ProfilePacket) => void
   /** 服务端发给本人的一句话（搜到什么东西）。可选：探针脚本里不需要 UI。 */
   onText?: (text: string) => void
   /**
@@ -290,6 +296,12 @@ export interface MatchResult {
   /** 带出赏金的额外价值；0 = 没带出来。 */
   bountyValue: number
   items: LootItem[]
+  /** 服务端结算的本局金币收入（客户端不再自己算）。 */
+  coinsEarned: number
+  /** 服务端结算后的总金币。 */
+  coinsTotal: number
+  /** 结算原因：0 撤离 / 1 时间耗尽 / 2 离场。 */
+  reason: number
 }
 
 export interface HudState {
@@ -306,6 +318,8 @@ export interface HudState {
   lootValue: number
   /** 正在搜的进度 0..100。 */
   searchPct: number
+  /** 个人撤离进度 0..100；0 = 不在撤离点/携带者（携带者走全局目标包）。 */
+  extractPct: number
   /** 身边可搜点的提示文案；空串 = 附近没有能搜的东西。 */
   searchLabel: string
   /** 是否站在未收集线索的 CLUE_RADIUS 内。 */
@@ -408,6 +422,12 @@ export class Game {
   private loot: LootPacket | null = null
   /** 结算卡片的延迟句柄：横幅要先播完。 */
   private resultTimer = 0
+  /** 本局结算只显示一次：服务端可能同时发 Result 与目标包。 */
+  private resultShown = false
+  /** 个人撤离的本地显示进度（毫秒）；服务端才是判定方。 */
+  private extractMs = 0
+  /** 是否在屋顶下（室内声学）；用关卡盒刷的“大而薄且在上方”做启发式。 */
+  private indoor = false
 
   /** 场上 Boss 的血量百分比；-1 = 还没出笼。 */
   private bossPct = -1
@@ -677,6 +697,8 @@ export class Game {
       onSnapshot: (snapshot) => this.onSnapshot(snapshot),
       onEvents: (events) => this.onEvents(events),
       onObjective: (objective) => this.onObjective(objective),
+      onResult: (result) => this.onProtocolResult(result),
+      onProfile: (profile) => this.options.onProfile?.(profile),
       onLoot: (loot) => this.onLoot(loot),
       onNames: (entries) => {
         this.playerNames.clear()
@@ -759,6 +781,8 @@ export class Game {
       ping: this.estimatePing(),
       quality: this.qualityTier,
       gpu: this.renderer.gpuLabel(),
+      // 原始适配器串：QA 必须能证明这一帧真的跑在哪张卡上，而不是只看"核显/独显"。
+      gpuName: this.renderer.gpuInfo().renderer,
       scale: Math.round(this.renderer.getScale() * 100) / 100,
       resolution: {
         smoothedMs: Math.round(this.resolution.smoothedMs * 100) / 100,
@@ -932,7 +956,11 @@ export class Game {
     if (this.benchSamples.length < BENCH_FRAMES) return
 
     this.benchDone = true
-    const result = summarizeFrames(this.benchSamples, this.renderer.gpuLabel())
+    const result = {
+      ...summarizeFrames(this.benchSamples, this.renderer.gpuLabel()),
+      // 原始适配器串：qa-bench 必须能证明这次基准跑在哪张卡上。
+      gpuName: this.renderer.gpuInfo().renderer,
+    }
     ;(globalThis as Record<string, unknown>).__bench = result
     ;(globalThis as Record<string, unknown>).__benchDone = true
     console.info('[bench]', result)
@@ -1020,9 +1048,76 @@ export class Game {
 
   /** 表现系统：渲染、HUD、听者、标记。计时只用于 __dk 探针。 */
   private updatePresentation(dt: number): void {
+    this.updatePersonalExtract(dt)
+    if (this.frameNow % 15 === 0) this.updateIndoor()
     const t0 = performance.now()
     this.renderFrame(dt, this.frameNow)
     this.costDraw += (performance.now() - t0 - this.costDraw) * 0.125
+  }
+
+  /**
+   * 个人撤离的本地进度条。
+   *
+   * 服务端每 tick 用真实位置判定；这里只做“站住别动”的可视反馈。
+   * 客户端计时比服务端早/晚几十毫秒不影响结果 —— Result 到达前不会离场。
+   */
+  private updatePersonalExtract(dt: number): void {
+    const me = this.lastSnapshot?.players.find((p) => p.id === this.myId) ?? null
+    const canExtract =
+      this.character !== null &&
+      me !== null &&
+      (me.flags & StateFlags.Alive) !== 0 &&
+      (me.flags & StateFlags.Downed) === 0 &&
+      this.objective !== null &&
+      this.objective.phase !== 'over' &&
+      this.objective.bountyCarrier !== this.myId
+    if (!canExtract) {
+      // 死了/倒地/当了携带者：进度直接清零，别让 HUD 继续显示“撤离中”。
+      this.extractMs = 0
+      return
+    }
+    const feet = this.character!.feet
+    const inside = (this.options.level.extracts ?? []).some(
+      (extract) => Math.hypot(feet.x - extract.x, feet.z - extract.z) <= EXTRACT_RADIUS,
+    )
+    this.extractMs = inside
+      ? Math.min(EXTRACT_MS, this.extractMs + dt * 1000)
+      : Math.max(0, this.extractMs - dt * 1000 * 0.5)
+  }
+
+  /**
+   * 室内判定：玩家站在“大而薄、且在头顶上方”的盒刷下面，就切到 indoor 混响。
+   *
+   * 关卡没有单独的“室内体积”数据，这是不新增地图字段的最低成本近似；
+   * 误判只会让混响早/晚半秒，不会影响碰撞或声音方位。
+   */
+  private updateIndoor(): void {
+    const feet = this.character?.feet
+    if (!feet) return
+    let inside = false
+    for (const box of this.options.level.boxes ?? []) {
+      if (box.hx < 2 || box.hz < 2 || box.hy > 0.6) continue
+      if (box.y < feet.y + 1.5) continue
+      let dx = feet.x - box.x
+      let dz = feet.z - box.z
+      if (box.rotY) {
+        const c = Math.cos(-box.rotY)
+        const s = Math.sin(-box.rotY)
+        const rx = dx * c - dz * s
+        const rz = dx * s + dz * c
+        dx = rx
+        dz = rz
+      }
+      if (Math.abs(dx) <= box.hx && Math.abs(dz) <= box.hz) {
+        inside = true
+        break
+      }
+    }
+    if (inside === this.indoor) return
+    this.indoor = inside
+    this.audio.setAmbienceBias(
+      inside ? 'indoor' : this.options.level.biome === 'swamp' ? 'marsh' : 'open',
+    )
   }
 
   /** 一步固定步长的模拟 + 入队待发。 */
@@ -1241,8 +1336,8 @@ export class Game {
     if (reloading !== state.reloading) {
       state.reloading = reloading
       if (distance <= 45) {
-        if (reloading) this.audio.reloadStart(player.weaponId, at)
-        else this.audio.reloadEnd(at)
+        if (reloading) this.audio.reloadStart(player.weaponId, at, this.heardThrough(at))
+        else this.audio.reloadEnd(at, this.heardThrough(at))
       }
     }
 
@@ -1550,7 +1645,9 @@ export class Game {
           this.spawnImpact(event.point, 'flesh')
         }
       } else if (event.kind === 3 /* Death */) {
-        if (event.victimId === this.myId) this.feedback.died()
+        if (event.victimId === this.myId) {
+          this.feedback.died(this.deathInfoFor(event.killerId, event.headshot))
+        }
         // 打死人才是这局最重的一下：镜头定格更长、再补一声"确认"。
         if (event.killerId === this.myId) {
           this.renderer.hitPunch(80, event.headshot, true)
@@ -1638,7 +1735,7 @@ export class Game {
         // 钟声/砸地：一圈向外扫的尘土 + 按 Boss 种类区分的低频。
         const p = { x: event.x, y: event.y, z: event.z }
         this.renderer.effects.shockwave(p, event.radius)
-        this.audio.bossPulse(this.bossKind)
+        this.audio.bossPulse(this.bossKind, p, this.heardThrough(p))
         const me = this.lastSnapshot?.players.find((pl) => pl.id === this.myId)
         if (me && me.health > 0) {
           const d = Math.hypot(me.x - event.x, me.z - event.z)
@@ -1859,26 +1956,26 @@ export class Game {
   }
 
   /**
-   * 排一次结算。文案与"值不值"的判断都在上层，这里只把数字打包出去。
+   * 服务端个人结算：撤离/失败、带出的现金与赏金、金币收入全由服务端决定。
    *
-   * 赏金价值在这里加上而不是让服务端算：服务端的 carriedValue 只统计搜刮现金，
-   * 若它也把赏金算进去，客户端再补一次就会翻倍。
+   * 客户端不再用全局 outcome 推自己的结果 —— 那正是“别人撤离、我也显示
+   * 撤离成功”的来源。这里只负责在横幅播完后把数字交给 UI。
    */
-  private scheduleResult(objective: ObjectivePacket): void {
+  private onProtocolResult(result: ResultPacket): void {
+    if (this.resultShown) return
+    this.resultShown = true
     this.clearResultTimer()
-    const loot = this.loot
-    // 全局 outcome 只说明"这局以撤离结束"，不等于"我撤离了"：
-    // 只有真正带走赏金的那个人拿到撤离结算，其他人按失败处理。
-    const escaped = isPersonalEscape(objective.outcome, objective.bountyCarrier, this.myId)
-    const carriedBounty = escaped && objective.bountyCarrier === this.myId
+    this.audio.matchResult(result.escaped)
     this.resultTimer = window.setTimeout(() => {
       this.resultTimer = 0
-      this.audio.matchResult(escaped)
       this.options.onResult({
-        escaped,
-        lootValue: loot?.value ?? 0,
-        bountyValue: carriedBounty ? BOUNTY_VALUE : 0,
-        items: loot?.items.slice() ?? [],
+        escaped: result.escaped,
+        lootValue: result.lootValue,
+        bountyValue: result.bountyValue,
+        items: this.loot?.items.slice() ?? [],
+        coinsEarned: result.coinsEarned,
+        coinsTotal: result.coinsTotal,
+        reason: result.reason,
       })
     }, RESULT_DELAY_MS)
   }
@@ -1980,8 +2077,9 @@ export class Game {
         objective.outcome === 'escaped' ? '赏金已带走' : '时间耗尽',
         objective.outcome === 'escaped' ? 'amber' : 'blood',
       )
-      this.scheduleResult(objective)
     }
+    // 复盘期结束、下一局开始时允许新的 Result 再弹一次。
+    if (objective.phase === 'hunt' && previous.phase === 'over') this.resultShown = false
   }
 
   /**
@@ -2098,7 +2196,13 @@ export class Game {
     const reloading = (me.flags & StateFlags.Reloading) !== 0
     if (reloading && !this.wasReloading) {
       this.reloadStartAt = performance.now()
-      this.reloadMs = WEAPONS[me.weaponId]?.reloadMs ?? 0
+      const base = WEAPONS[me.weaponId]
+      this.reloadMs = base
+        ? effectiveWeaponSpec(
+            base,
+            me.weaponId === this.options.primaryId ? this.build : undefined,
+          ).reloadMs
+        : 0
       this.reloadWeaponId = me.weaponId
       // 自己的换弹也要有声音：开仓 + 上膛；配方早就有，之前只是没人调用。
       this.audio.reloadStart(me.weaponId)
@@ -2148,7 +2252,8 @@ export class Game {
     this.heldSlot = slot
     this.heldWeapon = weaponId
     this.switchStartAt = performance.now()
-    this.switchMs = spec.switchMs * switchScale(this.options.traits)
+    const effective = effectiveWeaponSpec(spec, slot === 0 ? this.build : undefined)
+    this.switchMs = effective.switchMs * switchScale(this.options.traits)
     // 切枪的机械声是"我在干什么"的听觉确认，必须和按键同帧。
     // 刀是拔鞘而不是上膛：一声金属摩擦比枪机上膛声更像那么回事。
     if (slot === 2) {
@@ -2179,7 +2284,11 @@ export class Game {
     this.heldSlot = slot
     this.heldWeapon = weaponForSlot(this.options.primaryId, slot)
     this.switchStartAt = performance.now()
-    this.switchMs = (WEAPONS[this.heldWeapon]?.switchMs ?? 0) * switchScale(this.options.traits)
+    const base = WEAPONS[this.heldWeapon]
+    const effective = base
+      ? effectiveWeaponSpec(base, slot === 0 ? this.build : undefined)
+      : null
+    this.switchMs = (effective?.switchMs ?? 0) * switchScale(this.options.traits)
   }
 
   /**
@@ -2275,6 +2384,7 @@ export class Game {
     this.audio.monsterGrowlAt(
       { x: nearest.x, y: nearest.y + 1.2, z: nearest.z },
       nearest.kind === 1 ? 'hound' : 'grunt',
+      this.heardThrough({ x: nearest.x, y: nearest.y + 1.2, z: nearest.z }),
     )
   }
 
@@ -2562,6 +2672,28 @@ export class Game {
     return WEAPONS[player?.weaponId ?? this.options.primaryId]?.name ?? WEAPONS[1]!.name
   }
 
+  /** 死亡归因：谁、用什么、多远。没有这条，玩家学不会“下次别从那边来”。 */
+  private deathInfoFor(
+    killerId: number,
+    headshot: boolean,
+  ): { killer: string; weapon: string; distance: number; headshot: boolean } {
+    const me = this.lastSnapshot?.players.find((p) => p.id === this.myId) ?? null
+    if (killerId >= MONSTER_ID_BASE) {
+      const at = this.monsterPoint(killerId)
+      const distance = me && at ? Math.hypot(me.x - at.x, me.z - at.z) : 0
+      return { killer: '沼泽怪物', weapon: '爪牙', distance, headshot }
+    }
+    if (killerId <= 0) return { killer: '陷阱 / 流血', weapon: '环境', distance: 0, headshot }
+    const killer = this.lastSnapshot?.players.find((p) => p.id === killerId) ?? null
+    const distance = me && killer ? Math.hypot(me.x - killer.x, me.z - killer.z) : 0
+    return {
+      killer: this.playerNames.get(killerId) ?? `猎人 #${killerId}`,
+      weapon: WEAPONS[killer?.weaponId ?? 0]?.name ?? '未知武器',
+      distance,
+      headshot,
+    }
+  }
+
   private hudOf(me: PlayerSnapshot | null, tick: number): HudState {
     const self = me ?? this.lastSnapshot?.players.find((p) => p.id === this.myId) ?? null
     const spec = WEAPONS[self?.weaponId ?? 1]!
@@ -2606,6 +2738,7 @@ export class Game {
       fps: this.fps,
       lootValue: this.loot?.value ?? 0,
       searchPct: this.loot?.searchPct ?? 0,
+      extractPct: Math.round((this.extractMs / EXTRACT_MS) * 100),
       searchLabel: nearBody ? '搜刮尸体' : nearSpot ? (SEARCH_LABEL[nearSpot.kind] ?? '搜索') : '',
       clueNear,
       cluePct,

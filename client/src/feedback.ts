@@ -291,6 +291,7 @@ export class Feedback {
   private readonly feed: HTMLDivElement
   private readonly deadLayer: HTMLDivElement
   private readonly deadMark: HTMLDivElement
+  private readonly deadInfo: HTMLDivElement
   private readonly reviveFlash: HTMLDivElement
 
   /** 播报行：从旧到新，索引 0 是最老的一条。 */
@@ -339,7 +340,8 @@ export class Feedback {
     this.deadLayer = div('dkfb-dead')
     this.deadMark = div('dkfb-dead-mark')
     this.deadMark.textContent = 'K.O.'
-    this.deadLayer.append(div('dkfb-dead-frame'), this.deadMark)
+    this.deadInfo = div('dkfb-dead-info')
+    this.deadLayer.append(div('dkfb-dead-frame'), this.deadMark, this.deadInfo)
     this.root.append(this.deadLayer)
 
     this.reviveFlash = div('dkfb-revive')
@@ -427,8 +429,13 @@ export class Feedback {
   }
 
   /** 自己死亡：整屏血红遮罩 + 厚黑画格边框 + K.O. 冲击字。 */
-  died(): void {
+  died(info?: { killer: string; weapon: string; distance: number; headshot: boolean }): void {
     if (this.disposed) return
+
+    this.deadInfo.textContent = info
+      ? `${info.killer} · ${info.weapon} · ${Math.round(info.distance)}m${info.headshot ? ' · 爆头' : ''}`
+      : ''
+    this.deadInfo.style.visibility = info ? 'visible' : 'hidden'
 
     this.reviveAnim?.cancel()
     this.reviveAnim = null

@@ -27,8 +27,14 @@ import {
   EventKind,
   FixedClock,
   BODY_CACHE_TTL_MS,
+  BOUNTY_VALUE,
   DISCONNECT_GRACE_MS,
+  EXTRACT_MS,
+  EXTRACT_RADIUS,
   KILL_REWARD,
+  MONSTER_KILL_REWARD,
+  RESULT_REASON_EXTRACT,
+  RESULT_REASON_TIME,
   SPOT_ID_MIN,
   SPOT_ID_NONE,
   STARTING_BANDAGES,
@@ -134,6 +140,7 @@ import {
   encodeLoot,
   encodeNames,
   encodeObjective,
+  encodeResult,
   encodeSnapshot,
   encodeText,
   mulberry32,
@@ -309,6 +316,18 @@ const LOOT_RATE = 10
  */
 const BOSS_ID_OFFSET = 0x0800
 
+/** 下行积压上限：超过就断开慢消费者，避免 512MB 容器被快照堆满。 */
+const MAX_BUFFERED_BYTES = 256 * 1024
+
+/**
+ * 每秒最多接受多少条输入。
+ *
+ * 正常 60Hz 客户端约 60 条；留 10% 抖动。没有这个预算时，一个恶意客户端
+ * 每包塞 8 条、每秒 120 包，就能让每个 tick 的 `Character.step` 跑 8 次，
+ * 把跳跃/冲刺/滑铲冷却推进 8 倍。
+ */
+const MAX_INPUTS_PER_SECOND = 66
+
 /**
  * 连接层的身份与收发状态。
  *
@@ -328,8 +347,13 @@ interface PlayerSession {
   ackSeq: number
   /** 客户端最近一次收到的快照 tick，延迟补偿据此回滚。 */
   ackedTick: number
+  /** 服务端最近一次真的发给这个玩家的快照 tick；伪造的 ackedTick 不能超过它。 */
+  lastSnapshotTick: number
   /** 待消费输入队列（客户端会小批量补发）。 */
   queue: PlayerInput[]
+  /** 本秒剩余的输入预算：防止 8 条/包刷冷却计时器。 */
+  inputBudget: number
+  inputBudgetTick: number
 }
 
 /**
@@ -340,6 +364,8 @@ interface PlayerSession {
  */
 interface PlayerState {
   character: Character
+  /** 服务端档案键（金币/解锁）；与 userId 分开：userId 用于同标签页重连。 */
+  profileId: string
   /** 最近一次输入里的视角，快照与射击都用它。 */
   yaw: number
   pitch: number
@@ -439,6 +465,17 @@ interface PlayerState {
   /** 合同进度（击杀数/搜刮数/撤离次数）。 */
   contractProgress: number
   contractDone: boolean
+  /** 已个人撤离：不再接受输入、不再进快照；短暂保留后从世界移除。 */
+  extracted: boolean
+  /** 个人撤离发生的 tick，用于延迟移除。 */
+  extractedAtTick: number
+  /** 个人撤离进度 0..1（携带者仍由 MatchDriver 统一推进）。 */
+  extractIndex: number
+  extractProgress: number
+  /** 本局结算是否已发给本人，防止撤离后又吃一次终局结算。 */
+  settled: boolean
+  /** 本局是否已经给过击杀奖励：同一个人被反复杀不能反复刷 $50。 */
+  killRewarded: boolean
 }
 
 /**
@@ -456,6 +493,13 @@ export interface WorldOptions {
   level?: LevelDef
   /** 最后一名玩家离开时通知注册表，用来决定何时销毁本世界。 */
   onEmpty?: (id: string) => void
+  /**
+   * 服务端档案结算：把本局带出的价值换成金币，返回结算后的总金币。
+   *
+   * World 不直接 import ProfileStore：单测可以注入一个假账本；没有注入时
+   * 只计算本局收入、不持久化。
+   */
+  onSettle?: (userId: string, earned: number) => number
 }
 
 /**
@@ -473,6 +517,8 @@ export interface BodyCache {
   items: LootItem[]
   bounty: boolean
   expiresTick: number
+  /** 死者自己的 playerId：携带赏金的人不能复活后捡回同一份赏金。 */
+  ownerId: number
 }
 
 export class World {
@@ -502,12 +548,14 @@ export class World {
     dtMs: number
     visible?: (player: MonsterSenses) => boolean
     canAttack: boolean
+    senseScale: number
   } = {
     players: this.senses,
     tick: 0,
     dtMs: TICK_MS,
     visible: (player: MonsterSenses) => this.gunnerSees(player),
     canAttack: true,
+    senseScale: 1,
   }
   /**
    * 攻击令牌：怪物 id → 到期 tick。
@@ -546,14 +594,14 @@ export class World {
    */
   private readonly match: MatchDriver
   /**
-   * 本局的环境修饰 id（见 shared/src/modifiers.ts）。建世界时抽一次，整局不变。
+   * 本局的环境修饰 id（见 shared/src/modifiers.ts）。每局开始重抽一次。
    *
-   * 抽签用的是世界自己的 rng，而不是 Math.random：同一个房间 id 重开一局应该
-   * 还是同一场天气（"这个房还是那个雾夜"），换房才是另一局。
+   * 抽签用的是世界自己的 rng，而不是 Math.random：同一房间连续两局可以从
+   * 同一个种子复现；跨局重开时再抽一次，避免第二局是上一局的复刻。
    */
-  readonly modifier: number
+  modifier: number
   /** 本局战利品骰子的偏移。测试要复现同一个点掉什么，就得拿着它去算。 */
-  readonly lootSeed: number
+  lootSeed: number
   /** 本局搜索点：关卡自带的 + 补给空投动态追加的。 */
   private spots: SearchSpot[] = []
   /** 每扇门的开关状态（下标与 level.doors 对齐）。 */
@@ -597,6 +645,11 @@ export class World {
   private lastMatchPhase = 'hunt'
   private pendingEvents: GameEvent[] = []
   private readonly onEmpty?: (id: string) => void
+  private readonly onSettle?: (userId: string, earned: number) => number
+  /** 本局终局结算只跑一次。 */
+  private matchSettled = false
+  /** 已经报过错的阶段：同一处每 tick 刷屏会把日志和性能一起拖死。 */
+  private readonly phaseErrors = new Set<string>()
 
   private nextPlayerId = 1
   private tick = 0
@@ -632,6 +685,7 @@ export class World {
     this.doorOpen = (this.level.doors ?? []).map(() => false)
     this.trapSprung = (this.level.traps ?? []).map(() => false)
     this.onEmpty = options.onEmpty
+    this.onSettle = options.onSettle
     this.physics = createLevelWorld(this.level)
     addBounds(this.physics, this.level)
     // 油灯灯头：2.35m 高的实心小球。它高于角色胶囊，不会挡路，但会挡子弹。
@@ -685,6 +739,8 @@ export class World {
       // physics.step 是唯一屏障：所有角色都提交完 next kinematic translation 才能推进。
       .add('physics', { fixedUpdate: () => this.physics.step() }, ['inputs'])
       .add('interactions', { fixedUpdate: () => this.stepInteractions() }, ['physics'])
+      // 个人撤离在交互之后：位置已经由物理落定；携带者仍由 MatchDriver 统一推进。
+      .add('extract', { fixedUpdate: () => this.stepPersonalExtract() }, ['interactions'])
       .add('history', { fixedUpdate: () => this.pushHistory() }, ['interactions'])
       .add('match', { fixedUpdate: () => this.stepMatch() }, ['history'])
       .add('objective', { fixedUpdate: () => this.stepObjective() }, ['match'])
@@ -694,7 +750,10 @@ export class World {
   // ------------------------------------------------------------ 生命周期
 
   start(): void {
-    if (this.timer || this.stopped) return
+    if (this.timer) return
+    // 空世界会被 stop()，重新有人进来时允许再启动；不重置 tick/目标状态，
+    // 这样“离开 10 秒再回来”不会被当成新一局。
+    this.stopped = false
     this.lastPumpAt = performance.now()
     this.clock.reset()
     // 用 1ms 的轮询器 + 累加器，而不是 setInterval(TICK_MS)：
@@ -709,6 +768,27 @@ export class World {
       clearInterval(this.timer)
       this.timer = null
     }
+  }
+
+  /**
+   * 彻底销毁：停 tick + 释放 Rapier WASM 内存。
+   *
+   * stop() 只停定时器，Rapier 的 WASM World/碰撞体仍占着内存；房间回收时
+   * 必须调 dispose()，否则 512MB 容器会在房间 churn 后慢慢涨到 OOM。
+   */
+  dispose(): void {
+    this.stop()
+    try {
+      this.physics.free()
+    } catch {
+      // 已经释放过/物理初始化失败：不阻塞注册表清理。
+    }
+    this.players.clear()
+    this.monsters.length = 0
+    this.monstersByCollider.clear()
+    this.byCollider.clear()
+    this.bodyCaches.length = 0
+    this.pendingEvents.length = 0
   }
 
   /** 空置了多久（毫秒）；非空返回 0。注册表用它回收没人玩的房间。 */
@@ -748,6 +828,24 @@ export class World {
    * id 从 `MONSTER_ID_BASE` 起算，和玩家 id 共用 u16 空间但两段互不重叠：
    * `DeathEvent.killerId` 只有一个字段，各占一套编号就得为"被怪咬死"多造一种事件。
    */
+  /** 清空本局所有怪（含 Boss/召唤物），跨局重建时用。 */
+  private clearMonsters(): void {
+    for (const entity of this.monsters) {
+      this.monstersByCollider.delete(entity.collider.handle)
+      try {
+        this.physics.removeRigidBody(entity.body)
+      } catch {
+        // 已经被 despawn 过的实体：忽略即可。
+      }
+    }
+    this.monsters.length = 0
+    this.attackTokens.clear()
+    this.bossEntity = null
+    this.bossSpawned = false
+    this.bossDefeated = false
+    this.nextSummonId = BOSS_ID_OFFSET + 1
+  }
+
   private spawnMonsters(): void {
     const nests = this.level.nests ?? []
     if (nests.length === 0) return
@@ -851,6 +949,9 @@ export class World {
       const feet = player.character.feet
       this.senses.push({ id: player.id, x: feet.x, z: feet.z, alive: true })
     }
+    // 浓雾/骤雨缩短怪物视距：天气不能只坑玩家，也不能只换滤镜。
+    const fogScale = getModifier(this.modifier).fogScale
+    this.aiInput.senseScale = Math.max(0.55, Math.min(1.15, 1.15 - (fogScale - 1) * 0.35))
     this.aiInput.tick = this.tick
     // 先释放到期令牌：不清理的话，一场里死过几只怪之后名额会被永久占满。
     for (const [id, expiry] of this.attackTokens) {
@@ -1357,7 +1458,12 @@ export class World {
     }
     // 食腐者：亲手打死怪才回血。用 killerId 查而不是查"最近的玩家"——
     // 队友补的最后一枪不该给别人回血。
-    if (killer) this.advanceContract(killer, 1, CONTRACT_HUNT)
+    if (killer) {
+      this.advanceContract(killer, 1, CONTRACT_HUNT)
+      // 普通怪也给一点现金：不接合同时也值得为资源开一枪。
+      killer.carriedValue = Math.min(0xffff, killer.carriedValue + MONSTER_KILL_REWARD)
+      this.sendText(killer, `清剿 +$${MONSTER_KILL_REWARD}`)
+    }
     const heal = killer === undefined ? 0 : carrionHeal(killer.traits)
     if (killer !== undefined && killer.alive && heal > 0) {
       killer.health = Math.min(killer.maxHealth, killer.health + heal)
@@ -1503,6 +1609,9 @@ export class World {
     existing.queue.length = 0
     existing.ackSeq = 0
     existing.ackedTick = 0
+    existing.lastSnapshotTick = 0
+    existing.inputBudget = MAX_INPUTS_PER_SECOND
+    existing.inputBudgetTick = this.tick
     existing.lastInput = { ...existing.lastInput, forward: 0, right: 0, buttons: 0 }
     existing.interact = false
     existing.prevInteract = false
@@ -1567,6 +1676,7 @@ export class World {
     nickname: string,
     userId = '',
     partyId = '',
+    profileId = userId,
   ): { id: number; spawn: Vec3; resumed: boolean } | null {
     // 同一账号回来就接管原角色：位置、血量、弹药、战利品、赏金全部还在。
     // 这是 15 分钟一局里"掉线不等于这趟白打"的最低保障。
@@ -1589,6 +1699,7 @@ export class World {
       nickname,
       socket,
       userId,
+      profileId,
       detachedAt: 0,
       character: new Character(this.physics, spawn),
       yaw: 0,
@@ -1613,7 +1724,10 @@ export class World {
       loadout: createLoadout(DEFAULT_WEAPON_ID),
       ackSeq: 0,
       ackedTick: 0,
+      lastSnapshotTick: 0,
       queue: [],
+      inputBudget: MAX_INPUTS_PER_SECOND,
+      inputBudgetTick: 0,
       shotCounter: 0,
       carriedValue: 0,
       loot: STARTING_BANDAGES > 0 ? [{ id: LOOT_ITEM.Bandage, count: STARTING_BANDAGES }] : [],
@@ -1643,6 +1757,12 @@ export class World {
       contract: CONTRACT_NONE,
       contractProgress: 0,
       contractDone: false,
+      extracted: false,
+      extractedAtTick: 0,
+      extractIndex: -1,
+      extractProgress: 0,
+      settled: false,
+      killRewarded: false,
     }
     this.players.set(player.id, player)
     this.byCollider.set(player.character.collider.handle, player)
@@ -1668,6 +1788,8 @@ export class World {
     this.players.delete(playerId)
     if (this.players.size === 0) {
       this.emptySince = Date.now()
+      // 空世界不再烧 60Hz 物理/AI；下一个人进来时 WorldRegistry.get 会 start()。
+      this.stop()
       this.onEmpty?.(this.id)
     }
     this.broadcastNames()
@@ -1717,6 +1839,17 @@ export class World {
   }
 
   /**
+   * 这次 Loadout 是否真的会发放随身补给。
+   *
+   * 服务端在扣款/消耗档案里的 extras 之前先问这一句：开过枪或已经发过补给
+   * 的玩家不会再发一次，不能让他重发配装包白嫖。
+   */
+  canLoadExtras(playerId: number): boolean {
+    const player = this.players.get(playerId)
+    return !!player && player.loadout.lastFireTick <= 0 && !player.extrasApplied
+  }
+
+  /**
    * 收到玩家的主武器选择。
    *
    * 只在"还没开过枪"时接受：打到一半换成狙击枪，等于白送一次满弹配装 ——
@@ -1750,8 +1883,11 @@ export class World {
     // clampTraitLevels 顺手挡掉改过的 localStorage、越界等级与超过三条的选择。
     player.traits = clampTraitLevels(traits)
     // 强健：生命上限跟着天赋走。回血上限、出生血量、血条都得读同一个数。
+    // 进局时如果是满血，补到新的上限 —— 否则带强健 III 的第一条命是
+    // 150/200，玩家会以为天赋没生效。
+    const wasFull = player.health >= player.maxHealth
     player.maxHealth = MAX_HEALTH + maxHealthBonus(player.traits)
-    player.health = Math.min(player.health, player.maxHealth)
+    player.health = wasFull ? player.maxHealth : Math.min(player.health, player.maxHealth)
     // 随身补给：一次进场只发一次。金币在大厅侧扣，服务端只负责把东西给到。
     if (!player.extrasApplied) {
       player.extrasApplied = true
@@ -1800,10 +1936,21 @@ export class World {
   receiveInput(playerId: number, inputs: PlayerInput[], ackedTick: number): void {
     const player = this.players.get(playerId)
     if (!player) return
-    player.ackedTick = ackedTick
+    // 只接受“服务端确实发过”的快照 tick。伪造一个未来 tick 或比最后一帧
+    // 更早的 tick 都不会扩大回滚窗口；真正的 RTT 测量留给后续。
+    const maxSent = player.lastSnapshotTick > 0 ? player.lastSnapshotTick : this.tick
+    player.ackedTick = Math.max(0, Math.min(ackedTick, maxSent))
+    if (this.tick - player.inputBudgetTick >= TICK_RATE) {
+      player.inputBudgetTick = this.tick
+      player.inputBudget = MAX_INPUTS_PER_SECOND
+    }
     for (const input of inputs) {
       // 重发/乱序的旧包直接丢，否则会把人往旧位置拽。
       if (input.seq <= player.ackSeq) continue
+      // 超预算的输入直接丢：每个 Character.step 都会推进一次冷却，
+      // 不能让它靠“一包 8 条”把冷却刷成 8 倍速。
+      if (player.inputBudget <= 0) break
+      player.inputBudget--
       player.queue.push(input)
     }
     // 队列太长说明客户端发得比我们消费得快（或它在补发一堆旧输入）。
@@ -1823,7 +1970,19 @@ export class World {
    */
   private step(): void {
     const phases = this.phases.with('fixedUpdate')
-    for (let i = 0; i < phases.length; i++) phases[i]!.system.fixedUpdate?.(TICK_DT, this.ctx)
+    for (let i = 0; i < phases.length; i++) {
+      const phase = phases[i]!
+      try {
+        phase.system.fixedUpdate?.(TICK_DT, this.ctx)
+      } catch (error) {
+        // 单阶段异常不能带走整个进程：记录一次，让同一帧其余阶段继续跑。
+        // 持续异常不会每 tick 刷屏；修好/换房后由 reset 清空。
+        if (!this.phaseErrors.has(phase.id)) {
+          this.phaseErrors.add(phase.id)
+          console.error(`[world ${this.id}] phase ${phase.id} failed`, error)
+        }
+      }
+    }
   }
 
   /** 阶段 1：tick 计数、尸体过期、断线超时。 */
@@ -1843,6 +2002,14 @@ export class World {
         }
       }
     }
+    // 个人撤离后给客户端 5 秒收结果/播结算，再从世界移除，避免幽灵角色占位。
+    if (this.tick % 30 === 0) {
+      const gone: number[] = []
+      for (const player of this.players.values()) {
+        if (player.extracted && this.tick - player.extractedAtTick > 300) gone.push(player.id)
+      }
+      for (const id of gone) this.removePlayer(id)
+    }
   }
 
   /**
@@ -1853,6 +2020,8 @@ export class World {
    */
   private stepInputs(): void {
     for (const player of this.players.values()) {
+      // 撤离后不再推进/复活：角色正在等 5 秒移除，输入/计时器都该停。
+      if (player.extracted) continue
       if (!player.alive) {
         if (this.tick >= player.respawnTick) this.respawn(player)
         continue
@@ -2088,6 +2257,7 @@ export class World {
    * shared/src/worldbuild.ts 的 setDoorOpen），预测不会跑偏。
    */
   private stepDoors(player: Player): void {
+    if (player.downed) return
     const doors = this.level.doors ?? []
     let best = -1
     let bestDist = 2.6
@@ -2151,7 +2321,18 @@ export class World {
     if (this.lastMatchPhase === 'over' && matchPhase === 'hunt') {
       // 上一局已经结算完：尸体、箱子、玩家身上的现金/物品都必须清掉，
       // 否则下一局可以再结算一次，或者一进场就是一地空箱子。
+      this.matchSettled = false
+      this.phaseErrors.clear()
       this.bodyCaches.length = 0
+      this.pendingEvents.length = 0
+      this.lastObjective = null
+      // 新一局换天气/换战利品种子：同一房间连续第二局不能是上一局的复刻。
+      this.modifier = rollModifier(this.rng)
+      this.lootSeed = Math.floor(this.rng() * 0x7fffffff)
+      this.match.state.modifier = this.modifier
+      // 怪也要重建：上一局打空的巢穴/残血 Boss 不能直接留给下一局。
+      this.clearMonsters()
+      this.spawnMonsters()
       // 计数器必须跟着清：否则累计 63 次死亡后池子只剩 1 个可复用 id，
       // 下一次死亡会把带赏金/战利品的尸体顶掉。
       this.nextBodyId = -2
@@ -2187,6 +2368,17 @@ export class World {
         player.ads = false
         resetLoadout(player.loadout)
         player.respawnTick = 0
+        player.extracted = false
+        player.extractedAtTick = 0
+        player.extractIndex = -1
+        player.extractProgress = 0
+        player.settled = false
+        player.killRewarded = false
+        player.extrasApplied = false
+        player.loadout.lastFireTick = -1e9
+        player.contract = CONTRACT_NONE
+        player.contractProgress = 0
+        player.contractDone = false
         if (!player.alive) {
           this.respawn(player)
         } else {
@@ -2197,6 +2389,123 @@ export class World {
     this.lastMatchPhase = matchPhase
   }
 
+  /**
+   * 个人撤离：任何活着、未倒地的非携带者站在撤离点里读满 20 秒，就能带着
+   * 自己的战利品离场；携带者的撤离由 MatchDriver 统一推进并结束整局。
+   *
+   * 为什么放在 World 而不是 MatchDriver：MatchDriver 的状态是**全场共享**的
+   * 一份（线索/放逐/赏金），而“我走了、队友还在打”是每人一份的状态。把它
+   * 塞进全局状态会让 HUD 不知道进度条该画谁的。
+   */
+  private stepPersonalExtract(): void {
+    if (this.match.state.phase === 'over') return
+    const extracts = this.level.extracts ?? []
+    if (extracts.length === 0) return
+    for (const player of this.players.values()) {
+      if (player.extracted || !player.alive) continue
+      if (player.downed || player.id === this.match.state.bountyCarrier) {
+        player.extractIndex = -1
+        player.extractProgress = 0
+        continue
+      }
+      let bestIndex = -1
+      let bestDistance = EXTRACT_RADIUS * EXTRACT_RADIUS
+      for (let i = 0; i < extracts.length; i++) {
+        const extract = extracts[i]!
+        const dx = player.character.feet.x - extract.x
+        const dz = player.character.feet.z - extract.z
+        const distance = dx * dx + dz * dz
+        if (distance < bestDistance) {
+          bestDistance = distance
+          bestIndex = i
+        }
+      }
+      if (bestIndex < 0) {
+        player.extractIndex = -1
+        player.extractProgress = Math.max(0, player.extractProgress - (TICK_MS / EXTRACT_MS) * 0.5)
+        continue
+      }
+      player.extractIndex = bestIndex
+      player.extractProgress += TICK_MS / EXTRACT_MS
+      if (player.extractProgress >= 1) this.completePersonalExtract(player)
+    }
+  }
+
+  private completePersonalExtract(player: Player): void {
+    player.extractProgress = 1
+    player.extracted = true
+    player.extractedAtTick = this.tick
+    const loot = player.carriedValue
+    this.sendResult(player, {
+      escaped: true,
+      bounty: false,
+      lootValue: loot,
+      bountyValue: 0,
+      reason: RESULT_REASON_EXTRACT,
+    })
+    this.sendText(player, `撤离成功 · 带出 $${loot}`)
+    // 离场：不再接受输入/参与判定，5 秒后从世界移除。留这 5 秒是给客户端
+    // 收 Result 与播结算动画的时间，不是让他继续打。
+    player.alive = false
+    player.downed = false
+    player.respawnTick = Number.MAX_SAFE_INTEGER
+    player.carriedValue = 0
+    player.loot = []
+    player.queue.length = 0
+    player.extractIndex = -1
+    // 离场的人不该继续挡子弹/挡路；5 秒后 removePlayer 会连控制器一起删。
+    player.character.setColliderEnabled(false)
+    this.broadcastNames()
+  }
+
+  /** 个人结算：只发给本人；档案收入由 onSettle 持久化。 */
+  private sendResult(
+    player: Player,
+    opts: { escaped: boolean; bounty: boolean; lootValue: number; bountyValue: number; reason: number },
+  ): void {
+    if (player.settled) return
+    player.settled = true
+    const lootValue = Math.max(0, Math.round(opts.lootValue))
+    const bountyValue = Math.max(0, Math.round(opts.bountyValue))
+    const earned = opts.escaped ? Math.floor((lootValue + bountyValue) / 5) : 0
+    const coinsTotal = this.onSettle?.(player.profileId, earned) ?? earned
+    try {
+      this.send(
+        player,
+        encodeResult({
+          escaped: opts.escaped,
+          bounty: opts.bounty,
+          lootValue,
+          bountyValue,
+          coinsEarned: earned,
+          coinsTotal,
+          reason: opts.reason,
+        }),
+      )
+    } catch {
+      // 断线中的玩家收不到结果；档案已经结算，重连后大厅能读到。
+    }
+  }
+
+  /** 一局结束：给还在场的每个玩家发个人结算。携带者拿走赏金，其余没走出去的判负。 */
+  private settleMatch(reason: number, escapedMatch: boolean): void {
+    for (const player of this.players.values()) {
+      if (player.settled || player.extracted) continue
+      const isCarrier = this.match.state.bountyCarrier === player.id
+      const escaped = escapedMatch && isCarrier
+      const hadBounty = isCarrier
+      this.sendResult(player, {
+        escaped,
+        bounty: hadBounty,
+        lootValue: player.carriedValue,
+        bountyValue: hadBounty ? BOUNTY_VALUE : 0,
+        reason,
+      })
+      player.carriedValue = 0
+      player.loot = []
+    }
+  }
+
   /** 阶段 8：Boss 生命周期与目标广播。 */
   private stepObjective(): void {
     // Boss 跟着线索走：集齐就刷、一局结束就清场。放在 match.step 之后是因为
@@ -2204,6 +2513,13 @@ export class World {
     if (this.match.state.phase === 'hunt' && this.bossSpawned) this.despawnBoss()
     else if (this.match.state.lairRevealed && !this.bossSpawned) this.spawnBoss()
     this.applyWorldEvent()
+    if (this.match.state.phase === 'over' && !this.matchSettled) {
+      this.matchSettled = true
+      this.settleMatch(
+        this.match.state.outcome === 'escaped' ? RESULT_REASON_EXTRACT : RESULT_REASON_TIME,
+        this.match.state.outcome === 'escaped',
+      )
+    }
     this.publishObjective()
   }
 
@@ -2372,7 +2688,7 @@ export class World {
     // 提示用的"身边有点"和是否按着键无关，先算出来（死了也照算，客户端好画尸体旁的箱子）。
     player.nearSpotId = this.nearestSpot(feet.x, feet.z)
 
-    if (!player.alive || !player.interact || player.nearSpotId === SPOT_ID_NONE) {
+    if (!player.alive || player.downed || !player.interact || player.nearSpotId === SPOT_ID_NONE) {
       this.abortSearch(player)
       return
     }
@@ -2464,6 +2780,13 @@ export class World {
       return
     }
     const cache = this.bodyCaches[index]!
+    // 自己的尸体不能搜：否则“死亡掉光战利品”只是 15 秒后原路捡回来。
+    // 这条同时挡住“携带者复活后拿回同一份赏金”。
+    if (cache.ownerId === player.id) {
+      this.sendText(player, '这是你自己的尸体 · 无法搜刮')
+      this.abortSearch(player)
+      return
+    }
     this.bodyCaches.splice(index, 1)
     player.carriedValue = Math.min(0xffff, player.carriedValue + cache.value)
     for (const item of cache.items) {
@@ -2528,7 +2851,8 @@ export class World {
    * 合并之后每处都要 if (kind === 'search')，比重复二十行更难读。
    */
   private stepHeal(player: Player): void {
-    if (!player.alive) {
+    // 倒地只能爬/被救；自己扎绷带会把“倒地=失去行动能力”变成一句空话。
+    if (!player.alive || player.downed) {
       this.abortHeal(player)
       return
     }
@@ -2678,6 +3002,15 @@ export class World {
     // 也会让伤害衰减失去意义。
     const MAX_PENETRATION_LAYERS = 2
 
+    // 姿态/移动/空中都影响散布：不读这些的话，ADAD 平移与跳跃狙的精度
+    // 和站定完全一样，枪械的距离/节奏差异会被“谁更会晃”抹平。
+    const speed = Math.hypot(player.character.vx, player.character.vz)
+    const stance =
+      (player.character.crouching ? 0.8 : 1) *
+      (1 + Math.min(1.5, speed / 7) * 0.9) *
+      (player.character.grounded ? 1 : 2.2)
+    const spreadFactor = spreadScale(player.traits) * stance
+
     for (let pellet = 0; pellet < spec.pellets; pellet++) {
       const dir = aimDirection(
         player.yaw,
@@ -2685,7 +3018,7 @@ export class World {
         spec,
         player.ads,
         (rand() * 0x100000000) >>> 0,
-        spreadScale(player.traits),
+        spreadFactor,
       )
       if (pellet === 0) firstDir = dir
 
@@ -2830,6 +3163,7 @@ export class World {
         damageAt(spec, hit.distance, hit.headshot) * hit.damageScale,
         hit.headshot,
         hit.point,
+        spec.headMultiplier >= 2,
       )
     }
   }
@@ -2936,6 +3270,7 @@ export class World {
     rawDamage: number,
     headshot: boolean,
     point: Vec3,
+    headLethal = false,
   ): void {
     const dmg = Math.round(rawDamage)
 
@@ -2973,9 +3308,13 @@ export class World {
     // 否则"这一枪刚好把人打到 39%"也会被算成处刑，读起来是随缘的。
     const ratio = victim.maxHealth > 0 ? victim.health / victim.maxHealth : 1
     const execute = ratio < EXECUTE_BELOW ? executeScale(attacker.traits) : 1
-    // 硬皮：受到的伤害 -15%。事件里报的必须是**实际扣掉的血**，否则客户端
-    // 那行"命中 75"会和血条对不上，玩家会怀疑是自己没打中。
-    const taken = Math.max(1, Math.round(dmg * execute * damageTakenScale(victim.traits)))
+    // 硬皮：受到的伤害 -15%，但**不作用于爆头**。否则满级硬皮+强健会把
+    // “一枪爆头”改成“两枪”，直接拆掉三根支柱里的一根。
+    // 步枪/神射手这类 headMultiplier >= 2 的武器，爆头直接按剩余生命结算：
+    // 不管对方堆了多少生命/减伤，爆头就是倒地/死亡。霰弹/刀仍按倍率算。
+    const reduction = headshot ? 1 : damageTakenScale(victim.traits)
+    let taken = Math.max(1, Math.round(dmg * execute * reduction))
+    if (headshot && headLethal) taken = Math.max(taken, victim.health)
     const lethal = victim.health - taken <= 0
     victim.health = Math.max(0, victim.health - taken)
     this.pendingEvents.push({
@@ -3029,6 +3368,7 @@ export class World {
         items: loot,
         bounty: hadBounty,
         expiresTick: this.tick + Math.ceil(BODY_CACHE_TTL_MS / TICK_MS),
+        ownerId: victim.id,
       })
     }
     victim.carriedValue = 0
@@ -3043,8 +3383,12 @@ export class World {
       const killer = this.players.get(killerId)
       if (killer) {
         if (heldWeapon(killer.loadout).kind === 'knife') this.advanceContract(killer, 1, CONTRACT_KNIFE)
-        killer.carriedValue = Math.min(0xffff, killer.carriedValue + KILL_REWARD)
-        this.sendText(killer, `击杀奖励 +$${KILL_REWARD} · 去尸体处搜刮`)
+        // 击杀奖励每个受害者每局只给一次：15 秒复活 + 固定 $50 会被两人互刷。
+        if (!victim.killRewarded) {
+          victim.killRewarded = true
+          killer.carriedValue = Math.min(0xffff, killer.carriedValue + KILL_REWARD)
+          this.sendText(killer, `击杀奖励 +$${KILL_REWARD} · 去尸体处搜刮`)
+        }
       }
     }
     if (hadBounty) {
@@ -3138,6 +3482,8 @@ export class World {
     // flags 只和本人姿态有关，与接收者无关 —— 先算好，避免每个接收者重算一遍。
     const view: PlayerSnapshot[] = []
     for (const player of this.players.values()) {
+      // 已撤离的人不再出现在快照里：留一个“尸体”在撤离点会误导别人。
+      if (player.extracted) continue
       const feet = player.character.feet
       view.push(
         projectPlayer({
@@ -3192,6 +3538,7 @@ export class World {
     for (const receiver of this.players.values()) {
       // 每个人收到的快照只有 ackSeq 不同：就地贴、编完立刻复位，
       // 不为每个接收者重建整份数组（见 shared/src/snapshotView.ts）。
+      receiver.lastSnapshotTick = this.tick
       const index = attachAck(view, receiver.id, receiver.ackSeq)
       this.send(
         receiver,
@@ -3207,9 +3554,9 @@ export class World {
    * 直接返回生成器而不是数组：每 tick 调一次，60Hz 下每 tick 分配一个数组
    * 就是每秒 60 次 GC 压力，而调用方只是遍历一遍。
    */
-  private *aliveActors(): Iterable<{ id: number; alive: boolean; feet: Vec3 }> {
+  private *aliveActors(): Iterable<{ id: number; alive: boolean; downed: boolean; feet: Vec3 }> {
     for (const player of this.players.values()) {
-      yield { id: player.id, alive: player.alive, feet: player.character.feet }
+      yield { id: player.id, alive: player.alive, downed: player.downed, feet: player.character.feet }
     }
   }
 
@@ -3242,6 +3589,16 @@ export class World {
   private send(player: PlayerSession, buffer: ArrayBuffer): void {
     // readyState 1 = OPEN。玩家可能刚好在这一 tick 掉线。
     if (player.socket.readyState !== 1) return
+    // 慢消费者：回 pong 但不读数据的客户端会让快照在 ws 用户态无限排队。
+    // 256KB 已经相当于几十秒的快照；超过就断开，别让它把 512MB 容器顶满。
+    if (player.socket.bufferedAmount > MAX_BUFFERED_BYTES) {
+      try {
+        player.socket.close(4011, '下行积压 · 连接已断开')
+      } catch {
+        // 已关闭：下一 tick 的 readyState 会拦住。
+      }
+      return
+    }
     player.socket.send(buffer)
   }
 

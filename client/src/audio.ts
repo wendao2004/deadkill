@@ -858,11 +858,13 @@ export class AudioKit {
   // ---------------------------------------------------------------- 换弹 / 机构
 
   /** 开弹仓：一声金属轻响 + 一记更闷的"松扣"。远端传 at 走 Panner。 */
-  reloadStart(weaponId: number, at?: WorldPoint): void {
+  reloadStart(weaponId: number, at?: WorldPoint, occluded = false): void {
     const noise = this.noise
     const opts: OpenOptions = { level: 0.5, wet: at ? 0.01 : 0.03 }
-    if (at) opts.at = at
-    else opts.priority = PRIORITY.self
+    if (at) {
+      opts.at = at
+      opts.occluded = occluded
+    } else opts.priority = PRIORITY.self
     const o = this.open(opts)
     if (o === null) return
     if (noise === null) {
@@ -899,11 +901,13 @@ export class AudioKit {
   }
 
   /** 上膛：两声紧挨着的金属撞击，第二声略高，才像"扣合"而不是"敲了一下"。 */
-  reloadEnd(at?: WorldPoint): void {
+  reloadEnd(at?: WorldPoint, occluded = false): void {
     const noise = this.noise
     const opts: OpenOptions = { level: 0.5, wet: at ? 0.01 : 0.03 }
-    if (at) opts.at = at
-    else opts.priority = PRIORITY.self
+    if (at) {
+      opts.at = at
+      opts.occluded = occluded
+    } else opts.priority = PRIORITY.self
     const o = this.open(opts)
     if (o === null) return
     if (noise !== null) {
@@ -1955,9 +1959,16 @@ export class AudioKit {
    *  - 石心巨像：只有低频与土石噪声，像整面墙砸在地上。
    *  - 末班车长：短促的铜哨，两声，第二声更高 —— 那是"叫狗"不是"攻击"。
    */
-  bossPulse(kind: number): void {
+  bossPulse(kind: number, at?: WorldPoint, occluded = false): void {
     const noise = this.noise
-    const o = this.open({ priority: PRIORITY.self, level: 0.92, wet: kind === 4 ? 0.42 : 0.3 })
+    // 钟声保留全局层（教堂钟本来就该笼罩全场）；砸地/哨声必须跟事件坐标走。
+    const spatial = at !== undefined && kind !== 4
+    const o = this.open({
+      priority: PRIORITY.self,
+      level: 0.92,
+      wet: kind === 4 ? 0.42 : 0.3,
+      ...(spatial ? { at, occluded } : {}),
+    })
     if (o === null) return
     const { ctx, recipe, input } = o
     const t = ctx.currentTime + 0.005
@@ -2222,8 +2233,8 @@ export class AudioKit {
     this.growl(kind, { priority: PRIORITY.self, level: 0.8, wet: 0.06 }, 1)
   }
 
-  monsterGrowlAt(at: WorldPoint, kind: MonsterKind = 'grunt'): void {
-    this.growl(kind, { at, level: 0.85, wet: 0.16 }, 1)
+  monsterGrowlAt(at: WorldPoint, kind: MonsterKind = 'grunt', occluded = false): void {
+    this.growl(kind, { at, level: 0.85, wet: 0.16, occluded }, 1)
   }
 
   /**

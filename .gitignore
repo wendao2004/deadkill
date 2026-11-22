@@ -11,3 +11,5 @@ Thumbs.db
 /model/
 
 .qa-shots/
+# 服务端本地档案（金币/解锁）；运行期数据，不进版本库
+.data/

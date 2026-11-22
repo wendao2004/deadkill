@@ -552,6 +552,8 @@ export function stepMonster(
      * 物理世界。
      */
     visible?: (player: MonsterSenses) => boolean
+    /** 感知距离倍率：浓雾让怪也看不清（0.6），晴天略远（1.1）。缺省 1。 */
+    senseScale?: number
     /**
      * 这一 tick 是否允许发起普通攻击。缺省 true。
      *
@@ -570,6 +572,8 @@ export function stepMonster(
   // 不消耗冷却，下一 tick 再试 —— 玩家看到的是怪物在等同伴打完，而不是
   // 一群怪同时扑上来。
   const canAttack = senses.canAttack ?? true
+  // 天气/光照对 AI 的感知倍率；不传就是标准视距。
+  const aggroRange = spec.aggroRange * (senses.senseScale ?? 1)
 
   // 死亡放在最前面短路：尸体不决策、不移动、不咬人。
   if (monster.state === 'dead' || monster.health <= 0) {
@@ -632,7 +636,7 @@ export function stepMonster(
     // 先算距离再打射线：射程外的玩家不值得一条 LOS。这是每 tick 最热的
     // 循环，顺序反过来会让 30m 外的玩家也各吃一条 Rapier 射线。
     const d = Math.hypot(p.x - monster.x, p.z - monster.z)
-    if (d > spec.aggroRange) continue
+    if (d > aggroRange) continue
     // 远程怪开火前必须看得见人；近战怪照旧（它们循声扑过来，隔墙也合理）。
     // 近战的"看不见"只影响最后的咬击，不影响索敌/追击。
     if ((ranged !== undefined || wasSearching) && see !== null && !canSee(p)) continue

@@ -19,6 +19,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gpuLaunchArgs, installChromeCleanup, isSoftwareGpu, killChromeTree } from './chrome-flags.mjs'
 
 const CHROME = process.env.CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 const url = readFlag('--url') ?? 'http://localhost:5173/?autostart=1&shot=1&show=weapon'
@@ -36,7 +37,7 @@ function readFlag(name) {
 
 async function preflight() {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
   } catch (error) {
     console.error(`qa-shot: 无法访问 ${url}（先启动 server 与 client）：${error.message}`)
@@ -51,10 +52,12 @@ function cleanup() {
   try {
     ws?.close()
   } catch {}
-  if (chrome !== null) {
-    spawnSync('taskkill', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore' })
-  }
+  // 杀掉浏览器后再断开 CDP，避免 WS 重连拖住进程退出。
+  killChromeTree(chrome, profile)
+  ws = null
 }
+// 正常/异常路径由 main 调用 cleanup；这里兜底 Ctrl+C 与意外退出。
+installChromeCleanup(() => chrome, profile)
 
 async function connect() {
   let target = null
@@ -118,8 +121,7 @@ async function main() {
       '--no-sandbox',
       `--window-size=${width},${height}`,
       '--hide-scrollbars',
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
+      ...gpuLaunchArgs(),
       '--autoplay-policy=no-user-gesture-required',
       url,
     ],
@@ -143,6 +145,11 @@ async function main() {
   }
 
   const stats = await page.evaluate('JSON.stringify(window.__stats ? window.__stats() : null)')
+  const parsed = stats === null ? null : JSON.parse(stats)
+  // GPU 模式下的静默回退是最坏的：截图看起来正常，但所有性能/画质判断都建立在 CPU 上。
+  if (process.env.QA_GPU !== '0' && isSoftwareGpu(parsed?.gpu)) {
+    throw new Error(`期望独显但仍在软件渲染：${parsed?.gpu ?? 'unknown'}（QA_GPU=0 才允许 CPU）`)
+  }
   const shot = await page.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
   const data = shot.result?.data
   if (!data) throw new Error('截图返回为空')

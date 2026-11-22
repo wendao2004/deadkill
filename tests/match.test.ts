@@ -29,6 +29,7 @@ import {
 interface Actor {
   id: number
   alive: boolean
+  downed?: boolean
   feet: { x: number; y: number; z: number }
 }
 
@@ -56,6 +57,15 @@ function makeRig(options: { bossDown?: () => boolean; bountyOnGround?: () => boo
 }
 
 const holdTicks = Math.ceil(CLUE_HOLD_MS / TICK_MS)
+
+test('倒地玩家不能收集线索：倒地=失去推进目标的能力', () => {
+  const rig = makeRig()
+  rig.actors[0]!.downed = true
+  const clue = LEVEL_MARSH.clues![0]!
+  rig.go(clue.x, clue.z)
+  rig.run(holdTicks + 5)
+  assert.equal(rig.driver.state.cluesFound, 0)
+})
 
 test('撤离结算只认真正带走赏金的人，不是全场共享 outcome', () => {
   assert.equal(isPersonalEscape('escaped', 7, 7), true)

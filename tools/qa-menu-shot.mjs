@@ -15,6 +15,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gpuLaunchArgs, installChromeCleanup, killChromeTree } from './chrome-flags.mjs'
 
 const CHROME = process.env.CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 const base = readFlag('--url') ?? 'http://localhost:5173/?noaudio=1&q=quality'
@@ -39,7 +40,7 @@ function readFlag(name) {
 
 async function preflight() {
   try {
-    const res = await fetch(base, { signal: AbortSignal.timeout(5000) })
+    const res = await fetch(base, { signal: AbortSignal.timeout(15000) })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
   } catch (error) {
     console.error(`qa-menu-shot: 无法访问 ${base}（先启动 client）：${error.message}`)
@@ -54,10 +55,10 @@ function cleanup() {
   try {
     ws?.close()
   } catch {}
-  if (chrome !== null) {
-    spawnSync('taskkill', ['/PID', String(chrome.pid), '/T', '/F'], { stdio: 'ignore' })
-  }
+  killChromeTree(chrome, profile)
+  ws = null
 }
+installChromeCleanup(() => chrome, profile)
 
 async function connect() {
   let target = null
@@ -87,8 +88,7 @@ async function main() {
       '--no-first-run',
       '--no-sandbox',
       `--window-size=${width},${height}`,
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
+      ...gpuLaunchArgs(),
       '--autoplay-policy=no-user-gesture-required',
       '--hide-scrollbars',
       base,

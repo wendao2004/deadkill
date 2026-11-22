@@ -57,14 +57,17 @@ import {
   type WeaponAttachment,
   WEAPON_SLOT_KEYS,
   attachmentsForSlot,
+  attachmentBit,
   buildStats,
   effectiveWeaponSpec,
   sanitizeBuild,
+  sanitizeOwnedBuild,
 } from '@dk/shared'
 
 
 import { deployBrief, worldLine, artProfile } from './art-direction.ts'
 import { rememberLevelId } from './level-choice.ts'
+import { buyProfile, fetchProfile, readCachedProfile, type ProfileView } from './profile.ts'
 import { traitGlyph } from './traits.ts'
 import { WeaponPreview } from './weapon-preview.ts'
 import {
@@ -181,6 +184,13 @@ export interface Menu {
    * 不同步的话，结算后玩家在菜单里点任何一张卡都会把这局的收入覆盖成旧余额。
    */
   setCoins(coins: number): void
+  /**
+   * 用服务端权威档案同步金币/已拥有天赋/配件。
+   *
+   * 大厅的本地存档只是缓存；这个入口让“服务端把未拥有天赋洗掉”或
+   * “一局结算后余额变化”能立刻反映到已打开的大厅，而不是等下次刷新。
+   */
+  syncProfile(profile: ProfileView): void
   /**
    * 撤回一次没启动成功的出击：清黑场、解除 CTA 禁用、恢复背景。
    *
@@ -1106,6 +1116,7 @@ function buildHunterAvatar(): SVGElement {
 
 export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   const saved = loadSavedConfig()
+  const cachedProfile = readCachedProfile()
   const config: MenuConfig = {
     nickname: options.initial?.nickname ?? saved.nickname ?? '',
     matchId: options.initial?.matchId ?? saved.matchId ?? 'default',
@@ -1115,7 +1126,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     attachment: clampAttachment(options.initial?.attachment ?? saved.attachment ?? 0),
     squad: (options.initial?.squad ?? saved.squad ?? 0) === 1 ? 1 : 0,
     traits: clampSelection(options.initial?.traits ?? saved.traits ?? 0),
-    coins: normalizeCoins(options.initial?.coins ?? saved.coins ?? 0),
+    coins: normalizeCoins(options.initial?.coins ?? cachedProfile.coins ?? saved.coins ?? 0),
   }
   config.build = options.initial?.build ?? loadBuildFor(config.primaryId)
   // 好友码是本机身份：服务端只做在线目录，不建账号。首次生成后一直复用。
@@ -1127,7 +1138,14 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   let friends = loadFriends()
   // 已拥有等级不进 MenuConfig：它是局外进度，main.ts 发配装包时只要
   // packSelection(掩码, 已拥有) 的结果。所以这里读出唯一一份。
-  let traitOwned = readTraitOwned()
+  let traitOwned = cachedProfile.traitOwned || readTraitOwned()
+  /** 服务端档案里的配件位图（WEAPON_ATTACHMENTS 下标）。 */
+  let attachmentOwned = cachedProfile.attachmentOwned
+  /** 已付款、尚未领取的随身补给位图。 */
+  let extrasOwned = 0
+  /** 档案更新后刷新改枪台/补给按钮；由两个子面板在构建时注册。 */
+  let refreshArsenal: (() => void) | null = null
+  let refreshExtras: (() => void) | null = null
   // 旧存档只有"选了哪几条"（当年天赋是免费的开关），没有等级数据。已选却 0 级的
   // 那条按 1 级补上 —— 否则玩家会看到"明明带着，进局却一条都不生效"，
   // 因为 packSelection 会把 0 级的条目直接丢掉。
@@ -1347,6 +1365,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   let onboardError: HTMLElement | null = null
   let onboardThen: (() => void) | null = null
   let profileNameEl: HTMLElement | null = null
+  let profileSubEl: HTMLElement | null = null
   let functionTitleEl: HTMLElement | null = null
   let functionMetaEl: HTMLElement | null = null
   let arsenalPreview: WeaponPreview | null = null
@@ -1993,6 +2012,30 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     return panel
   }
 
+  /** 服务端权威档案落地：金币、已拥有天赋/配件、已付款补给。 */
+  function applyProfile(profile: ProfileView): void {
+    config.coins = normalizeCoins(profile.coins)
+    traitOwned = profile.traitOwned >>> 0
+    attachmentOwned = profile.attachmentOwned >>> 0
+    extrasOwned = profile.extrasOwned & 3
+    // 服务端把未拥有天赋洗掉后，大厅的“这局带哪几条”也要跟着洗，
+    // 否则 UI 会显示一条服务端根本不认的天赋。
+    let nextTraits = config.traits
+    for (const spec of TRAITS) {
+      if (traitLevel(traitOwned, spec.bit) === 0) nextTraits &= ~spec.bit
+    }
+    config.traits = clampSelection(nextTraits)
+    // 本地存着的 build 可能包含未购买的配件（旧存档/改过的 localStorage）；
+    // 大厅先洗一遍，避免服务端洗掉后“工作台显示装了、局内却按原厂算”。
+    config.build = sanitizeOwnedBuild(config.primaryId, config.build?.slots, attachmentOwned)
+    writeBuild(config.build)
+    writeTraitOwned(traitOwned)
+    saveConfig(config)
+    syncTraits()
+    refreshArsenal?.()
+    refreshExtras?.()
+  }
+
   function syncTraits(): void {
     const used = selectedTraitCount()
     for (const view of traitCards) {
@@ -2022,6 +2065,14 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     if (traitCountEl) traitCountEl.textContent = traitCountLabel()
     if (coinsEl) coinsEl.textContent = coinsLabel()
     if (traitSummaryEl) traitSummaryEl.textContent = traitSummaryLabel()
+    if (profileSubEl) {
+      const ownedNow = TRAITS.reduce(
+        (count, spec) => count + (traitLevel(traitOwned, spec.bit) > 0 ? 1 : 0),
+        0,
+      )
+      profileSubEl.textContent =
+        `本机存档 · 金币 $${normalizeCoins(config.coins ?? 0)} · 天赋 ${ownedNow}/${TRAITS.length}`
+    }
   }
 
   /**
@@ -2081,11 +2132,16 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       denyTrait(view, '金币不足', view.buy)
       return
     }
-    config.coins = coins - cost
-    traitOwned = setTraitLevel(traitOwned, view.spec.bit, level + 1)
-    writeTraitOwned(traitOwned)
-    saveConfig(config)
-    syncTraits()
+    // 扣款与升级由服务端完成；本地只负责把按钮锁住、拿回新档案。
+    view.buy.disabled = true
+    void buyProfile('trait', view.spec.bit).then((result) => {
+      view.buy.disabled = false
+      if (!result.ok) {
+        denyTrait(view, result.error, view.buy)
+        return
+      }
+      applyProfile(result.profile)
+    })
   }
 
   function buildTraitPicker(): HTMLElement {
@@ -2190,6 +2246,14 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     const wrap = mk('div', 'dk-field')
     wrap.appendChild(mk('span', 'dk-field__label', '局内合同'))
     const row = mk('div', 'dk-segment')
+    const hint = mk('p', 'dk-deploy__hint')
+    // 合同不只是名字：目标与奖励必须不悬浮也能读到，否则首局等于盲选。
+    const syncHint = (): void => {
+      const spec = CONTRACTS.find((entry) => entry.id === deployState.contract)
+      hint.textContent = spec
+        ? `${spec.desc} · 奖励 $${spec.reward}`
+        : '合同不改变胜负，只给你一个额外的目标。'
+    }
     for (const spec of CONTRACTS) {
       const btn = mkButton('dk-segment__item', spec.name)
       btn.title = spec.desc + (spec.reward > 0 ? ` · 奖励 ${spec.reward}` : '')
@@ -2203,12 +2267,13 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
           other.classList.toggle('is-selected', isSelf)
           other.setAttribute('aria-pressed', isSelf ? 'true' : 'false')
         }
+        syncHint()
         saveConfig(config)
       })
       row.appendChild(btn)
     }
     wrap.appendChild(row)
-    const hint = mk('p', 'dk-deploy__hint', '合同不改变胜负，只给你一个额外的目标。')
+    syncHint()
     wrap.appendChild(hint)
     return wrap
   }
@@ -2224,42 +2289,62 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     wrap.appendChild(mk('span', 'dk-field__label', '随身补给（金币）'))
     const row = mk('div', 'dk-segment')
     const buttons: HTMLButtonElement[] = []
+    const hint = mk('p', 'dk-deploy__hint', '买断后不退款；进场时发放。')
     const sync = (): void => {
       const coins = normalizeCoins(config.coins ?? 0)
       for (const [i, spec] of EXTRAS.entries()) {
+        const owned = (extrasOwned & spec.bit) !== 0
         const on = (deployState.extras & spec.bit) !== 0
         const btn = buttons[i]!
+        btn.textContent = (owned ? '已购 · ' : '') + spec.label + (owned ? '' : ' $' + spec.cost)
         btn.classList.toggle('is-selected', on)
         btn.setAttribute('aria-pressed', on ? 'true' : 'false')
-        btn.disabled = !on && coins < spec.cost
+        btn.disabled = !on && !owned && coins < spec.cost
       }
     }
     for (const spec of EXTRAS) {
       const btn = mkButton('dk-segment__item', spec.label + ' $' + spec.cost)
       btn.addEventListener('click', () => {
         const on = (deployState.extras & spec.bit) !== 0
-        const coins = normalizeCoins(config.coins ?? 0)
-        if (on) {
-          config.coins = coins + spec.cost
-          deployState.extras &= ~spec.bit
-        } else {
-          if (coins < spec.cost) return
-          config.coins = coins - spec.cost
-          deployState.extras |= spec.bit
+        const owned = (extrasOwned & spec.bit) !== 0
+        const toggle = (): void => {
+          deployState.extras = on
+            ? deployState.extras & ~spec.bit
+            : deployState.extras | spec.bit
+          config.extras = deployState.extras & 3
+          saveConfig(config)
+          syncTraits()
+          sync()
         }
-        config.extras = deployState.extras & 3
-        if (dossierCoinsEl) dossierCoinsEl.textContent = formatCoins(config.coins ?? 0)
-        saveConfig(config)
-        syncTraits()
-        sync()
+        if (on) {
+          // 取消只是“这局不带”，不退款；已付款的位留在档案里下次还能带。
+          toggle()
+          return
+        }
+        if (owned) {
+          toggle()
+          return
+        }
+        const coins = normalizeCoins(config.coins ?? 0)
+        if (coins < spec.cost) return
+        btn.disabled = true
+        void buyProfile('extras', spec.bit).then((result) => {
+          btn.disabled = false
+          if (!result.ok) {
+            hint.textContent = result.error
+            return
+          }
+          applyProfile(result.profile)
+          toggle()
+        })
       })
       buttons.push(btn)
       row.appendChild(btn)
     }
     wrap.appendChild(row)
-    sync()
-    const hint = mk('p', 'dk-deploy__hint', '进场时发放；死亡不退，撤离后不保留。')
     wrap.appendChild(hint)
+    refreshExtras = sync
+    sync()
     return wrap
   }
 
@@ -3316,13 +3401,12 @@ function writeBuild(build: WeaponBuild): void {
     const idBlock = mk('div', 'dk-profile__meta')
     profileNameEl = mk('span', 'dk-profile__name', '猎手 · ' + (config.nickname.trim() || '无名者'))
     idBlock.appendChild(profileNameEl)
-    idBlock.appendChild(
-      mk(
-        'span',
-        'dk-profile__sub',
-        `本机存档 · 金币 $${normalizeCoins(config.coins ?? 0)} · 天赋 ${ownedCount}/${TRAITS.length}`,
-      ),
+    profileSubEl = mk(
+      'span',
+      'dk-profile__sub',
+      `本机存档 · 金币 $${normalizeCoins(config.coins ?? 0)} · 天赋 ${ownedCount}/${TRAITS.length}`,
     )
+    idBlock.appendChild(profileSubEl)
 
     const bloodline = mk('div', 'dk-bloodline')
     const bloodlineTop = mk('div', 'dk-bloodline__top')
@@ -3520,6 +3604,11 @@ function writeBuild(build: WeaponBuild): void {
     grid.appendChild(detailPanel)
     pane.appendChild(grid)
 
+    let currentSpec: WeaponSpec | null = null
+    refreshArsenal = () => {
+      if (currentSpec) showDetail(currentSpec)
+    }
+
     function renderBuild(spec: WeaponSpec): void {
       buildPanel.replaceChildren()
       const buildHead = mk('div', 'dk-build__head')
@@ -3538,15 +3627,36 @@ function writeBuild(build: WeaponBuild): void {
         } else {
           const current = arsenalBuild.slots[slot] ?? options[0]!.id
           for (const attachment of options) {
+            const owned =
+              attachment.cost <= 0 || (attachmentOwned & attachmentBit(attachment.id)) !== 0
             const chip = mkButton('dk-build__chip', attachment.name)
             chip.title = attachment.desc
+            if (!owned) chip.textContent = attachment.name + ' $' + attachment.cost
             if (current === attachment.id) chip.classList.add('is-selected')
+            chip.disabled = !owned && normalizeCoins(config.coins ?? 0) < attachment.cost
             chip.addEventListener('click', () => {
-              arsenalBuild = sanitizeBuild(spec.id, { ...arsenalBuild.slots, [slot]: attachment.id })
-              writeBuild(arsenalBuild)
-              if (config.primaryId === spec.id) config.build = arsenalBuild
-              if (arsenalPreview) arsenalPreview.setWeapon(spec.id, arsenalBuild)
-              showDetail(spec)
+              const select = (): void => {
+                arsenalBuild = sanitizeBuild(spec.id, {
+                  ...arsenalBuild.slots,
+                  [slot]: attachment.id,
+                })
+                writeBuild(arsenalBuild)
+                if (config.primaryId === spec.id) config.build = arsenalBuild
+                if (arsenalPreview) arsenalPreview.setWeapon(spec.id, arsenalBuild)
+                showDetail(spec)
+              }
+              if (owned) {
+                select()
+                return
+              }
+              chip.disabled = true
+              void buyProfile('attachment', attachment.id).then((result) => {
+                chip.disabled = false
+                if (!result.ok) return
+                // applyProfile 会刷新改枪台；刷新后再选中，避免用旧 DOM 节点。
+                applyProfile(result.profile)
+                select()
+              })
             })
             chips.appendChild(chip)
           }
@@ -3564,6 +3674,9 @@ function writeBuild(build: WeaponBuild): void {
     }
 
     function showDetail(spec: WeaponSpec): void {
+      currentSpec = spec
+      // 工作台展示也必须遵守已拥有配件：否则玩家会看到一个服务端不会采纳的 build。
+      arsenalBuild = sanitizeOwnedBuild(spec.id, arsenalBuild.slots, attachmentOwned)
       const effective = effectiveWeaponSpec(spec, arsenalBuild)
       const stats = buildStats(arsenalBuild)
       detailTitle.textContent = spec.name
@@ -4258,6 +4371,10 @@ function writeBuild(build: WeaponBuild): void {
       showHome(true)
       if (!config.nickname.trim()) showOnboarding()
       refreshLive()
+      // 大厅一打开就拉服务端权威档案；失败就继续用本地缓存，不阻塞菜单。
+      void fetchProfile().then((profile) => {
+        if (!disposed && profile) applyProfile(profile)
+      })
       matchInfoTimer = window.setInterval(refreshLive, 8000)
       void refreshParty()
       partyTimer = window.setInterval(() => void refreshParty(), 2500)
@@ -4307,6 +4424,11 @@ function writeBuild(build: WeaponBuild): void {
         dossierCoinsEl.textContent = formatCoins(config.coins)
       }
       syncTraits()
+    },
+
+    syncProfile(profile: ProfileView): void {
+      if (disposed) return
+      applyProfile(profile)
     },
 
     abortDeploy,

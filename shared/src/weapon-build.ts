@@ -297,6 +297,45 @@ export function sanitizeBuild(weaponId: number, slots: Partial<Record<WeaponSlot
   return out
 }
 
+/**
+ * 配件在 `WEAPON_ATTACHMENTS` 里的下标 → 档案位图的一位。
+ *
+ * 用下标而不是配件 id 做位图：id 是 100/200/... 的稀疏编号，u32 装不下；
+ * 下标连续，一张 u32 足够覆盖当前与近期的配件数量。
+ */
+export function attachmentBit(id: number): number {
+  const index = WEAPON_ATTACHMENTS.findIndex((entry) => entry.id === id)
+  return index >= 0 ? (1 << index) >>> 0 : 0
+}
+
+export function isAttachmentOwned(id: number, ownedMask: number): boolean {
+  const attachment = attachmentById(id)
+  if (!attachment) return false
+  if (attachment.cost <= 0) return true
+  return (ownedMask & attachmentBit(id)) !== 0
+}
+
+/** 清掉未购买的配件；默认件（cost=0）永远保留。 */
+export function sanitizeOwnedBuild(
+  weaponId: number,
+  slots: Partial<Record<WeaponSlotKey, number>> | undefined,
+  ownedMask: number,
+): WeaponBuild {
+  const build = sanitizeBuild(weaponId, slots)
+  for (const slot of WEAPON_SLOT_KEYS) {
+    const id = build.slots[slot]
+    if (id && !isAttachmentOwned(id, ownedMask)) delete build.slots[slot]
+  }
+  return build
+}
+
+/** 把一组配件 id 转成档案位图（大厅/测试用）。 */
+export function attachmentMaskOf(ids: Iterable<number>): number {
+  let mask = 0
+  for (const id of ids) mask = (mask | attachmentBit(id)) >>> 0
+  return mask
+}
+
 /** 当前 build 的视觉开关；第一人称与工作台共用。 */
 export function buildFlags(build: WeaponBuild | null | undefined): BuildFlags {
   const slots = build?.slots ?? {}
@@ -375,7 +414,12 @@ export function effectiveWeaponSpec(base: WeaponSpec, build: WeaponBuild | null 
     adsSpread: base.adsSpread * stats.spreadScale,
     fireIntervalMs: Math.round(base.fireIntervalMs * stats.cycleScale),
     switchMs: Math.round(base.switchMs * stats.adsTimeScale),
-    adsZoom: (base.adsZoom ?? 1) * stats.adsZoomScale,
+    // 镜倍率取“枪本身”与“镜”的较大值，而不是相乘：神射手 3.8× 再装 4×
+    // 不应该变成 15×。普通机瞄 1× + 4× 镜 → 4×；带镜步枪 + 2× → 仍是原倍率。
+    adsZoom:
+      (base.adsZoom ?? 1) > 1.01
+        ? Math.max(base.adsZoom ?? 1, stats.adsZoomScale)
+        : stats.adsZoomScale,
     loudness: (base.loudness ?? 1) * stats.loudnessScale,
   }
 }

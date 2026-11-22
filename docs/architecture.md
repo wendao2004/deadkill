@@ -44,7 +44,11 @@ input → game flow → player → weapon → enemies → fx → level/backdrop/
 - 客户端预测 + 服务端和解；远端延迟插值。
 - 延迟补偿：开火按射击者最后收到的快照 tick 回滚玩家胶囊，解析求交。
 - 快照 20Hz；昵称名单、目标状态、战利品走独立低频包。
-- 协议 23：Hello/Loadout 带可选 `partyId`；同 party 强制同队并共享出生点。
+- 协议 27：Hello 在 `profileId` 后再追加 `partyCode`；服务端用它校验
+  Loadout 里的 `partyId` 是否真属于该好友码。26 追加稳定 `profileId`；
+  新增 `Msg.Result`（个人结算）与 `Msg.Profile`（金币/已解锁天赋/配件/
+  已付款补给）。24 加多槽位 build；
+  25 把天气 modifier 扩为昼夜 8 档；同 party 强制同队并共享出生点。
 
 ## 5. 失败隔离与降级
 

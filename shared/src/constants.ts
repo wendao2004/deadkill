@@ -38,7 +38,7 @@
 // 事件 8 还会被当成 Respawn 读 16 字节 —— 所以硬拒。
 // 25 = weather modifier 的含义扩成 8 档（4 种天气 × 昼夜）。包体没变，但旧客户端
 // 会把白昼 id 4..7 回落到"死寂"（夜晚），两端看到的天气不一致 —— 所以硬拒。
-export const PROTOCOL_VERSION = 25
+export const PROTOCOL_VERSION = 27
 
 /**
  * 服务端模拟频率（Hz）。
@@ -68,7 +68,9 @@ export const SNAPSHOT_HISTORY = 32
 export const MAX_INPUTS_PER_PACKET = 8
 
 /** 服务端为延迟补偿保留的历史时长上限。 */
-export const MAX_REWIND_MS = 250
+// 150ms 而不是 250ms：客户端可以自己声明 ackedTick，窗口越大越容易被拿来
+// “打掩体后的旧位置”。150ms 仍覆盖 90ms 插值 + 常见抖动，但把作弊收益减半。
+export const MAX_REWIND_MS = 150
 
 /**
  * 客户端把远端角色"延后多少毫秒"播放（插值延迟）。
@@ -236,6 +238,16 @@ export const RESPAWN_DELAY_MS = 15_000
  * 更大的收益仍然在尸体缓存里（死者的现金/物品/赏金），必须走过去拿。
  */
 export const KILL_REWARD = 50
+
+/** 普通怪击杀的现金奖励：给“停下来打怪”一个正反馈，上限由每局怪量自然封顶。 */
+export const MONSTER_KILL_REWARD = 10
+
+/** 新档案的起始金币：够解锁第一条天赋，不让首局完全空手。 */
+export const STARTING_COINS = 120
+
+/** 随身补给价格（金币）。服务端扣款，客户端只显示。 */
+export const EXTRAS_COST_BANDAGE = 100
+export const EXTRAS_COST_AMMO = 80
 
 /**
  * 出生自带的绷带数。
@@ -582,7 +594,10 @@ export const WEAPONS: Record<number, WeaponSpec> = {
     slot: 0,
     damage: 42,
     headMultiplier: 2.4,
-    fireIntervalMs: 200,
+    // 200 → 280：消音卡宾不能再在躯干 TTK 上压过默认步枪。
+    // 20m 躯干 4 枪 = 1120ms，默认温菲尔德 2 枪 = 900ms；它的优势回到
+    // 低响度/低散布/大弹容，而不是“全距离上位”。
+    fireIntervalMs: 280,
     magazine: 10,
     reserve: 40,
     reloadMs: 2200,

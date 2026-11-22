@@ -338,7 +338,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       '  float ridge = 0.010',
       '              + 0.018 * skyNoise(vec2(az * 6.0, 0.7))',
       '              + 0.010 * skyNoise(vec2(az * 17.0, 4.3));',
-      '  float treeLine = smoothstep(ridge + 0.004, ridge - 0.004, h) * step(-0.30, h);',
+      '  float treeLine = smoothstep(ridge + 0.004, ridge - 0.004, h) * step(-0.07, h);',
       '  col = mix(col, uTrees, treeLine);',
       '  // 月亮/太阳用同一个方向：夜里是冷月，白天是低角度的暖阳。',
       '  float md = max(dot(d, uMoonDir), 0.0);',
@@ -768,6 +768,8 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
 
   function setDaylight(day: boolean): void {
     daylight = day ? 1 : 0
+    // 白天不该有萤火虫：它们会像一串无来源的黄色亮斑飘在空气里。
+    fireflies.visible = daylight === 0
     skyUniforms.uDay.value = daylight
     moon.color.setHex(day ? SUN_COLOR : MOON_COLOR)
     skyFill.color.setHex(day ? DAY_SKY_FILL_COLOR : SKY_FILL_COLOR)
@@ -883,7 +885,7 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       .copy(tmpColor.setHex(fogColor).multiplyScalar(0.22))
       .lerp(tint, 0.62)
     // 远景林线：比天顶再暗一档，读成"黑色的树"，不读成"另一条天空"。
-    skyUniforms.uTrees.value.copy(skyUniforms.uZenith.value).multiplyScalar(0.46)
+    skyUniforms.uTrees.value.copy(skyUniforms.uHorizon.value).multiplyScalar(0.55)
     // 云的暗部 = 天顶再暗一点（夜里的云是"更黑的一块"）。
     skyUniforms.uCloudDark.value.copy(skyUniforms.uZenith.value).multiplyScalar(0.75)
     // 云的亮部只比暗部亮一点点：真正的亮边由 shader 里 pow(md,6) 那一项

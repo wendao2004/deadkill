@@ -30,6 +30,7 @@ test('服务端 tick 阶段顺序固定：生命周期 → 怪 → 输入 → �
       'inputs',
       'physics',
       'interactions',
+      'extract',
       'history',
       'match',
       'objective',

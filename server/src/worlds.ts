@@ -69,6 +69,16 @@ export interface RoomSummary {
   roster: { id: number; name: string; team: number; alive: boolean }[]
 }
 
+export interface WorldRegistryOptions {
+  onSettle?: (userId: string, earned: number) => number
+  /** 同时存在的活跃世界上限。512MB 容器按每房 8–20MB 估算，默认 2。 */
+  maxActiveWorlds?: number
+  /** RSS 水位（MB）；超过后拒绝新建世界。默认 380（给容器留 132MB 余量）。 */
+  rssLimitMb?: number
+  /** 测试注入；默认读 process.memoryUsage().rss。 */
+  rss?: () => number
+}
+
 export class WorldRegistry {
   private readonly worlds = new Map<string, World>()
   /** matchId -> 关卡 id。世界被清扫掉时一起删，避免这张表无限增长。 */
@@ -76,6 +86,10 @@ export class WorldRegistry {
   /** matchId -> 空房登记时间。只用于回收"创建了但一直没人进"的房间。 */
   private readonly registeredAt = new Map<string, number>()
   private readonly defaultLevelId: string
+  private readonly onSettle?: (userId: string, earned: number) => number
+  private readonly maxActiveWorlds: number
+  private readonly rssLimitMb: number
+  private readonly rss: () => number
   private sweeper: NodeJS.Timeout | null = null
 
   /**
@@ -83,8 +97,37 @@ export class WorldRegistry {
    *   非法 id 会被静默换成 DEFAULT_LEVEL_ID —— 构造期抛错会让整个服务起不来，
    *   而"少一张图"远比"服务挂了"可接受。
    */
-  constructor(defaultLevelId: string = DEFAULT_LEVEL_ID) {
+  constructor(
+    defaultLevelId: string = DEFAULT_LEVEL_ID,
+    options: WorldRegistryOptions = {},
+  ) {
     this.defaultLevelId = resolveLevelId(defaultLevelId).levelId
+    this.onSettle = options.onSettle
+    this.maxActiveWorlds = Math.max(1, options.maxActiveWorlds ?? 2)
+    this.rssLimitMb = Math.max(64, options.rssLimitMb ?? 380)
+    this.rss = options.rss ?? (() => process.memoryUsage().rss)
+  }
+
+  /**
+   * 创建新世界前的准入检查。
+   *
+   * 为什么必须放在 registry.get 之外：`?match=` 是客户端随便填的，WS 路径
+   * 不经过 `POST /api/rooms`，所以 64 房登记上限挡不住它。一个已登录用户
+   * 开 20 条连接、每条不同 match，就能建 20 个 60Hz Rapier 世界。
+   */
+  admit(matchId: string): { ok: true } | { ok: false; reason: string } {
+    if (this.worlds.has(matchId)) return { ok: true }
+    if (this.worlds.size >= this.maxActiveWorlds) {
+      return {
+        ok: false,
+        reason: `活跃世界已达上限（${this.worlds.size}/${this.maxActiveWorlds}）`,
+      }
+    }
+    const rssMb = Math.round(this.rss() / (1024 * 1024))
+    if (rssMb >= this.rssLimitMb) {
+      return { ok: false, reason: `服务端内存水位过高（${rssMb}MB / ${this.rssLimitMb}MB）` }
+    }
+    return { ok: true }
   }
 
   /**
@@ -113,7 +156,7 @@ export class WorldRegistry {
       const world = this.worlds.get(matchId)
       if (world === undefined || world.playerCount === 0) {
         if (world) {
-          world.stop()
+          world.dispose()
           this.worlds.delete(matchId)
         }
         this.levels.set(matchId, levelId)
@@ -184,10 +227,12 @@ export class WorldRegistry {
         id: matchId,
         level: this.levelOf(matchId),
         onEmpty: (id) => this.scheduleSweep(id),
+        onSettle: this.onSettle,
       })
-      world.start()
       this.worlds.set(matchId, world)
     }
+    // 空世界在最后一人离开时 stop()；这里重新拉起，start() 对已在跑的是 no-op。
+    world.start()
     return world
   }
 
@@ -231,7 +276,7 @@ export class WorldRegistry {
       clearInterval(this.sweeper)
       this.sweeper = null
     }
-    for (const world of this.worlds.values()) world.stop()
+    for (const world of this.worlds.values()) world.dispose()
     this.worlds.clear()
     this.levels.clear()
   }
@@ -245,7 +290,7 @@ export class WorldRegistry {
     const now = Date.now()
     for (const [id, world] of this.worlds) {
       if (world.idleFor(now) < WORLD_IDLE_TIMEOUT_MS) continue
-      world.stop()
+      world.dispose()
       this.worlds.delete(id)
       // 世界没了就别再记着它用哪张图：否则每个来过的 matchId 永久占一条。
       // 重新进来时由 Hello 重新协商，空世界里没有状态可保。
