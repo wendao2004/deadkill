@@ -170,12 +170,21 @@ interface WallFootprint {
   maxX: number
   minZ: number
   maxZ: number
+  /** 四道墙的**内皮**：房间真正的净空。由贴边的墙段自己算出来，不假设墙厚。 */
+  innerMinX: number
+  innerMaxX: number
+  innerMinZ: number
+  innerMaxZ: number
 }
 
 function measureWalls(level: LevelDef, shell: BuildingShell): WallFootprint | null {
   const hw = shell.w / 2
   const hd = shell.d / 2
-  const groups = new Map<number, { len: number; minX: number; maxX: number; minZ: number; maxZ: number }>()
+  type Brush = (typeof level.boxes)[number]
+  const groups = new Map<
+    number,
+    { len: number; minX: number; maxX: number; minZ: number; maxZ: number; boxes: Brush[] }
+  >()
   for (const b of level.boxes) {
     if (b.noCollide || b.noRender) continue
     // 墙段至少一人多高；矮盒子是箱子和台阶。
@@ -185,7 +194,8 @@ function measureWalls(level: LevelDef, shell: BuildingShell): WallFootprint | nu
     if (top < level.groundY + 1.8) continue
     // 5cm 量化：地图里同一面墙的分段高度一致，不会被浮点误差拆成两组。
     const key = Math.round(top * 20) / 20
-    const entry = groups.get(key) ?? { len: 0, minX: b.x, maxX: b.x, minZ: b.z, maxZ: b.z }
+    const entry = groups.get(key) ?? { len: 0, minX: b.x, maxX: b.x, minZ: b.z, maxZ: b.z, boxes: [] }
+    entry.boxes.push(b)
     // 用长边而不是面积：0.4m 厚的墙段面积很小，但长度足以说明"这是连续墙体"。
     entry.len += Math.max(b.hx, b.hz) * 2
     entry.minX = Math.min(entry.minX, b.x - b.hx)
@@ -201,7 +211,90 @@ function measureWalls(level: LevelDef, shell: BuildingShell): WallFootprint | nu
   // 少于 6m 累计墙面就不当房子看（散落的柱子、围栏），交回原来的表值。
   if (!best || best.len < 6) return null
   const g = groups.get(best.top)!
-  return { top: best.top, minX: g.minX, maxX: g.maxX, minZ: g.minZ, maxZ: g.maxZ }
+  // 内皮：只认**顺着这一面墙躺着**的墙段，取它的内侧表面。
+  //
+  // 判据必须是"这条墙段的薄轴在哪"，不能是"它离轮廓边多远"：转角处的横墙
+  // 从 x=minX 起步，用距离判定会把它也算成左墙，于是左墙内皮被拉到 3m 里侧
+  // （第一版就是这样，量出来的房间只有 6×5.6m，而且七栋里只识别出一栋）。
+  // 薄轴在 x 的才是左右墙，薄轴在 z 的才是前后墙。
+  const tol = 0.06
+  let innerMinX = -Infinity
+  let innerMaxX = Infinity
+  let innerMinZ = -Infinity
+  let innerMaxZ = Infinity
+  for (const b of g.boxes) {
+    if (b.hx < b.hz) {
+      if (Math.abs(b.x - b.hx - g.minX) <= tol) innerMinX = Math.max(innerMinX, b.x + b.hx)
+      else if (Math.abs(b.x + b.hx - g.maxX) <= tol) innerMaxX = Math.min(innerMaxX, b.x - b.hx)
+    } else {
+      if (Math.abs(b.z - b.hz - g.minZ) <= tol) innerMinZ = Math.max(innerMinZ, b.z + b.hz)
+      else if (Math.abs(b.z + b.hz - g.maxZ) <= tol) innerMaxZ = Math.min(innerMaxZ, b.z - b.hz)
+    }
+  }
+  // 量不出来（屋里没有一条贴边的墙段）就退回外轮廓往里收 0.4。
+  if (!Number.isFinite(innerMinX)) innerMinX = g.minX + 0.4
+  if (!Number.isFinite(innerMaxX)) innerMaxX = g.maxX - 0.4
+  if (!Number.isFinite(innerMinZ)) innerMinZ = g.minZ + 0.4
+  if (!Number.isFinite(innerMaxZ)) innerMaxZ = g.maxZ - 0.4
+  return {
+    top: best.top,
+    minX: g.minX,
+    maxX: g.maxX,
+    minZ: g.minZ,
+    maxZ: g.maxZ,
+    innerMinX,
+    innerMaxX,
+    innerMinZ,
+    innerMaxZ,
+  }
+}
+
+/** 一个可以被"室内变暗"识别的空腔（轴对齐盒子，世界坐标）。 */
+export interface InteriorVolume {
+  x: number
+  z: number
+  halfX: number
+  halfZ: number
+  y0: number
+  y1: number
+}
+
+/**
+ * 每栋房子的房间净空。
+ *
+ * `ink.ts` 拿它把"盒子内部"的片元压暗：toon 材质没有遮挡，任何进了屋的光
+ * 都还是满强度的天空色，于是从门口/窗口望进去是一间被天光照满的空房 —— 这是
+ * 全景截图里最贵的一处穿帮（一扇开着的门，里面亮得像走廊）。
+ */
+export function interiorVolumes(level: LevelDef): InteriorVolume[] {
+  const shells = SHELLS[level.id]
+  if (!shells) return []
+  const out: InteriorVolume[] = []
+  for (const shell of shells) {
+    const walls = measureWalls(level, shell)
+    if (!walls) continue
+    const halfX = (walls.innerMaxX - walls.innerMinX) / 2
+    const halfZ = (walls.innerMaxZ - walls.innerMinZ) / 2
+    // 净空小于 2m 就当没量准（对角墙段互相咬掉了），宁可这栋不变暗。
+    if (halfX < 1 || halfZ < 1) continue
+    out.push({
+      x: (walls.innerMinX + walls.innerMaxX) / 2,
+      z: (walls.innerMinZ + walls.innerMaxZ) / 2,
+      // 净空要往外**胀**一点，这一点是这套判据的关键：
+      //
+      // 房间的墙内表面正好落在净空边界上，而 shader 里的判据是"严格在盒子里"
+      // （`m < 0`）。边界上的片元 m 恰好等于 0，于是每一面墙、连地板一起，
+      // 全部被判成"在盒子外面"——量出来的体积一点用都没有。第一版就是这样：
+      // 七栋房子一个都没变暗，而我还以为是片元太暗看不出来。
+      // 胀 6cm 之后，墙内表面进到盒子里 6cm（墙厚 40cm，外表面还在外面 34cm），
+      // 地板从 y0 抬到 12cm 之下。
+      halfX: halfX + 0.06,
+      halfZ: halfZ + 0.06,
+      y0: level.groundY - 0.12,
+      y1: walls.top + 0.05,
+    })
+  }
+  return out
 }
 
 /** 把一堆盒子烘成一个几何体：檐板/角柱/踢脚加起来是 12 个盒子，不合并就是 12 次绘制。 */
@@ -285,6 +378,36 @@ function pushOriented(
   if (pitch !== 0) geo.rotateX(pitch)
   geo.rotateY(b.theta)
   geo.translate(b.fx + b.tx * ux + b.nx * uz, uy, b.fz + b.tz * ux + b.nz * uz)
+  list.push(geo)
+}
+
+/**
+ * 绕门侧铰链摆开的构件（门扇/门带）。
+ *
+ * `hx/hy/hz` 是铰链在门局部坐标里的位置，`side` 说明铰链在门宽的哪一侧，
+ * `reach` 是构件中心离铰链的距离（沿关闭状态的门扇方向）。整扇门所以能拆成
+ * 十几个盒子还保持刚体，是因为它们共用同一个铰链点和同一个 `swing`。
+ */
+function pushSwung(
+  list: BufferGeometry[],
+  b: DoorBasis,
+  sx: number,
+  sy: number,
+  sz: number,
+  hx: number,
+  hy: number,
+  hz: number,
+  side: number,
+  swing: number,
+  reach: number,
+): void {
+  const geo = new BoxGeometry(sx, sy, sz)
+  // 几何原点挪到铰链端，构件沿 -side*X 伸出去。
+  geo.translate(-side * reach, 0, 0)
+  // 绕 Y 摆向屋内：局部 -X 端的自由边要转到 -Z（法线反方向）。
+  geo.rotateY(-swing * side)
+  geo.rotateY(b.theta)
+  geo.translate(b.fx + b.tx * hx + b.nx * hz, hy, b.fz + b.tz * hx + b.nz * hz)
   list.push(geo)
 }
 
@@ -385,22 +508,45 @@ function buildDoor(
   const leafZ = -0.2
   const leafY = groundY + 0.06 + leafH / 2
 
-  // ---- 门扇：五块竖板 + 一块背板。
+  // ---- 门扇：以一侧为铰链**摆开**的五块竖板 + 背板 + 两道铁带 ----
   //
-  // 背板是必须的：屋内被半球环境光整个照亮（toon 不遮挡），门板之间的缝会直接
-  // 透出白亮的内墙，看上去像门缝里装了一圈灯。背板把缝变成暗线。
+  // 门洞在关卡碰撞里是通的（2.4m 宽、整高 3.2m，没有碰撞体），所以门扇不能
+  // 关在洞口上：关着看起来像一扇卷帘门，而玩家又能直接穿过去 —— 看到的和能做
+  // 的对不上，是比"没有门"更糟的一种假。整扇门绕铰链摆开 100°，门洞保持通畅，
+  // 玩家的判断（"这扇门开着，能进"）和碰撞一致，顺带把屋内的暗部露出来。
   const planks = 5
   const gap = 0.014
   const plankW = (leafW - gap * (planks - 1)) / planks
-  pushOriented(parts.trim, b, leafW + 0.04, leafH, 0.04, 0, leafY, leafZ - 0.06)
+  const hingeSide = 1
+  // 铰链在门宽的一侧、门扇平面所在的进深处。
+  const hingeU = leafW / 2 + 0.03
+  const swing = 1.75
+  const leaf = (list: BufferGeometry[], sx: number, sy: number, sz: number, reach: number, dz: number): void => {
+    pushSwung(list, b, sx, sy, sz, hingeU, leafY, leafZ + dz, hingeSide, swing, reach)
+  }
+  // 背板：一整块薄板兜住板缝。少了它，板缝会直接透出被天光照亮的屋内。
+  leaf(parts.trim, leafW + 0.04, leafH + 0.02, 0.05, leafW / 2, -0.03)
   for (let i = 0; i < planks; i++) {
     const ux = -leafW / 2 + plankW / 2 + i * (plankW + gap)
-    pushOriented(parts.door, b, plankW, leafH, 0.09, ux, leafY, leafZ)
+    leaf(parts.door, plankW, leafH, 0.06, hingeU - ux, 0.02)
   }
 
   // ---- 铁门带：两道横带，给门扇一条尺度和材质对比 ----
+  // 它们跟着门扇一起摆 —— 门开了而铁带还留在洞口平面上，是最容易被看出假的。
   for (const ratio of [0.3, 0.72]) {
-    pushOriented(parts.metal, b, leafW + 0.1, 0.11, 0.03, 0, groundY + 0.06 + leafH * ratio, leafZ + 0.06)
+    pushSwung(
+      parts.metal,
+      b,
+      leafW + 0.1,
+      0.11,
+      0.03,
+      hingeU,
+      groundY + 0.06 + leafH * ratio,
+      leafZ + 0.07,
+      hingeSide,
+      swing,
+      leafW / 2,
+    )
   }
   // ---- 门楣：压在门洞上沿，把"洞"封成"入口" ----
   pushOriented(parts.trim, b, w + 0.7, 0.22, 0.34, 0, groundY + h + 0.12, 0.05)
@@ -414,6 +560,71 @@ function buildDoor(
   // ---- 门槛石：门内外的地面高差 ----
   pushOriented(parts.stone, b, w + 0.3, 0.13, 0.5, 0, groundY + 0.065, 0.14)
   return b
+}
+
+/**
+ * 关卡自带的落地门廊：两根方柱 + 一块平板顶。
+ *
+ * 世界坐标不变，只在门局部坐标里把柱子找出来 —— 它们是关卡盒刷，不在
+ * SHELLS 表里。判据：贴地、2m 以上、两个水平方向都细（方柱）、并且落在门口
+ * 正前方 0.2–4m 的范围内。
+ */
+function measurePorchPosts(
+  level: LevelDef,
+  b: DoorBasis,
+  door: { w: number },
+  groundY: number,
+): { ux: number; uz: number; top: number }[] {
+  const out: { ux: number; uz: number; top: number }[] = []
+  for (const brush of level.boxes) {
+    if (brush.noCollide || brush.noRender) continue
+    // 方柱：两个水平尺寸都小于 0.7m。墙体总有一个方向超过 1m。
+    if (brush.hx * 2 > 0.7 || brush.hz * 2 > 0.7) continue
+    const bottom = brush.y - brush.hy
+    const top = brush.y + brush.hy
+    if (bottom > groundY + 0.35) continue
+    if (top < groundY + 2.0) continue
+    const dx = brush.x - b.fx
+    const dz = brush.z - b.fz
+    const uz = dx * b.nx + dz * b.nz
+    const ux = dx * b.tx + dz * b.tz
+    if (uz < 0.25 || uz > 4) continue
+    if (Math.abs(ux) > door.w / 2 + 3.5) continue
+    out.push({ ux, uz, top })
+  }
+  return out.sort((p, q) => p.ux - q.ux)
+}
+
+/**
+ * 门廊的"木构关系"。
+ *
+ * 关卡给的是一块平板顶 + 两根 40cm 见方的柱子，远看就是一座混凝土车棚 ——
+ * 玩家不会觉得那是"这栋房子的前廊"。补两样东西，它立刻变成木结构：
+ *
+ * - 柱顶的**过梁**（横跨两根柱子、压在柱顶上），顶板终于有了"被什么撑住"的交代；
+ * - 柱脚的**石础**，把柱子和地面分开，柱子不再像直接插进土里。
+ *
+ * 只在真的量到两根柱子时才加：只有一根（或零根）的时候宁可什么都不做，
+ * 也不要拿假定坐标造一根悬空的梁。
+ */
+function buildPorchFrame(
+  parts: FacadeParts,
+  b: DoorBasis,
+  posts: { ux: number; uz: number; top: number }[],
+  groundY: number,
+): void {
+  if (posts.length === 0) return
+  for (const post of posts) {
+    pushOriented(parts.stone, b, 0.52, 0.42, 0.52, post.ux, groundY + 0.21, post.uz)
+  }
+  if (posts.length < 2) return
+  const left = posts[0]!
+  const right = posts[posts.length - 1]!
+  const span = Math.abs(right.ux - left.ux) + 0.52
+  const midUx = (left.ux + right.ux) / 2
+  const top = Math.min(left.top, right.top)
+  // 过梁压在柱顶下沿：柱顶伸进梁里 4cm，看起来才是"柱撑梁"而不是"梁浮在柱上"。
+  pushOriented(parts.trim, b, span, 0.26, 0.3, midUx, top - 0.09, (left.uz + right.uz) / 2)
 }
 
 /** 墙顶到雨棚之间少于这么高，就不要雨棚 —— 宁可没有，也不要顶着檐板。 */
@@ -439,6 +650,13 @@ function buildPorch(
   const centerY = top - half * Math.sin(pitch)
   // 棚顶：石板瓦，和屋顶同材质，所以从远处看是同一栋房子的一部分。
   pushOriented(parts.roof, b, door.w + 1.4, 0.12, depth, 0, centerY, centerZ, pitch)
+  // 棚底封板。
+  //
+  // 出檐的底面朝下，只能吃到天空的漫反射，一块中等明度的石板会在这里被洗成
+  // 一条发白的浅灰带 —— 从门廊下往上看，"棚顶"反而比墙更亮，整个披檐立刻
+  // 变成一张白纸。封一层深色木板之后，底面读成背光，棚檐才立得住。主屋顶
+  // 的檐下封板是同一个问题、同一个解法。
+  pushOriented(parts.trim, b, door.w + 1.4, 0.06, depth, 0, centerY - 0.09, centerZ, pitch)
   // 檐口封边
   pushOriented(parts.trim, b, door.w + 1.4, 0.13, 0.09, 0, top - depth * Math.sin(pitch) + 0.01, 0.05 + depth * Math.cos(pitch))
   // 斜撑：两端按"贴墙点"和"顶进棚底的点"直接反算长度与倾角。
@@ -612,6 +830,8 @@ export function decorateVillage(
       buildFacade(parts, walls, level.groundY)
       if (shell.door) {
         const basis = buildDoor(parts, walls, shell.door, level.groundY)
+        // 关卡自带的落地门廊（方柱 + 平板顶）补上过梁与石础。
+        buildPorchFrame(parts, basis, measurePorchPosts(level, basis, shell.door, level.groundY), level.groundY)
         // 雨棚只给"墙顶比门头高出一大截"的房子（谷仓、磨坊）；小房子没有空间。
         const clearance = walls.top - 0.13 - (level.groundY + shell.door.h + 0.6)
         if (clearance >= PORCH_MIN_CLEARANCE) buildPorch(parts, basis, shell.door, level.groundY)

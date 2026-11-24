@@ -81,6 +81,7 @@ import {
   applyComicInk,
   setInkDetail,
   setInkGroundY,
+  setInkInteriors,
   setInkKeyDirection,
   setInkWetness,
   type ComicSurface,
@@ -92,7 +93,7 @@ import { animateHunter, createHunterMaterials, createHunterModel, type HunterMat
 import { createHunterTextures, type HunterTextures } from './baked-textures.ts'
 import { createSurfaceMaps, loadSurfaceTextures, type SurfaceFamily, type SurfaceMaps } from './pbr-textures.ts'
 import { loadNatureAssets as loadNatureModels, scatterNature } from './nature-assets.ts'
-import { decorateVillage, loadVillageAssets, VILLAGE_COLORS } from './village-assets.ts'
+import { decorateVillage, interiorVolumes, loadVillageAssets, VILLAGE_COLORS } from './village-assets.ts'
 import { loadGeneratedAssets, type GeneratedAssets } from './generated-assets.ts'
 import { decorateGenerated } from './forest-scene.ts'
 import type { GraphicsQuality } from './settings.ts'
@@ -838,6 +839,9 @@ export class Renderer {
     this.art = artProfile(level.id)
     // 苔藓/湿气按"离地多高"分布：先告诉墨线层这张图的地面在哪。
     setInkGroundY(level.groundY)
+    // 房间净空。toon 光照不做遮挡，不告诉它这里有个房间的话，从一扇开着的门
+    // 望进去看到的是一间被天光灌满的空房 —— 屋檐下同理。
+    setInkInteriors(interiorVolumes(level))
     this.gradientMap = makeGradientMap()
     this.disposables.push(this.gradientMap)
     this.surfaceMaps = createSurfaceMaps()

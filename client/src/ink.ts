@@ -132,6 +132,9 @@ export interface ComicOptions {
   rim?: number
 }
 
+/** shader 里房间数组的常数上界。改这个数要同步 GLSL 的循环边界。 */
+const INTERIOR_SLOTS = 8
+
 /**
  * 共享 uniform：所有打补丁的材质引用**同一个对象**，于是渲染器每帧只需要
  * 调一次 setInkKeyDirection 就能让全场高光跟着月亮转，而不必遍历材质。
@@ -144,6 +147,12 @@ export const INK_SHARED: {
   wet: { value: number }
   /** 当前关卡地面高度：苔藓/湿气按"离地多高"分布。默认 0。 */
   groundY: { value: number }
+  /** 房间净空（中心 xz + 半宽半深），平铺的 vec4 数组。见 setInkInteriors。 */
+  interior: { value: number[] }
+  /** 每个房间的 y 范围（y0, y1），平铺的 vec2 数组。 */
+  interiorY: { value: number[] }
+  /** 有效房间数；0 表示整段 GLSL 直接跳出，任何像素都不变。 */
+  interiorCount: { value: number }
 } = {
   // 约等于 atmosphere.ts 的默认月亮方向（方位 149°、仰角 18°），
   // 只在渲染器尚未调用 setInkKeyDirection 时兜底；specular 默认 0，不影响画面。
@@ -151,6 +160,29 @@ export const INK_SHARED: {
   detail: { value: 1 },
   wet: { value: 0.55 },
   groundY: { value: 0 },
+  interior: { value: new Array(INTERIOR_SLOTS * 4).fill(0) },
+  interiorY: { value: new Array(INTERIOR_SLOTS * 2).fill(0) },
+  interiorCount: { value: 0 },
+}
+
+/**
+ * 房间净空：`[x, z, halfX, halfZ, y0, y1]`。
+ *
+ * 只接受前 `INTERIOR_SLOTS` 个 —— 这个数是 shader 里循环的常数上界。七栋
+ * 房子用 8 个槽刚好，再多就要么加大数组要么分区，但那是把地图做大之后的事。
+ */
+export function setInkInteriors(list: readonly { x: number; z: number; halfX: number; halfZ: number; y0: number; y1: number }[]): void {
+  const n = Math.min(list.length, INTERIOR_SLOTS)
+  for (let i = 0; i < n; i++) {
+    const v = list[i]!
+    INK_SHARED.interior.value[i * 4] = v.x
+    INK_SHARED.interior.value[i * 4 + 1] = v.z
+    INK_SHARED.interior.value[i * 4 + 2] = v.halfX
+    INK_SHARED.interior.value[i * 4 + 3] = v.halfZ
+    INK_SHARED.interiorY.value[i * 2] = v.y0
+    INK_SHARED.interiorY.value[i * 2 + 1] = v.y1
+  }
+  INK_SHARED.interiorCount.value = n
 }
 
 /**
@@ -233,6 +265,9 @@ type ComicUniforms = {
   uComicWet: { value: number }
   /** 与 INK_SHARED.groundY 是同一个对象。 */
   uComicGroundY: { value: number }
+  uInkInterior: { value: number[] }
+  uInkInteriorY: { value: number[] }
+  uInkInteriorCount: { value: number }
 }
 
 /**
@@ -242,7 +277,7 @@ type ComicUniforms = {
 const FRAGMENT_HOOK = '#include <opaque_fragment>'
 
 /** 程序缓存键：版本号带在里面，将来升级注入内容时换版本即可全量失效。 */
-const CACHE_KEY = 'comic-ink-v8'
+const CACHE_KEY = 'comic-ink-v9'
 
 /** 便宜的 2D→1D 整数哈希：不需要好看，只需要相邻格子不相关。 */
 const HASH_GLSL = [
@@ -371,11 +406,21 @@ const SURFACE_GLSL = [
   '    across = p.y;',
   '    along = p.x;',
   '  }',
-  '  // Board seams and plank-to-plank value variation.',
-  '  float plank = floor(across / 0.42);',
-  '  float seamD = min(fract(across / 0.42), 1.0 - fract(across / 0.42)) * 0.42;',
-  '  float seam = 1.0 - smoothstep(0.004, 0.014, seamD);',
+  '  // Board-and-batten. This is what the outbuildings actually were, and it is',
+  '  // also the cheapest way out of "a 13m beige plane with hairlines on it".',
+  '  // A 30cm board, then over every joint a 6cm batten standing proud of the',
+  '  // boards, with a shadowed groove down either side of it. The value break is',
+  '  // what the eye reads as relief; the geometry stays a single quad.',
+  '  float boardW = 0.30;',
+  '  float plank = floor(across / boardW);',
+  '  float boardF = fract(across / boardW);',
+  '  float seamD = min(boardF, 1.0 - boardF) * boardW;',
+  '  float batten = 1.0 - smoothstep(0.022, 0.032, seamD);',
+  '  float groove = (1.0 - batten) * (1.0 - smoothstep(0.038, 0.052, seamD));',
   '  float plankVal = 0.93 + 0.14 * comicHash21(vec2(plank, 17.3));',
+  '  // Wide boards still need a soft value gradient across their width: a flat',
+  '  // strip between two battens reads as painted siding, not as boards.',
+  '  float boardRelief = 1.0 - 0.14 * (1.0 - smoothstep(0.0, 0.5, boardF));',
   '  // Grain is the same noise stretched along the board, plus a finer fibre line.',
   '  float grain = comicNoise2(vec2(across * 24.0, along * 3.7));',
   '  grain = grain * 0.72 + 0.28 * comicNoise2(vec2(across * 61.0, along * 7.0) + 9.1);',
@@ -386,7 +431,13 @@ const SURFACE_GLSL = [
   '  vec2 kf = fract(kq) - (0.30 + 0.40 * vec2(comicHash21(kc), comicHash21(kc + 7.1)));',
   '  float knot = (1.0 - smoothstep(0.03, 0.10, length(kf))) * step(0.72, comicHash21(kc + 2.3));',
   '  tint *= 1.0 - 0.22 * knot;',
-  '  tint *= 1.0 - 0.26 * seam;',
+  '  tint *= boardRelief;',
+  '  tint *= 1.0 + 0.11 * batten;',
+  '  tint *= 1.0 - 0.34 * groove;',
+  '  // Ground splash: rain kicks dirt up the bottom half metre of every wall.',
+  '  // Without it the boards run straight into the terrain, which is the other',
+  '  // half of why the wall read as a panel standing on the ground.',
+  '  tint *= 1.0 - 0.30 * (1.0 - smoothstep(0.0, 0.55, height));',
   '  // Saw marks: a fine diagonal grain that survives planing, plus the nails',
   '  // that hold the board to the studs.',
   '  float saw = comicNoise2(vec2(along * 12.0, across * 74.0));',
@@ -535,6 +586,23 @@ const UNIFORMS_GLSL = [
   'uniform float uComicDetail;',
   'uniform float uComicWet;',
   'uniform float uComicGroundY;',
+  'uniform vec4 uInkInterior[8];',
+  'uniform vec2 uInkInteriorY[8];',
+  'uniform float uInkInteriorCount;',
+  '// 0 = 天空里，1 = 在某个房间的净空里。盒子判据，不做软边：墙的两面本来就该',
+  '// 是硬切换 —— 外墙被太阳晒着、内墙在一片黑里，中间隔着一堵 40cm 的墙。',
+  'float comicInterior(vec3 p) {',
+  '  float inside = 0.0;',
+  '  for (int i = 0; i < 8; i++) {',
+  '    if (float(i) >= uInkInteriorCount) break;',
+  '    vec4 box = uInkInterior[i];',
+  '    vec2 d = abs(p.xz - box.xy) - box.zw;',
+  '    vec2 yr = uInkInteriorY[i];',
+  '    float m = max(max(d.x, d.y), max(yr.x - p.y, p.y - yr.y));',
+  '    inside = max(inside, 1.0 - step(0.0, m));',
+  '  }',
+  '  return inside;',
+  '}',
 ].join('\n')
 
 /**
@@ -548,6 +616,18 @@ const UNIFORMS_GLSL = [
 const INJECT_GLSL = [
   '  {',
   '    vec3 comicN = normalize(vComicNormal);',
+  '    // ---- Interior: a room is not a sky. ----',
+  '    // toon 光照里没有遮挡，所以屋檐下面、屋里、墙洞里面拿到的环境光跟露天一样多。',
+  '    // 从一扇开着的门望进去，看到的是一间被天光灌满的走廊 —— 这张图里最贵的一处',
+  '    // 穿帮。这里按\"片元落在哪栋房子的净空里\"压一个量级，外墙亮、内墙暗，切换',
+  '    // 发生在墙的两个面之间，正好是物理上该发生的位置。',
+  '    if (uInkInteriorCount > 0.5 && comicInterior(vComicWorld) > 0.5) {',
+  '      // 低频起伏：整间房压成同一个数会读成"贴了一张灰纸"，手绘的暗部从来不平。',
+  '      float interiorVar = comicNoise2(vComicWorld.xz * 0.33 + vComicWorld.y * 0.8);',
+  '      float interiorK = 0.21 + 0.10 * interiorVar;',
+  '      // 偏冷：室内的光是窗口漏进来的天光，没有直射那层暖色。',
+  '      outgoingLight *= vec3(interiorK * 0.84, interiorK * 0.94, interiorK * 1.18);',
+  '    }',
   '    // ---- Material detail: world space, dominant-axis projection. ----',
   '    // Branching on a uniform is free (no divergence); default = 0 means the',
   '    // whole block is skipped and existing materials are pixel-identical.',
@@ -738,6 +818,9 @@ export function applyComicInk<T>(material: T, options?: ComicOptions): T {
     uComicDetail: INK_SHARED.detail,
     uComicWet: INK_SHARED.wet,
     uComicGroundY: INK_SHARED.groundY,
+    uInkInterior: INK_SHARED.interior,
+    uInkInteriorY: INK_SHARED.interiorY,
+    uInkInteriorCount: INK_SHARED.interiorCount,
   }
 
   // 引用同一批 uniform 对象：调用方之后拿到它改 .value，shader 里立刻生效。
