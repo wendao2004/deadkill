@@ -684,6 +684,14 @@ export class World {
   private timer: NodeJS.Timeout | null = null
   private lastPumpAt = 0
   /**
+   * 服务端卡顿自检：最近 240 个样本（约 4 秒）的 tick 耗时 / 泵空转间隔 /
+   * 各阶段耗时。玩家报"多台设备同时卡"时，这三列数字能把责任落到
+   * 事件循环（pumpGap）、某个阶段（phases）或网络（只有它没有对应读数）。
+   */
+  private readonly stepTimes: number[] = []
+  private readonly pumpGaps: number[] = []
+  private readonly phaseTimes = new Map<string, number[]>()
+  /**
    * 固定步长换算。与客户端共用 `shared/kernel` 的同一个类，只是各用各的策略：
    * 服务端一次最多补 `MAX_CATCHUP_TICKS` 步（追不上就丢积压），客户端上限是
    * 一包输入能装下的步数。共享的只有算术，策略仍然是两端各自的。
@@ -819,8 +827,7 @@ export class World {
     this.pendingEvents.length = 0
   }
 
-  /** 空置了多久（毫秒）；非空返回 0。注册表用它回收没人玩的房间。 */
-  idleFor(nowMs: number): number {
+  /** 空置了多久（毫秒）；非空返回 0。注册表用它回收没人玩的房间。 */  idleFor(nowMs: number): number {
     if (this.players.size > 0) return 0
     return nowMs - this.emptySince
   }
@@ -835,6 +842,10 @@ export class World {
 
   private pump(): void {
     const now = performance.now()
+    // 泵的空转间隔：正常是 1ms 的定时器节拍。出现 30ms 以上的空档意味着
+    // **整个事件循环**被别的东西占住了（GC、同步写盘、别人的房间），
+    // 这一刻所有玩家都会看到世界停住 —— 这是"多台设备同时卡"的直接证据。
+    if (this.lastPumpAt > 0) pushSample(this.pumpGaps, now - this.lastPumpAt)
     const steps = this.clock.advance((now - this.lastPumpAt) / 1000)
     this.lastPumpAt = now
 
@@ -2016,10 +2027,48 @@ export class World {
    * 这里不读时钟 —— 一个 tick 就是一个 tick，"真实时间够不够"是 pump 的事。
    * 测试直接调它推进，所以它可以被跑得比墙钟快得多。
    */
+  private recordStepCost(ms: number): void {
+    pushSample(this.stepTimes, ms)
+  }
+
+  private recordPhaseCost(id: string, ms: number): void {
+    let list = this.phaseTimes.get(id)
+    if (!list) {
+      list = []
+      this.phaseTimes.set(id, list)
+    }
+    pushSample(list, ms)
+  }
+
+  /**
+   * 服务端自检读数（`/api/game/diag`）。
+   *
+   * 采样窗口是最近 240 个 tick（4 秒），足够覆盖一次 GC 停顿或一次同步写盘，
+   * 又不会把一小时前的异常永远留在 p99 里。
+   */
+  diagnostics(): Record<string, unknown> {
+    const phases: Record<string, unknown> = {}
+    for (const [id, list] of this.phaseTimes) phases[id] = sampleStats(list)
+    return {
+      id: this.id,
+      tick: this.tick,
+      players: this.players.size,
+      monsters: this.monsters.length,
+      step: sampleStats(this.stepTimes),
+      pumpGap: sampleStats(this.pumpGaps),
+      phases,
+      phaseErrors: [...this.phaseErrors],
+    }
+  }
+
   private step(): void {
     const phases = this.phases.with('fixedUpdate')
+    const stepStartedAt = performance.now()
     for (let i = 0; i < phases.length; i++) {
       const phase = phases[i]!
+      // 逐阶段计时：一帧慢了要能立刻说出"慢在 AI 还是慢在物理"，
+      // 否则只能靠读代码猜，而这类问题往往只在别人的机器/网络下复现。
+      const startedAt = performance.now()
       try {
         phase.system.fixedUpdate?.(TICK_DT, this.ctx)
       } catch (error) {
@@ -2030,7 +2079,9 @@ export class World {
           console.error(`[world ${this.id}] phase ${phase.id} failed`, error)
         }
       }
+      this.recordPhaseCost(phase.id, performance.now() - startedAt)
     }
+    this.recordStepCost(performance.now() - stepStartedAt)
   }
 
   /** 阶段 1：tick 计数、尸体过期、断线超时。 */
@@ -4062,5 +4113,27 @@ export class World {
       phase: this.match.state.phase,
       roster,
     }
+  }
+}
+
+// ------------------------------------------------------------ 卡顿自检
+
+/** 环形采样：只留最近 240 个（60Hz 下 4 秒），p99 永远反映"刚刚发生的事"。 */
+function pushSample(list: number[], value: number): void {
+  list.push(value)
+  if (list.length > 240) list.shift()
+}
+
+function sampleStats(list: number[]): Record<string, number> {
+  if (list.length === 0) return { n: 0, p50: 0, p99: 0, max: 0, over30: 0 }
+  const sorted = [...list].sort((a, b) => a - b)
+  const at = (q: number): number =>
+    Math.round(sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]! * 100) / 100
+  return {
+    n: sorted.length,
+    p50: at(0.5),
+    p99: at(0.99),
+    max: Math.round(sorted[sorted.length - 1]! * 100) / 100,
+    over30: list.filter((v) => v > 30).length,
   }
 }

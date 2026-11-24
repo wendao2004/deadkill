@@ -573,6 +573,15 @@ export function registerGame(
   }))
 
   /**
+   * 服务端卡顿自检。只读不写、每世界 4 秒的滑动采样，可以放心高频轮询；
+   * 但别拿它做监控大盘 —— 诊断归诊断，监控要另起一路。
+   */
+  app.get('/api/game/diag', async () => ({
+    ok: true as const,
+    ...registry.describeDiag(),
+  }))
+
+  /**
    * 大厅房间列表。含"已创建但还没人进"的空房，否则创建完只能在列表里消失，
    * 其他玩家永远找不到这局。
    */

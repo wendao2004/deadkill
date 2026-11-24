@@ -315,6 +315,22 @@ export class WorldRegistry {
   }
 
   /**
+   * 卡顿自检（`/api/game/diag`）。
+   *
+   * 玩家报"多台设备同时卡"时，服务端必须能自证清白或认领责任：
+   * pumpGap 是事件循环的空转间隔（GC/同步写盘会让它冲到几十毫秒以上，
+   * 所有房间同时停），phases 能把慢归到 AI/物理/广播某一段。
+   */
+  describeDiag(): { worlds: (ReturnType<World['diagnostics']> & { levelId: string })[] } {
+    return {
+      worlds: [...this.worlds.values()].map((w) => {
+        const diag = w.diagnostics()
+        return { ...diag, levelId: this.levelIdOf(diag.id as string) }
+      }),
+    }
+  }
+
+  /**
    * 定期清扫空世界。
    *
    * 用 30 秒的粗粒度轮询而不是给每个世界挂一个 setTimeout：

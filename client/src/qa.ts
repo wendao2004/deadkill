@@ -88,6 +88,13 @@ export interface QaParams {
   show: string | null
   shot: boolean
   bench: boolean
+  /**
+   * `?diag=1`：左上角常驻一行性能读数（fps / 帧 p99 / 卡顿次数 / 快照间隔 p99 / ping）。
+   *
+   * 玩家报"卡"时，没有这行读数就只能靠猜是服务端还是本地 —— 而这行读数
+   * 在不开 devtools 的设备上（手机、客厅电视盒子）也能直接念出来。
+   */
+  diag: boolean
   hud: boolean
   viewmodel: boolean
   /** 原始 query，__stats() 里回显，便于截图留档对账。 */
@@ -199,6 +206,7 @@ export function parseQa(source: string): QaParams {
     show,
     shot,
     bench,
+    diag: flag(params, 'diag', false),
     hud: flag(params, 'hud', !scenic),
     viewmodel: flag(params, 'vm', !clean),
     source,

@@ -405,6 +405,25 @@ export class Game {
   private fpsAccum = 0
   private fpsFrames = 0
   private fps = 0
+  /**
+   * 卡顿归因用的原始采样：最近 240 帧的真实帧时长（毫秒）。
+   *
+   * fps 是平均值，平均值天生看不见卡顿 —— 60fps 里每 2 秒卡一帧 300ms，
+   * 平均下来还有 55fps。玩家抱怨的"莫名卡一下"全在这个尾部，所以必须
+   * 单独留一列尾部数据，并且把「渲染慢」和「没收到快照」分开记：
+   * 前者是本地 GPU/着色器，后者才是服务端或网络。
+   */
+  private readonly frameTimes: number[] = []
+  /** 相邻两次快照的到达间隔（毫秒），上限 240 个。 */
+  private readonly snapGaps: number[] = []
+  private lastSnapshotAt = 0
+  /** 跳过前几张快照：握手里那张 10 秒的"间隔"不是卡顿。 */
+  private snapCount = 0
+  /** 跳过头两帧：rAF 冷启动的第一帧 dt 是秒级。 */
+  private frameCount = 0
+  /** `?diag=1` 的读数条节点与刷新节流。 */
+  private diagEl: HTMLDivElement | null = null
+  private diagAt = 0
   private lastHudAt = 0
   private localCursor = 0
   /** QA 基准：逐帧毫秒采样与巡游角度。只在 ?bench=1 时使用。 */
@@ -799,6 +818,10 @@ export class Game {
       // 有真实 fps 时以它为准：QA 固定档下治理器不推进，smoothedMs 会停在
       // 初值，拿它判断"跑多快"会得出错误结论。
       frameMs: Math.round((this.fps > 0 ? 1000 / this.fps : this.resolution.smoothedMs) * 100) / 100,
+      // 卡顿归因：本地帧尾部 + 快照间隔尾部。两组数要一起看 ——
+      // 帧尾部脏而快照干净 = 本地渲染；快照尾部脏 = 服务端/网络。
+      hitch: hitchStats(this.frameTimes),
+      snapGap: gapStats(this.snapGaps),
       tick: this.lastSnapshot?.tick ?? 0,
       ping: this.estimatePing(),
       quality: this.qualityTier,
@@ -836,8 +859,45 @@ export class Game {
     }
   }
 
-  /** M 键：打开/关闭猎场地图。地图打开时游戏继续跑，玩家仍然暴露在危险里。 */
-  toggleMap(): void {
+  /**
+   * `?diag=1` 的常驻读数条。
+   *
+   * 只做一件事：把"卡"拆成两列可念出来的数字 —— 帧尾部（本地渲染）与
+   * 快照间隔尾部（服务端/网络）。玩家在手机上没法开 devtools，但这行字
+   * 可以直接截图发过来，不用再靠"感觉"争论是谁的问题。
+   */
+  private updateDiagOverlay(now: number): void {
+    if (now - this.diagAt < 250) return
+    this.diagAt = now
+    if (this.diagEl === null) {
+      const el = document.createElement('div')
+      el.id = 'dk-diag'
+      el.style.cssText = [
+        'position:fixed',
+        'left:8px',
+        'top:8px',
+        'z-index:80',
+        'padding:4px 7px',
+        'border-radius:3px',
+        'background:rgba(8,10,12,0.78)',
+        'color:#d8cbb2',
+        'font:11px/1.5 ui-monospace,Menlo,Consolas,monospace',
+        'white-space:pre',
+        'pointer-events:none',
+        'letter-spacing:0.2px',
+      ].join(';')
+      document.body.appendChild(el)
+      this.diagEl = el
+    }
+    const hitch = hitchStats(this.frameTimes)
+    const gap = gapStats(this.snapGaps)
+    this.diagEl.textContent = [
+      `${this.fps.toFixed(1)}fps  帧 p99 ${hitch.p99} 最差 ${hitch.worst} 卡 ${hitch.over50}`,
+      `快照 p99 ${gap.p99} 最差 ${gap.worst} 断 ${gap.over100}  ping ${this.estimatePing()}ms`,
+    ].join('\n')
+  }
+
+  /** M 键：打开/关闭猎场地图。地图打开时游戏继续跑，玩家仍然暴露在危险里。 */  toggleMap(): void {
     this.mapOverlay?.toggle()
   }
 
@@ -923,6 +983,14 @@ export class Game {
       this.fpsAccum = 0
       this.fpsFrames = 0
     }
+    // 尾部采样跟着真实帧间隔走（不是 rawDt：?dt= 冻结模拟时仍要能量画面卡不卡）。
+    // 跳过头两帧：进页面/切标签页回来的第一帧 dt 是秒级的，不是卡顿。
+    this.frameCount++
+    if (this.frameCount > 2) {
+      this.frameTimes.push(realDt * 1000)
+      if (this.frameTimes.length > 240) this.frameTimes.shift()
+    }
+    if (qa.diag) this.updateDiagOverlay(now)
 
     // 视角每渲染帧推进一次，不等模拟步：高于 60Hz 的屏幕上，只在固定步里
     // 更新会让准星一跳一跳（玩家说的"枪不跟手"）。
@@ -1232,6 +1300,17 @@ export class Game {
   // ------------------------------------------------------------ 和解
 
   private onSnapshot(snapshot: Snapshot): void {
+    // 到达间隔：服务端 20Hz 发、网络不该改变节奏。这里量的就是
+    // "玩家看到的画面有没有因为等快照而停顿"，和本地渲染卡顿是两回事。
+    // 跳过头 3 张：连接建立期的间隔是握手耗时，不是世界停了。
+    const arrivedAt = performance.now()
+    this.snapCount++
+    if (this.lastSnapshotAt > 0 && this.snapCount > 3) {
+      this.snapGaps.push(arrivedAt - this.lastSnapshotAt)
+      if (this.snapGaps.length > 240) this.snapGaps.shift()
+    }
+    this.lastSnapshotAt = arrivedAt
+
     // 时钟同步：用 serverTime 与到达时刻建立一个恒定的偏移。
     // 不做平滑，因为本地时钟和服务器时钟都在单调走，偏移是常量；
     // 平滑反而会在重同步时让插值时间轴跳一下。
@@ -2919,6 +2998,51 @@ function lerpAngle(a: number, b: number, t: number): number {
   while (delta > Math.PI) delta -= Math.PI * 2
   while (delta < -Math.PI) delta += Math.PI * 2
   return a + delta * t
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10
+}
+
+/**
+ * 帧时长尾部。
+ *
+ * 60fps 下 50ms = 连着丢掉 3 帧 —— 这是"能明显感到顿一下"的门槛；再短的
+ * 掉帧玩家一般归因成"这游戏本来就这样"，不值得计入卡顿次数。
+ */
+function hitchStats(samples: number[]): Record<string, number> {
+  if (samples.length === 0) return { n: 0, p50: 0, p99: 0, worst: 0, over50: 0, over100: 0 }
+  const sorted = [...samples].sort((a, b) => a - b)
+  const at = (q: number): number => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!
+  return {
+    n: sorted.length,
+    p50: round1(at(0.5)),
+    p99: round1(at(0.99)),
+    worst: round1(sorted[sorted.length - 1]!),
+    over50: samples.filter((v) => v > 50).length,
+    over100: samples.filter((v) => v > 100).length,
+  }
+}
+
+/**
+ * 快照到达间隔尾部。
+ *
+ * 服务端 20Hz → 名义 50ms。间隔本身抖一点无害（插值吸收 1~2 帧），
+ * 但出现 200ms 的空档就意味着这期间世界在玩家眼里是**冻住**的：
+ * 那时若帧时长正常，责任就在服务端 tick 或网络，与本地显卡无关。
+ */
+function gapStats(samples: number[]): Record<string, number> {
+  if (samples.length === 0) return { n: 0, p50: 0, p99: 0, worst: 0, over100: 0, over200: 0 }
+  const sorted = [...samples].sort((a, b) => a - b)
+  const at = (q: number): number => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!
+  return {
+    n: sorted.length,
+    p50: round1(at(0.5)),
+    p99: round1(at(0.99)),
+    worst: round1(sorted[sorted.length - 1]!),
+    over100: samples.filter((v) => v > 100).length,
+    over200: samples.filter((v) => v > 200).length,
+  }
 }
 
 export { Buttons, SNAPSHOT_RATE }
