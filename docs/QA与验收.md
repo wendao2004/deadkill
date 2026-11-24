@@ -304,3 +304,20 @@ sidecar 里的 `modifier` / `modifierHour` 就是断言依据：`time=day` 必�
 - `phases`：九个阶段各自的耗时，能把慢归到 AI/物理/广播某一段。
 
 诊断读数只回答"责任在哪侧"，不承担告警职责；要监控另起一路。
+
+## 冻结归因工具箱（2026-11-24 灯光重编译案）
+
+`.qa-shots/walk-diag.mjs` 是"像玩家一样跑 30~40 秒"的实机取证探针：真实键盘
+输入、每秒读 `__stats()`，页面里还挂着四层仪器——快照到达断档记录（包住
+`socket.onmessage` 与 `onSnapshot`）、`longtask`/`long-animation-frame` 观测、
+rAF 心跳（>400ms 的连续帧间隔）、CDP Network 域的 WS 帧时间戳。跑完自动把
+断档窗口对着 CDP Profiler 采样做聚合，直接打印"这 7 秒里哪个函数吃掉了时间"。
+
+这次的结论链条值得留档：快照断档 7.6s → CDP 显示帧已到网络进程 →
+`long-animation-frame 7450ms` 证明是主线程单个动画帧任务 → Profiler 聚合
+98.9% `getProgramInfoLog` → 灯光数量变化触发全量着色器重编译。
+
+**凡是"莫名卡几秒"的报案，先跑 walk-diag 再动手。** 排查顺序：
+1. 服务端 `/api/game/diag` 的 pumpGap 脏 → 事件循环被占住（所有房间同卡）；
+2. 客户端 `?diag=1` 的 `帧 p99` 脏 → 本地渲染；`快照 p99` 脏 → 网络/服务端；
+3. 两列都干净但体感卡 → 怀疑单帧长任务（`longtask` 观测），再上 Profiler。

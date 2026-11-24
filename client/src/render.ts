@@ -804,8 +804,14 @@ export class Renderer {
   private frameDt = 1 / 60
   /** 捕兽夹：armed/sprung 两组网格按状态切换。 */
   private readonly traps: { armed: Group; sprung: Group; sprungOn: boolean }[] = []
-  /** 油灯：点光源 + 发光灯罩。 */
+  /** 油灯：点光源 + 发光灯罩。数量从建图起恒定 —— 见 update 里的渐隐注释。 */
   private readonly lamps: { light: PointLight; glow: Mesh; lit: boolean }[] = []
+  /** 油灯额定强度（坎德拉）。与创建处的 PointLight 参数保持一致。 */
+  private static readonly LAMP_INTENSITY = 1.9
+  /** 这个距离内灯光全额。 */
+  private static readonly LAMP_FADE_NEAR = 24
+  /** 这个距离外灯光为 0。 */
+  private static readonly LAMP_FADE_FAR = 34
   /** 巢穴骨堆：完整 / 坍塌两组网格。 */
   private readonly nests: { intact: Group; broken: Group; destroyed: boolean }[] = []
   /**
@@ -1996,7 +2002,7 @@ export class Renderer {
 
       // 环境光整体压暗后，灯必须比原来更"实"一点：1.9 / 13m 仍然只照局部，
       // 不会把整片沼泽抬成黄昏。
-      const light = new PointLight(0xffb060, 1.9, 13, 2)
+      const light = new PointLight(0xffb060, Renderer.LAMP_INTENSITY, 13, 2)
       light.position.set(0.44, 2.2, 0)
       root.add(light)
 
@@ -2082,7 +2088,9 @@ export class Renderer {
       const lamp = this.lamps[i]!
       if (lamp.lit === lit) continue
       lamp.lit = lit
-      lamp.light.visible = lit
+      // 灯的数量必须恒定：visible 一变，NUM_POINT_LIGHTS 就变，Three.js 会
+      // 把所有材质的着色器程序全部重编译（实测一整冻 7 秒）。灭灯只归零强度。
+      lamp.light.intensity = lit ? Renderer.LAMP_INTENSITY : 0
       lamp.glow.visible = lit
     }
   }
@@ -2910,13 +2918,18 @@ export class Renderer {
     // 唯一保证被调用的入口，而它已经拿到了 dt。
     this.props.update(dt)
     this.rain?.update(dt, this.camera)
-    // 点光源按距离预算：灯罩继续亮，但离得远的灯不参与逐片元光照。
-    // 一张图 3~4 盏灯 + 巢穴火盆，全部同时点亮会让前向渲染的每片元循环变重。
+    // 点光源按距离预算：**只渐隐强度，绝不动 visible**。visible 一变，
+    // NUM_POINT_LIGHTS 就变，Three.js 会把场景里所有材质的着色器程序全量
+    // 重编译 —— 实测 1080p/独显下要冻 7.6 秒（getProgramInfoLog 占 99%），
+    // 玩家跑进灯圈的那一刻整局定格，正是"画面建筑一多就卡"的真身。
+    // 灯罩照旧渲染（灯罩是自发光网格，与光照无关），24m 内全额、34m 外为 0。
     for (let i = 0; i < this.lamps.length; i++) {
       const lamp = this.lamps[i]!
       const dx = lamp.light.position.x - this.camera.position.x
       const dz = lamp.light.position.z - this.camera.position.z
-      lamp.light.visible = lamp.lit && dx * dx + dz * dz < 32 * 32
+      const dist = Math.sqrt(dx * dx + dz * dz)
+      const fade = clamp(1 - (dist - Renderer.LAMP_FADE_NEAR) / (Renderer.LAMP_FADE_FAR - Renderer.LAMP_FADE_NEAR), 0, 1)
+      lamp.light.intensity = lamp.lit ? Renderer.LAMP_INTENSITY * fade : 0
     }
 
     // 后坐力在这里衰减、再以衰减后的值喂武器：武器模块只回答"给定后坐力，

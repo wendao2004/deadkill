@@ -1020,12 +1020,17 @@ export function createAtmosphere(scene: Scene, options: AtmosphereOptions = {}):
       // 否则一张图 6 个巢穴 + 3 盏油灯会让每个片元循环 9 个点光源。
       const dx = f.light.position.x - camera.position.x
       const dz = f.light.position.z - camera.position.z
-      f.light.visible = dx * dx + dz * dz < 40 * 40
+      // 火盆灯同样按距离预算：30m 内全额、40m 外为 0。**只渐隐强度，绝不动
+      // visible** —— visible 一变 NUM_POINT_LIGHTS 就变，Three.js 会把场景里
+      // 所有材质的着色器程序全量重编译（实测一整冻 7 秒以上），玩家跑近巢穴
+      // 火盆的那一帧整局定格。
+      const dist = Math.sqrt(dx * dx + dz * dz)
+      const fade = Math.min(Math.max(1 - (dist - 30) / 10, 0), 1)
       // 两个不同频率的 1D value noise 相加：低频是"火势"，高频是"火苗舔动"。
       const n =
         noise1(clock * 1.9 + f.seed) * 0.62 + noise1(clock * 5.7 + f.seed * 1.7) * 0.38
       // 白天火光只剩一点暖色点缀，不能和太阳抢亮度。
-      f.light.intensity = f.base * (0.74 + 0.46 * n) * (1 - daylight * 0.55)
+      f.light.intensity = f.base * (0.74 + 0.46 * n) * (1 - daylight * 0.55) * fade
       // 色温抖动：亮的时候偏金黄，弱的瞬间偏暗红 —— 这就是火焰看起来"HDR"的原因。
       f.light.color.copy(f.cold).lerp(f.hot, Math.min(Math.max(n, 0), 1))
     }
