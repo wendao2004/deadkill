@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import { initPhysics, buildLevelWorld } from '../shared/src/worldbuild.ts'
 import { Character, stateFlagsOf } from '../shared/src/character.ts'
+import { computeMoveVelocity } from '../shared/src/sim.ts'
 import { Buttons, StateFlags } from '../shared/src/constants.ts'
 import type { LevelDef } from '../shared/src/level.ts'
 
@@ -328,4 +329,103 @@ test('出生/复活用的 teleport 仍然清空全部动作状态', () => {
   world.free()
   assert.equal(c.sprinting, false, '复活不该继承上一具身体的冲刺')
   assert.equal(c.sliding, false, '复活不该继承上一具身体的滑铲')
+})
+
+// ---------------------------------------------------------------- 跳跃/蹬墙/翻越手感
+// 2026-11-24 玩家反馈："跳跃判定卡卡的，蹬墙或爬墙过度不自然"。根因有三个：
+// ①空中速度超过补充上限（3.4）后输入完全不改变方向，蹬墙跳的 5.4 m/s 是一条
+//   直线；②抓墙判定先于翻沿、且允许上升段（vy<3.5）抓，跳向矮台先被"粘"住
+//   急停；③翻越落点只探一个固定 0.28m 深度，探测点常落在墙皮外侧，翻越
+//   失败掉进抓墙分支，变成沿墙皮"过度攀爬"。
+
+const THICK_LEDGE: LevelDef = {
+  ...FLAT,
+  id: 'thick-ledge-test',
+  name: '厚台面测试场',
+  // 1.0m 高、0.8m 厚的石台：旧的单深度落点探测在它面前经常失败。
+  boxes: [{ x: 0, y: 0.5, z: -2.4, hx: 1.5, hy: 0.5, hz: 0.4, material: 'stone' }],
+}
+
+test('空中超速动量可以被转向（蹬墙跳不再是一条直线）', () => {
+  // 蹬墙跳出去：5.4 m/s 沿 +Z。玩家把视角转向 +X（yaw = -π/2 → forward=(1,0,0)）。
+  let vx = 0
+  let vz = 5.4
+  const steer = { forward: 1, right: 0, yaw: -Math.PI / 2, pitch: 0, buttons: 0 }
+  const state = { vx, vz, grounded: false }
+  for (let i = 0; i < 30; i++) {
+    const move = computeMoveVelocity(steer, state, DT, false)
+    state.vx = move.vx
+    state.vz = move.vz
+  }
+  const speed = Math.hypot(state.vx, state.vz)
+  // 方向明显偏向 +X；速度不超过旧模型的上限（动量 + 空中补充的矢量合）。
+  assert.ok(state.vx > 1.5, `往 +X 看了半秒，速度还几乎没转过来（vx=${state.vx}）`)
+  assert.ok(state.vz < 5.39, 'Z 分量应该被转走一部分')
+  assert.ok(speed < 7.5, `转向不该把速度吹到矢量合之外（${speed}）`)
+})
+
+test('跳向矮台是翻越，不是被粘在墙皮上', () => {
+  const world = buildLevelWorld(LEDGE)
+  const c = makeCharacter(world)
+  const run = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: Buttons.Jump }
+  let everClimbed = false
+  let onTop = false
+  for (let i = 0; i < 90; i++) {
+    c.step(world, run, DT)
+    world.step()
+    if (c.climbing) everClimbed = true
+    if (c.feet.y > 0.85) {
+      onTop = true
+      break
+    }
+  }
+  world.free()
+  assert.equal(everClimbed, false, '0.9m 的台面不该触发抓墙攀爬')
+  assert.ok(onTop, '跑跳向矮台应该被翻上去（y>0.85）')
+})
+
+test('0.8m 厚的石台也能翻上去（多深度落点探测）', () => {
+  const world = buildLevelWorld(THICK_LEDGE)
+  const c = makeCharacter(world)
+  const run = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: Buttons.Jump }
+  let everClimbed = false
+  let onTop = false
+  for (let i = 0; i < 120; i++) {
+    c.step(world, run, DT)
+    world.step()
+    if (c.climbing) everClimbed = true
+    if (c.feet.y > 0.95) {
+      onTop = true
+      break
+    }
+  }
+  world.free()
+  assert.equal(everClimbed, false, '1.0m 的厚台面不该退化成抓墙攀爬')
+  assert.ok(onTop, '厚台面应该被多深度探测翻上去（y>0.95）')
+})
+
+test('翻越保留入场动量（空中带速接翻越不再减速）', () => {
+  const world = buildLevelWorld(THICK_LEDGE)
+  const c = makeCharacter(world)
+  // 直接构造"空中带速接翻越"：距厚台面 1.4m、贴着下落沿带 7m/s 水平速度。
+  // 现实里这就是冲刺跳的抛物线末端；从地面起跑反而到不了这里 ——
+  // 1m 的台面会先把人挡停，再跳就成了原地起跳，没有动量可保留。
+  c.teleport({ x: 0, y: 0.2, z: -0.65 })
+  c.vx = -7
+  c.vz = 0
+  c.vy = 1.0
+  const hold = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: 0 }
+  let maxSpeed = 0
+  let vaulted = false
+  for (let i = 0; i < 60; i++) {
+    c.step(world, hold, DT)
+    world.step()
+    if (c.vaulting) {
+      vaulted = true
+      maxSpeed = Math.max(maxSpeed, Math.hypot(c.vx, c.vz))
+    }
+  }
+  world.free()
+  assert.ok(vaulted, '应该触发一次翻越')
+  assert.ok(maxSpeed > 4.5, `带 7m/s 接翻越，脚本速度不该压回 4.2（实测 ${maxSpeed}）`)
 })

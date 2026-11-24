@@ -14,6 +14,7 @@ import { yawToForward, yawToRight } from './math.ts'
 import {
   AIR_ACCEL_SCALE,
   AIR_SPEED_CAP,
+  AIR_STEER_RATE,
   BACK_SCALE,
   Buttons,
   GROUND_ACCEL,
@@ -140,6 +141,31 @@ export function computeMoveVelocity(
       const gain = Math.min(accel, add)
       vx += wishX * gain
       vz += wishZ * gain
+    }
+    // 动量转向：速度已经超过补充上限时（蹲墙跳/滑铲跳/高处坠落），加法
+    // 模型只能锁死方向 —— 蹲墙跳的 5.4 m/s 出去就是一条直线，往哪看都
+    // 拐不回来。这里以有限角速度把速度矢量往愿望方向转：能拐弯，依然
+    // 不能加速（速度大小不变）。
+    const speed = Math.hypot(vx, vz)
+    const alongNow = vx * wishX + vz * wishZ
+    if (speed > cap + 0.01 && alongNow < speed * 0.999) {
+      const dirx = vx / speed
+      const dirz = vz / speed
+      const dot = Math.max(-1, Math.min(1, dirx * wishX + dirz * wishZ))
+      const angle = Math.acos(dot)
+      if (angle > 1e-4) {
+        // blend = 本帧允许转的角度占剩余角度的比例；angle 很小时退化为直取。
+        const blend = Math.min(1, (AIR_STEER_RATE * dt) / angle)
+        let ndx = dirx + (wishX - dirx) * blend
+        let ndz = dirz + (wishZ - dirz) * blend
+        const len = Math.hypot(ndx, ndz)
+        if (len > 1e-6) {
+          ndx /= len
+          ndz /= len
+          vx = ndx * speed
+          vz = ndz * speed
+        }
+      }
     }
   }
 

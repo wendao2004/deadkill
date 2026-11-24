@@ -203,6 +203,14 @@ export const VAULT_REACH = 0.95
 export const VAULT_TIME = 0.34
 /** 翻越时的水平推进速度（米/秒）。0.34s × 4.2 ≈ 1.4m，正好越过一个台面。 */
 export const VAULT_SPEED = 4.2
+/**
+ * 翻越保留动量的上限（米/秒）。
+ *
+ * 翻越是脚本位移，但速度不该被脚本改写：冲 spam 7m/s 跳向矮台，翻越期
+ * 掉回 4.2 会像撞进糖浆（玩家描述为"跳一下卡一下"）。入场速度 ≥ 翻越基速
+ * 时按 85% 保留，上限 6.8 —— 比冲刺快一点，不放大滑铲/蹬墙跳的动量。
+ */
+export const VAULT_SPEED_MAX = 6.8
 
 // ---------------------------------------------------------------- 攀爬 / 蹬墙跳
 
@@ -226,6 +234,14 @@ export const CLIMB_MAX_CONTACT = 1.15
 export const CLIMB_EXHAUST_COOLDOWN = 1.0
 /** 从胸口到墙面的探测距离。 */
 export const CLIMB_REACH = 0.62
+/**
+ * 允许抓墙的最大上升速度（米/秒）。
+ *
+ * 旧窗口是 vy < 3.5：跳跃上升到一半也会被"粘"在墙上（vx=vz=vy 全部清零），
+ * 玩家明明只是想跳向一面墙，却莫名急停在半空 —— 这是"跳跃卡卡的"的直接
+ * 来源之一。抓墙只在接近顶点/下落段才成立（vy ≤ 1.2），上升段交给普通跳跃。
+ */
+export const CLIMB_GRAB_MAX_VY = 1.2
 /** 松手/蹬墙跳后的再抓取冷却。 */
 export const CLIMB_COOLDOWN = 0.4
 /** 贴墙时朝墙里按的速度（米/秒），避免爬升途中脱离墙面。 */
@@ -233,6 +249,15 @@ export const CLIMB_STICK = 0.25
 /** 蹬墙跳：水平推力与向上速度。 */
 export const WALL_JUMP_PUSH = 5.4
 export const WALL_JUMP_UP = 4.7
+/**
+ * 空中动量转向速率（弧度/秒）。
+ *
+ * 空中速度超过补充上限（3.4）时，旧的 Quake 加法模型完全不改变方向 ——
+ * 蹬墙跳的 5.4 m/s 出去就是一条直线，玩家往哪看都拐不回来，蹬墙跳
+ * 在两面墙之间几乎不可能连跳。这条速率允许按输入方向以有限角速度把
+ * 现有动量"转"过去：能拐弯，但依旧不能加速。
+ */
+export const AIR_STEER_RATE = 5.0
 
 /** 最大生命值。两枪躯干或一枪头致死 —— 猎杀类的核心节奏。 */
 export const MAX_HEALTH = 150

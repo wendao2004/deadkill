@@ -47,6 +47,7 @@ import {
   SLIDE_STEER,
   CLIMB_COOLDOWN,
   CLIMB_EXHAUST_COOLDOWN,
+  CLIMB_GRAB_MAX_VY,
   CLIMB_MAX_CONTACT,
   CLIMB_REACH,
   CLIMB_SPEED,
@@ -64,6 +65,7 @@ import {
   VAULT_MIN_HEIGHT,
   VAULT_REACH,
   VAULT_SPEED,
+  VAULT_SPEED_MAX,
   VAULT_TIME,
 } from './constants.ts'
 import { yawToForward, yawToRight, type Vec3 } from './math.ts'
@@ -72,6 +74,15 @@ import { computeMoveVelocity, type MoveState } from './sim.ts'
 
 /** 站在地上时向下施加的贴地速度，避免角色控制器每帧"落地→离地→落地"抖动。 */
 const GROUND_STICK_VY = 0
+
+/**
+ * 翻越落点探测的三个深度（米），沿朝前射线从墙面往外量。
+ *
+ * 一发不行：0.28m 只够薄木板墙；教堂 0.8m 的石墙会探进墙体内部，
+ * 从盒内往下的射线打到盒底，台面高度算成负数，翻越永远失败。
+ * 三个深度从浅到深逐个试，落在哪层真实顶面上就用哪个。
+ */
+const VAULT_LAND_OFFSETS = [0.18, 0.5, 0.85]
 
 /**
  * 站在地上时不要每帧把重力积进 vy。
@@ -122,6 +133,8 @@ export class Character {
   private vaultFromY = 0
   private vaultToY = 0
   private vaultProgressY = 0
+  /** 翻越期水平速度：入场动量的 85%，不写死。 */
+  private vaultSpeed = VAULT_SPEED
   /** 空中攀沿的冷却：避免贴着一面墙每帧重试。 */
   private mantleCooldown = 0
   /**
@@ -316,18 +329,28 @@ export class Character {
       return
     }
     this.climbCooldown = Math.max(0, this.climbCooldown - dt)
-    // 空中贴墙 + 按住前进 → 抓住墙面。地面走到墙边不会触发：攀爬是
-    // "跳上去扒住墙"的动作，不是自动爬楼梯。
-    if (
-      !this.grounded &&
-      !this.sliding &&
-      this.climbCooldown <= 0 &&
-      input.forward > 0.5 &&
-      this.vy < 3.5 &&
-      this.tryClimb(world, input)
-    ) {
-      this.stepClimb(world, input, dt)
-      return
+    // 空中朝墙按前进 → 先试翻沿，再试抓墙。顺序不能反：
+    //
+    // 旧实现先判抓墙，而抓墙的射线从脚上方 1.0m 打出，0.5~1.3m 的矮台
+    // 一样会被它命中 —— 玩家明明一个翻沿就能撑上去的箱子，却先被"粘"
+    // 在箱子侧面急停（vx=vz=vy 全部清零），再慢慢往上爬。这是"跳向
+    // 矮墙会卡住"的直接原因。
+    //
+    // 抓墙窗口同时收紧到 vy ≤ 1.2：跳跃上升段（最高 5.0 m/s）不抓，
+    // 只在接近顶点/下落时才允许扒住，避免跳跃中途被吸在墙上。
+    if (!this.grounded && !this.sliding && input.forward > 0.5) {
+      if (this.vy <= CLIMB_GRAB_MAX_VY + 0.1 && this.mantleCooldown <= 0 && this.tryVault(world, input)) {
+        this.mantleCooldown = 0.6
+        return
+      }
+      if (
+        this.climbCooldown <= 0 &&
+        this.vy <= CLIMB_GRAB_MAX_VY &&
+        this.tryClimb(world, input)
+      ) {
+        this.stepClimb(world, input, dt)
+        return
+      }
     }
 
     if (this.grounded && this.vy < 0) this.vy = GROUND_STICK_VY
@@ -430,19 +453,11 @@ export class Character {
       this.applyCrouch(world, wantsCrouch)
     }
 
-    // ---- 空中攀沿：贴着一个 0.5~1.3m 的台面下落时自动抓上去 ----
-    // 这是 Apex 里"跳一下扒住矮墙"的动作；不触发跳跃，所以玩家不需要
-    // 在落地前一帧再按一次空格。0.6s 冷却防止贴着墙每帧重试。
+    // ---- 空中攀沿冷却 ----
+    // 触发已经前移到"翻沿先于抓墙"的空部门口（见 step 开头）；这里只剩
+    // 冷却计时。旧的原地重试块删掉了：它在抓墙判定之后才跑，永远轮不到
+    // 执行，白白每 tick 多打三条射线。
     this.mantleCooldown = Math.max(0, this.mantleCooldown - dt)
-    if (
-      !this.vaulting &&
-      !this.grounded &&
-      this.mantleCooldown <= 0 &&
-      this.vy < 1.5 &&
-      input.forward > 0.5
-    ) {
-      if (this.tryVault(world, input)) this.mantleCooldown = 0.6
-    }
 
     // ---- 起跳：蹲着/滑铲先站起，头顶被挡就不跳 ----
     let jumpedThisTick = false
@@ -641,6 +656,13 @@ export class Character {
    * 判定用两条射线：胸口朝前一条找障碍，障碍上方朝下一条找台面高度。
    * 台面之上再打一条向上的射线确认胶囊放得下 —— 只高 0.2m 的檐口不是
    * "能翻过去的台子"，钻进去只会卡在半空。
+   *
+   * 落点探测沿射线方向打**三个深度**（0.18 / 0.5 / 0.85m）：
+   * 只打固定 0.28m 时，薄墙（0.3m）刚好落在墙顶之外、厚墙（0.4~0.8m，
+   * 比如教堂的石墙）却落在墙体内部 —— 从盒内往下的射线打到的是盒底，
+   * 算出来的台面高度是负的，翻越直接失败。结果就是厚墙永远翻不上去，
+   * 只能抓着墙皮往上爬（爬墙过度的另一个来源）。三个深度逐个试，
+   * 哪个落在真实顶面上用哪个。
    */
   private tryVault(world: World, input: PlayerInput): boolean {
     if (input.forward < 0.35) return false
@@ -658,50 +680,59 @@ export class Character {
     )
     if (!hit) return false
 
-    const hx = feet.x + fwd.x * hit.timeOfImpact + fwd.x * 0.28
-    const hz = feet.z + fwd.z * hit.timeOfImpact + fwd.z * 0.28
     const probeTop = feet.y + VAULT_MAX_HEIGHT + 1.3
-    const down = world.castRay(
-      new Ray({ x: hx, y: probeTop, z: hz }, { x: 0, y: -1, z: 0 }),
-      VAULT_MAX_HEIGHT + 1.5,
-      true,
-      undefined,
-      undefined,
-      this.collider,
-    )
-    if (!down) return false
-    const topY = probeTop - down.timeOfImpact
-    const height = topY - feet.y
-    if (height < VAULT_MIN_HEIGHT || height > VAULT_MAX_HEIGHT) return false
+    const probeDepth = VAULT_MAX_HEIGHT + 1.5
+    for (const depth of VAULT_LAND_OFFSETS) {
+      const hx = feet.x + fwd.x * (hit.timeOfImpact + depth)
+      const hz = feet.z + fwd.z * (hit.timeOfImpact + depth)
+      const down = world.castRay(
+        new Ray({ x: hx, y: probeTop, z: hz }, { x: 0, y: -1, z: 0 }),
+        probeDepth,
+        true,
+        undefined,
+        undefined,
+        this.collider,
+      )
+      if (!down) continue
+      const topY = probeTop - down.timeOfImpact
+      const height = topY - feet.y
+      if (height < VAULT_MIN_HEIGHT || height > VAULT_MAX_HEIGHT) continue
 
-    // 台面之上必须有容纳胶囊的空间（顶部横梁、屋檐会在这里被挡下）。
-    const up = world.castRay(
-      new Ray({ x: hx, y: topY + 0.06, z: hz }, { x: 0, y: 1, z: 0 }),
-      this.standHalfHeight * 2 + this.radius * 2 + 0.35,
-      true,
-      undefined,
-      undefined,
-      this.collider,
-    )
-    if (up) return false
+      // 台面之上必须有容纳胶囊的空间（顶部横梁、屋檐会在这里被挡下）。
+      const up = world.castRay(
+        new Ray({ x: hx, y: topY + 0.06, z: hz }, { x: 0, y: 1, z: 0 }),
+        this.standHalfHeight * 2 + this.radius * 2 + 0.35,
+        true,
+        undefined,
+        undefined,
+        this.collider,
+      )
+      if (up) continue
 
-    this.vaulting = true
-    this.vaultTime = 0
-    this.vaultDirX = fwd.x
-    this.vaultDirZ = fwd.z
-    this.vaultFromY = feet.y
-    this.vaultToY = topY + 0.02
-    this.vaultProgressY = 0
-    this.sliding = false
-    this.slideTime = 0
-    this.vy = 0
-    this.vx = fwd.x * VAULT_SPEED
-    this.vz = fwd.z * VAULT_SPEED
-    if (this.crouching) {
-      this.setCapsuleHalfHeight(this.standHalfHeight)
-      this.crouching = false
+      this.vaulting = true
+      this.vaultTime = 0
+      this.vaultDirX = fwd.x
+      this.vaultDirZ = fwd.z
+      this.vaultFromY = feet.y
+      this.vaultToY = topY + 0.02
+      this.vaultProgressY = 0
+      this.sliding = false
+      this.slideTime = 0
+      this.vy = 0
+      // 保留入场动量：冲刺/滑铲跳接翻越时按 85% 带过去，不再被脚本速度
+      // 改写成 4.2 —— 那会让"跳一下卡一下"。仍封顶，不放大动量。
+      const carry = Math.hypot(this.vx, this.vz)
+      const speed = Math.min(VAULT_SPEED_MAX, Math.max(VAULT_SPEED, carry * 0.85))
+      this.vaultSpeed = speed
+      this.vx = fwd.x * speed
+      this.vz = fwd.z * speed
+      if (this.crouching) {
+        this.setCapsuleHalfHeight(this.standHalfHeight)
+        this.crouching = false
+      }
+      return true
     }
-    return true
+    return false
   }
 
   /**
@@ -719,9 +750,9 @@ export class Character {
     const stepY = targetY - feet.y
 
     this.controller.computeColliderMovement(this.collider, {
-      x: this.vaultDirX * VAULT_SPEED * dt,
+      x: this.vaultDirX * this.vaultSpeed * dt,
       y: stepY,
-      z: this.vaultDirZ * VAULT_SPEED * dt,
+      z: this.vaultDirZ * this.vaultSpeed * dt,
     })
     const moved = this.controller.computedMovement()
     this.grounded = this.controller.computedGrounded()
@@ -786,9 +817,20 @@ export class Character {
     this.climbNormalX = n.x / horiz
     this.climbNormalZ = n.z / horiz
     this.sliding = false
-    this.vx = 0
-    this.vy = 0
-    this.vz = 0
+    // 软抓住：只去掉朝墙里的速度分量，沿墙的切向分量保留六成。
+    // 旧实现 vx=vz=vy 全部清零，抓墙瞬间是一次急停 —— 贴着墙跑跳想
+    // 抓墙的玩家会感到"啪一下冻住"，这也是"跳跃卡卡的"的一部分。
+    // vy 不清：紧接的 stepClimb 会接管成爬升速度。
+    const nvx = this.climbNormalX
+    const nvz = this.climbNormalZ
+    // 切向分量 = 速度 − 法线上的投影。朝墙抓（into<0）保留六成；
+    // 正在离开墙面时保留九成，别把玩家的跳离意图吃掉。
+    const into = this.vx * nvx + this.vz * nvz
+    const tx = this.vx - nvx * into
+    const tz = this.vz - nvz * into
+    const keep = into < 0 ? 0.6 : 0.9
+    this.vx = tx * keep
+    this.vz = tz * keep
     this.crouching = false
     return true
   }
