@@ -791,7 +791,9 @@ function buildReeds(
     dummy.updateMatrix()
     mesh.setMatrixAt(i, dummy.matrix)
     // 逐丛色相差一点点：整片同色会糊成一块绿板，看不出是几十丛草。
-    tint.setHSL(0.22 + (rng() - 0.5) * 0.05, 0.42 + rng() * 0.2, 0.36 + rng() * 0.14)
+    // 明度/饱和度都压一档：0.36+0.14 的亮度配上 0.42+0.2 的饱和度，在直射光下
+    // 是一片荧光绿，站在灰色泥地上像塑料草；沼泽里的芦苇该是发黄的浊绿。
+    tint.setHSL(0.20 + (rng() - 0.5) * 0.05, 0.32 + rng() * 0.16, 0.30 + rng() * 0.12)
     mesh.setColorAt(i, tint)
   }
   mesh.count = accepted.length

@@ -211,6 +211,83 @@ function pushBox(list: BufferGeometry[], cx: number, cy: number, cz: number, sx:
   list.push(geo)
 }
 
+/** 同一材质的构件先进各自的桶，最后一栋房子只合并成 3~4 次绘制。 */
+interface FacadeParts {
+  trim: BufferGeometry[]
+  /** 门扇/门板：比门套亮一档的木材，门凹在洞里时才不会变成一个黑洞。 */
+  door: BufferGeometry[]
+  stone: BufferGeometry[]
+  metal: BufferGeometry[]
+  roof: BufferGeometry[]
+}
+
+function emptyParts(): FacadeParts {
+  return { trim: [], door: [], stone: [], metal: [], roof: [] }
+}
+
+/**
+ * 门在房子的哪一侧、朝哪个方向。
+ *
+ * 判据是"门离哪一面墙最近"，不是读手写的 `door.rotY`：那个角度只描述门框
+ * 模型自己怎么转，跟"门开在哪面墙上"是两件事。之前两者混用，所以任何需要
+ * 知道朝向的构件（门柱、雨棚、招牌）都只能靠猜。
+ */
+interface DoorBasis {
+  /** 墙面上门轴心的世界坐标。 */
+  fx: number
+  fz: number
+  nx: number
+  nz: number
+  /** 沿墙方向的切向（局部 +X 在世界里的方向）。 */
+  tx: number
+  tz: number
+  /** `rotateY(theta)` 能把局部 +Z 转到外法线。 */
+  theta: number
+}
+
+function doorBasis(walls: WallFootprint, door: { x: number; z: number }): DoorBasis {
+  const candidates = [
+    { dist: Math.abs(door.z - walls.maxZ), nx: 0, nz: 1, fx: door.x, fz: walls.maxZ },
+    { dist: Math.abs(door.z - walls.minZ), nx: 0, nz: -1, fx: door.x, fz: walls.minZ },
+    { dist: Math.abs(door.x - walls.maxX), nx: 1, nz: 0, fx: walls.maxX, fz: door.z },
+    { dist: Math.abs(door.x - walls.minX), nx: -1, nz: 0, fx: walls.minX, fz: door.z },
+  ].sort((a, b) => a.dist - b.dist)
+  const best = candidates[0]
+  const theta = Math.atan2(best.nx, best.nz)
+  return {
+    fx: best.fx,
+    fz: best.fz,
+    nx: best.nx,
+    nz: best.nz,
+    tx: Math.cos(theta),
+    tz: -Math.sin(theta),
+    theta,
+  }
+}
+
+/**
+ * 在"门局部坐标"里放一个盒子：`ux` 沿墙、`uy` 绝对高度、`uz` 朝门外为正。
+ *
+ * 所有门相关构件都用这套坐标，写坐标时不需要关心这扇门朝南还是朝西。
+ */
+function pushOriented(
+  list: BufferGeometry[],
+  b: DoorBasis,
+  sx: number,
+  sy: number,
+  sz: number,
+  ux: number,
+  uy: number,
+  uz: number,
+  pitch = 0,
+): void {
+  const geo = new BoxGeometry(sx, sy, sz)
+  if (pitch !== 0) geo.rotateX(pitch)
+  geo.rotateY(b.theta)
+  geo.translate(b.fx + b.tx * ux + b.nx * uz, uy, b.fz + b.tz * ux + b.nz * uz)
+  list.push(geo)
+}
+
 /**
  * 立面构件：檐板一圈、四根角柱、石砌踢脚。
  *
@@ -218,14 +295,9 @@ function pushBox(list: BufferGeometry[], cx: number, cy: number, cz: number, sx:
  * 墙和屋顶怎么接、墙角和墙面怎么分、墙和地怎么站住。它们都不跨门窗洞口，
  * 所以不需要知道洞口位置，也就不会出现"钉在窗户上的横梁"。
  */
-function buildFacade(
-  parent: Group,
-  walls: WallFootprint,
-  groundY: number,
-  materials: VillageMaterials,
-): void {
-  const woodParts: BufferGeometry[] = []
-  const stoneParts: BufferGeometry[] = []
+function buildFacade(parts: FacadeParts, walls: WallFootprint, groundY: number): void {
+  const woodParts = parts.trim
+  const stoneParts = parts.stone
   const cx = (walls.minX + walls.maxX) / 2
   const cz = (walls.minZ + walls.maxZ) / 2
   const spanX = walls.maxX - walls.minX
@@ -235,12 +307,15 @@ function buildFacade(
   const height = Math.max(0.5, top - groundY)
 
   // ---- 檐板：贴着墙顶一圈，略外凸 0.06m，替屋顶"坐在墙上"造一条硬阴影线 ----
-  const eaveY = top - 0.13
-  const eaveT = 0.22
-  pushBox(woodParts, cx, eaveY, walls.maxZ + 0.05, spanX + 0.44, eaveT, eaveT)
-  pushBox(woodParts, cx, eaveY, walls.minZ - 0.05, spanX + 0.44, eaveT, eaveT)
-  pushBox(woodParts, walls.maxX + 0.05, eaveY, cz, eaveT, eaveT, spanZ + 0.44)
-  pushBox(woodParts, walls.minX - 0.05, eaveY, cz, eaveT, eaveT, spanZ + 0.44)
+  //
+  // 只留一条 12cm 的窄线，而且顶面必须低于屋顶底面：22cm 高的檐板从这里看过去
+  // 是一整条横带，加上新加的封檐板就是两条平行横带 —— 一米外读成"刷了两道黑漆"。
+  const eaveY = top - 0.06
+  const eaveT = 0.12
+  pushBox(woodParts, cx, eaveY, walls.maxZ + 0.04, spanX + 0.3, eaveT, 0.16)
+  pushBox(woodParts, cx, eaveY, walls.minZ - 0.04, spanX + 0.3, eaveT, 0.16)
+  pushBox(woodParts, walls.maxX + 0.04, eaveY, cz, 0.16, eaveT, spanZ + 0.3)
+  pushBox(woodParts, walls.minX - 0.04, eaveY, cz, 0.16, eaveT, spanZ + 0.3)
 
   // ---- 角柱：从地面到檐板，包住盒子最硬的四条竖棱 ----
   const postW = 0.24
@@ -261,13 +336,151 @@ function buildFacade(
   pushBox(stoneParts, cx, plinthY, walls.minZ - 0.05, spanX + 0.3, plinthH, 0.22)
   pushBox(stoneParts, walls.maxX + 0.05, plinthY, cz, 0.22, plinthH, spanZ + 0.3)
   pushBox(stoneParts, walls.minX - 0.05, plinthY, cz, 0.22, plinthH, spanZ + 0.3)
+}
 
-  for (const [parts, material] of [
-    [woodParts, materials.trim],
-    [stoneParts, materials.stone],
+/**
+ * 屋脊下的封檐板：沿着**屋顶自己的**轮廓走一圈。
+ *
+ * 为什么需要它：屋顶 GLB 是圆瓦，瓦口在檐边一高一低，缩放后变成一条锯齿
+ * 状的花边（远看像屋檐上刷了一道闪电）。真实做法就是钉一条封檐板把瓦口盖住
+ * ——顺带也给了屋顶和墙之间第二条硬线，屋面的坡从这里才"起坡"。
+ */
+function buildEaveFascia(parts: FacadeParts, shell: BuildingShell, roofBase: number): void {
+  const height = 0.3
+  const t = 0.12
+  const y = roofBase + 0.08
+  const halfW = shell.w / 2
+  const halfD = shell.d / 2
+  pushBox(parts.trim, shell.x, y, shell.z + halfD + 0.02, shell.w + 0.3, height, t)
+  pushBox(parts.trim, shell.x, y, shell.z - halfD - 0.02, shell.w + 0.3, height, t)
+  pushBox(parts.trim, shell.x + halfW + 0.02, y, shell.z, t, height, shell.d + 0.3)
+  pushBox(parts.trim, shell.x - halfW - 0.02, y, shell.z, t, height, shell.d + 0.3)
+  // 檐下封板：一整块木板把**出檐的底面**封住。
+  //
+  // 少了它，从地面往上看是一排瓦当的背面：一排石砌色块，比任何贴图错误都显眼
+  // （瓦片模型是薄壳，出檐后底下就是漏的）。补一块板之后，出檐的底面是深色木头，
+  // 同时给墙面压出一条干净的阴影。
+  pushBox(parts.trim, shell.x, roofBase - 0.03, shell.z, shell.w - 0.06, 0.08, shell.d - 0.06)
+}
+
+/**
+ * 门：门扇 + 铁门带 + 门楣 + 门柱 + 门槛石。
+ *
+ * 之前门洞是个**亮着的方洞**：门框 GLB 只是一圈框，洞里直接看到被灯光照亮的
+ * 空盒子内部，于是每栋房子都像"还没装门"。门扇最便宜的补法就是几块木板加两条
+ * 铁带 —— 它把洞封死，同时给出"这扇门能不能进"的判断依据。
+ */
+function buildDoor(
+  parts: FacadeParts,
+  walls: WallFootprint,
+  door: { x: number; z: number; w: number; h: number },
+  groundY: number,
+): DoorBasis {
+  const b = doorBasis(walls, door)
+  const w = door.w
+  const h = door.h
+  const leafW = w * 0.9
+  const leafH = h * 0.9
+  // 门框 GLB 比墙面向内凹 0.15–0.25m，门扇要落在框里，不能糊在洞口平面上。
+  const leafZ = -0.2
+  const leafY = groundY + 0.06 + leafH / 2
+
+  // ---- 门扇：五块竖板 + 一块背板。
+  //
+  // 背板是必须的：屋内被半球环境光整个照亮（toon 不遮挡），门板之间的缝会直接
+  // 透出白亮的内墙，看上去像门缝里装了一圈灯。背板把缝变成暗线。
+  const planks = 5
+  const gap = 0.014
+  const plankW = (leafW - gap * (planks - 1)) / planks
+  pushOriented(parts.trim, b, leafW + 0.04, leafH, 0.04, 0, leafY, leafZ - 0.06)
+  for (let i = 0; i < planks; i++) {
+    const ux = -leafW / 2 + plankW / 2 + i * (plankW + gap)
+    pushOriented(parts.door, b, plankW, leafH, 0.09, ux, leafY, leafZ)
+  }
+
+  // ---- 铁门带：两道横带，给门扇一条尺度和材质对比 ----
+  for (const ratio of [0.3, 0.72]) {
+    pushOriented(parts.metal, b, leafW + 0.1, 0.11, 0.03, 0, groundY + 0.06 + leafH * ratio, leafZ + 0.06)
+  }
+  // ---- 门楣：压在门洞上沿，把"洞"封成"入口" ----
+  pushOriented(parts.trim, b, w + 0.7, 0.22, 0.34, 0, groundY + h + 0.12, 0.05)
+  // ---- 门柱：两根竖框，与门楣咬合成一个门套 ----
+  // 只外凸 4cm：再凸就从"门框"变成两根立在门前的柱子了。
+  // 底部加一块石础，不然 3.4m 高的细木柱会读成"立在门口的木板"。
+  for (const side of [-1, 1]) {
+    pushOriented(parts.trim, b, 0.24, h + 0.34, 0.18, side * (w / 2 + 0.12), groundY + 0.34 + (h + 0.34) / 2, 0.02)
+    pushOriented(parts.stone, b, 0.3, 0.36, 0.24, side * (w / 2 + 0.12), groundY + 0.18, 0.04)
+  }
+  // ---- 门槛石：门内外的地面高差 ----
+  pushOriented(parts.stone, b, w + 0.3, 0.13, 0.5, 0, groundY + 0.065, 0.14)
+  return b
+}
+
+/** 墙顶到雨棚之间少于这么高，就不要雨棚 —— 宁可没有，也不要顶着檐板。 */
+const PORCH_MIN_CLEARANCE = 1.05
+
+/**
+ * 门头小披檐：只有墙够高的谷仓/磨坊才有，斜撑式、不落地。
+ *
+ * 小房子（墙顶 3.2m、门高 2.5m）根本没有空间放它，硬加就成了贴着檐板的
+ * 一条呆板横板。
+ */
+function buildPorch(
+  parts: FacadeParts,
+  b: DoorBasis,
+  door: { w: number; h: number },
+  groundY: number,
+): void {
+  const pitch = 0.2
+  const depth = 1.55
+  const half = depth / 2
+  const top = groundY + door.h + 0.6
+  const centerZ = 0.05 + half * Math.cos(pitch)
+  const centerY = top - half * Math.sin(pitch)
+  // 棚顶：石板瓦，和屋顶同材质，所以从远处看是同一栋房子的一部分。
+  pushOriented(parts.roof, b, door.w + 1.4, 0.12, depth, 0, centerY, centerZ, pitch)
+  // 檐口封边
+  pushOriented(parts.trim, b, door.w + 1.4, 0.13, 0.09, 0, top - depth * Math.sin(pitch) + 0.01, 0.05 + depth * Math.cos(pitch))
+  // 斜撑：两端按"贴墙点"和"顶进棚底的点"直接反算长度与倾角。
+  //
+  // 第一版是手填长度 + 倾角 + 中心高度，三个量互相打架，上端离棚底差了十几厘米，
+  // 截图里就是两根悬空的木棍。这里改成给两个端点，几何自己算 —— 上端故意多顶
+  // 进棚底 5cm，藏在棚板里，看起来才是"撑住"。
+  const wallZ = 0.02
+  const wallY = top - 0.95
+  const tipZ = 1.15
+  const tipY = top - tipZ * Math.sin(pitch) + 0.05
+  const braceDz = tipZ - wallZ
+  const braceDy = tipY - wallY
+  const braceLen = Math.hypot(braceDz, braceDy)
+  const braceTilt = Math.atan2(braceDy, braceDz)
+  for (const side of [-1, 1]) {
+    pushOriented(
+      parts.trim,
+      b,
+      0.1,
+      0.1,
+      braceLen,
+      side * (door.w / 2 + 0.45),
+      (wallY + tipY) / 2,
+      (wallZ + tipZ) / 2,
+      -braceTilt,
+    )
+  }
+}
+
+/** 把各桶里的盒子合并，各自一次绘制。 */
+function flushParts(parent: Group, parts: FacadeParts, materials: VillageMaterials): void {
+  for (const [list, material] of [
+    [parts.trim, materials.trim],
+    [parts.door, materials.wood],
+    [parts.stone, materials.stone],
+    [parts.metal, materials.metal],
+    [parts.roof, materials.roof],
   ] as const) {
-    const merged = mergeGeometries(parts, false)
-    for (const geo of parts) geo.dispose()
+    if (list.length === 0) continue
+    const merged = mergeGeometries(list, false)
+    for (const geo of list) geo.dispose()
     if (!merged) continue
     const mesh = new Mesh(merged, material)
     mesh.name = 'village-facade'
@@ -291,7 +504,9 @@ const SHELLS: Record<string, BuildingShell[]> = {
       door: { x: -12.8, z: -1.95, w: 2.7, h: 2.5, rotY: 0 },
       props: [
         { name: 'Prop_Chimney', x: -16.6, z: -5, w: 1.3, d: 1.3, h: 3.0 },
-        { name: 'Balcony_Simple_Straight', x: -12.8, z: -1.4, w: 3.4, d: 1.2, h: 1.2 },
+        // 这里原本挂着一个 Balcony_Simple_Straight：`place()` 的 y 是地面，
+        // 于是"阳台"变成一道 1.2m 高的栏杆横插在门口，正好把门挡住。
+        // 阳台是二层构件，这排房子只有一层，删掉比硬凑更对。
       ],
     },
     {
@@ -392,7 +607,19 @@ export function decorateVillage(
       h: shell.roofH,
       rotY: shell.rotY,
     })
-    if (walls) buildFacade(parent, walls, level.groundY, materials)
+    const parts = emptyParts()
+    if (walls) {
+      buildFacade(parts, walls, level.groundY)
+      if (shell.door) {
+        const basis = buildDoor(parts, walls, shell.door, level.groundY)
+        // 雨棚只给"墙顶比门头高出一大截"的房子（谷仓、磨坊）；小房子没有空间。
+        const clearance = walls.top - 0.13 - (level.groundY + shell.door.h + 0.6)
+        if (clearance >= PORCH_MIN_CLEARANCE) buildPorch(parts, basis, shell.door, level.groundY)
+      }
+    }
+    // 封檐板跟着**屋顶**的实际轮廓，所以不依赖 measureWalls 是否成功。
+    buildEaveFascia(parts, shell, roofBase - 0.04)
+    flushParts(parent, parts, materials)
     if (shell.door) {
       place(parent, assets.DoorFrame_Flat_WoodDark, materials.wood, {
         x: shell.door.x,
