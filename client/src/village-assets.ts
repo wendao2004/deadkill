@@ -42,7 +42,7 @@ export interface VillageMaterials {
 export const VILLAGE_COLORS = {
   roof: 0x3d4249,
   wood: 0x4c3928,
-  stone: 0x6a675f,
+  stone: 0x5b564c,
   metal: 0x4a4d50,
   trim: 0x2a1f15,
 } as const
