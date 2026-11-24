@@ -149,7 +149,9 @@ export function decorateGenerated(
   // 草/石/桩现在由这套资产在**所有地图**负责：CC0 那套是高光发亮的 PBR
   // 材质，和手绘色阶放在一起就是一块油绿的塑料。
   {
-    const grassPatches = biome === 'quarry' ? 45 : biome === 'church' ? 70 : biome === 'forest' ? 110 : 85
+    // 草窝密度：一丛草 11 片、每簇 9 个三角形，200 个草窝也就 2 万三角形，
+    // 但站在空地上往脚下看能看到草，而不是一张贴图。
+    const grassPatches = biome === 'quarry' ? 70 : biome === 'church' ? 120 : biome === 'forest' ? 190 : 200
     // ---- 3. 草：贴地撒，避开墙、水、树桩 ----
     const grassAsset = assets.get('grass_clump')
     if (grassAsset) {
@@ -169,7 +171,9 @@ export function decorateGenerated(
             y: terrainHeightAt(level, x, z) - 0.02,
             rotY: rng() * Math.PI * 2,
             scale: 0.55 + rng() * 0.6,
-            tint: rng() < 0.4 ? 0xe4efd2 : 0xffffff,
+            // 提亮只给少量草簇，且往干草方向提（偏黄），不是提纯绿：沼泽的
+            // 调色是土黄+橄榄，饱和绿会像塑料草。
+            tint: rng() < 0.4 ? 0xd8d9bc : 0xffffff,
           })
         }
       }
@@ -180,20 +184,32 @@ export function decorateGenerated(
     // ---- 4. 石头与树桩：稀疏点缀，避免整张图只有树和草 ----
     const rockAsset = assets.get('rock_a')
     if (rockAsset) {
-      const spots = scatter(26, level, rng, (x, z) => !insideSolid(level, x, z, 0.6) && !insideWater(level, x, z))
+      // 两遍：大石头当路标，小碎石负责"脚下有东西"。碎石只有 20 个三角形，
+      // 一百多块加起来不到 3k，但近景的地面立刻有了尺度参照。
+      const big = scatter(60, level, rng, (x, z) => !insideSolid(level, x, z, 0.6) && !insideWater(level, x, z))
+      const small = scatter(150, level, rng, (x, z) => !insideSolid(level, x, z, 0.35) && !insideWater(level, x, z))
       instanceAsset(
         root,
         rockAsset,
-        spots.map((p) => ({
-          x: p.x,
-          z: p.z,
-          y: terrainHeightAt(level, p.x, p.z),
-          rotY: rng() * Math.PI * 2,
-          scale: 0.45 + rng() * 0.7,
-        })),
+        [
+          ...big.map((p) => ({
+            x: p.x,
+            z: p.z,
+            y: terrainHeightAt(level, p.x, p.z),
+            rotY: rng() * Math.PI * 2,
+            scale: 0.45 + rng() * 0.7,
+          })),
+          ...small.map((p) => ({
+            x: p.x,
+            z: p.z,
+            y: terrainHeightAt(level, p.x, p.z) - 0.04,
+            rotY: rng() * Math.PI * 2,
+            scale: 0.12 + rng() * 0.16,
+          })),
+        ],
         { chunk: 64 },
       )
-      placed += spots.length
+      placed += big.length + small.length
     }
     const stumpAsset = assets.get('stump')
     if (stumpAsset) {

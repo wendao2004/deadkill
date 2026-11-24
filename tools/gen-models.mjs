@@ -184,12 +184,73 @@ function pine(seed, { height = 7.5, spread = 2.0, tiers = 7, needles = true }) {
   // 断视线，模型细了就会从树皮里透出一根方柱。所以下半段用接近等径的
   // 0.47m 半径圆柱，上半段收细藏进树冠里。
   const trunkR = 0.47
-  // 活树的下半段藏进树冠即可；枯树没有树冠，树干必须一直长到枝顶，
-  // 否则 4m 以上的枝条会悬在半空，看起来像一群飘着的木棍。
-  const trunkH = needles ? height * 0.58 : height * 0.94
-  part(parts, new CylinderGeometry(needles ? trunkR * 0.62 : 0.09, trunkR, trunkH, 8), {
-    pos: [0, trunkH / 2, 0], color: 0x4e3924, variance: 0.18, rand, mat: 'bark',
-  })
+  const liveTrunkH = height * 0.58
+  if (needles) {
+    part(parts, new CylinderGeometry(trunkR * 0.62, trunkR, liveTrunkH, 8), {
+      pos: [0, liveTrunkH / 2, 0], color: 0x4e3924, variance: 0.18, rand, mat: 'bark',
+    })
+  } else {
+    // 枯树：树干分两段收细 + 断顶，枝条下垂并带分叉。
+    //
+    // 旧写法是一根 0.47m 半径、从上到下几乎等粗的圆柱，插 8 根水平微翘的
+    // 细杆。1600×900 的实拍里它读成"电线杆上钉了几块木板" —— 玩家在 5m 内
+    // 看到的就是这个。真正枯死的松树有三个特征：**下半段粗、上半段明显收细**、
+    // **枝条往垂下来**、**顶端是折断的**。这三件事都不需要更多三角形。
+    const deadTrunkH = height * 0.9
+    const lowerH = deadTrunkH * 0.55
+    part(parts, new CylinderGeometry(trunkR * 0.66, trunkR, lowerH, 8), {
+      pos: [0, lowerH / 2, 0], color: 0x3f352b, variance: 0.24, rand, mat: 'bark',
+    })
+    // 上半段带一点倾斜：完全笔直的树干是电线杆。
+    const lean = (rand() - 0.5) * 0.06
+    part(parts, new CylinderGeometry(0.10, trunkR * 0.66, deadTrunkH - lowerH, 7), {
+      pos: [0, lowerH + (deadTrunkH - lowerH) / 2, 0],
+      rot: [0, 0, lean],
+      color: 0x4a3d30, variance: 0.2, rand, mat: 'bark',
+    })
+    // 断顶：一截斜劈的残桩，比"慢慢收成一个尖"更像被风折断。
+    part(parts, new CylinderGeometry(0.045, 0.10, height * 0.075, 5), {
+      pos: [lean * deadTrunkH, deadTrunkH + height * 0.02, 0],
+      rot: [0, 0, lean + 0.28],
+      color: 0x534434, variance: 0.18, rand, mat: 'bark',
+    })
+
+    // 枝条：下垂（tilt 取负）+ 分叉。枝条的**根部**必须落在树干半径内，否则
+    // 会看到一圈悬空的杆子绕着树干转。
+    const n = 9
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1)
+      const y = height * (0.26 + t * 0.6)
+      const len = spread * (1.55 + rand() * 0.75) * (1 - t * 0.35)
+      const ang = i * 2.39996 + (rand() - 0.5) * 0.6 // 黄金角：枝条不扎堆
+      const droop = 0.06 + t * 0.22 + rand() * 0.16
+      const trunkAtY = trunkR * (1 - 0.62 * Math.min(1, y / deadTrunkH))
+      const r0 = 0.105 - t * 0.055
+      const branch = new CylinderGeometry(r0 * 0.35, r0, len, 4)
+      branch.rotateZ(Math.PI / 2 + droop)
+      branch.translate(len / 2, 0, 0)
+      part(parts, branch, {
+        pos: [Math.max(0, trunkAtY - 0.12), y, 0],
+        rot: [0, -ang, 0],
+        color: 0x4a4034, variance: 0.22, rand, mat: 'bark',
+      })
+      // 分叉：每根主枝 1~2 根更细的侧枝，往下垂得更多。
+      const forks = 1 + (rand() < 0.55 ? 1 : 0)
+      for (let k = 0; k < forks; k++) {
+        const at = len * (0.45 + rand() * 0.35)
+        const flen = len * (0.32 + rand() * 0.22)
+        const fang = ang + (rand() - 0.5) * 1.5
+        const fork = new CylinderGeometry(r0 * 0.14, r0 * 0.42, flen, 4)
+        fork.rotateZ(Math.PI / 2 + droop + 0.35 + rand() * 0.3)
+        fork.translate(flen / 2, 0, 0)
+        part(parts, fork, {
+          pos: [Math.max(0, trunkAtY - 0.12) + Math.cos(droop) * at, y - Math.sin(droop) * at, 0],
+          rot: [0, -fang, 0],
+          color: 0x4a4034, variance: 0.22, rand, mat: 'bark',
+        })
+      }
+    }
+  }
   if (needles) {
     for (let i = 0; i < tiers; i++) {
       const t = i / (tiers - 1)
@@ -211,26 +272,6 @@ function pine(seed, { height = 7.5, spread = 2.0, tiers = 7, needles = true }) {
     part(parts, new ConeGeometry(spread * 0.22, height * 0.16, 6), {
       pos: [0, height * 0.95, 0], color: 0x3a5a30, variance: 0.2, rand, mat: 'needle',
     })
-  } else {
-    // 枯树：每根枝条必须**从树干长出去**。旧写法只绕 Z 转了 90°，所有枝条
-    // 都朝同一个方向平飞，看起来像围着树干的碎木棍。现在先沿 +X 摆好
-    // （根部在原点），再绕 Y 转到各自的方位角。
-    const n = 8
-    for (let i = 0; i < n; i++) {
-      const t = i / (n - 1)
-      const y = height * (0.3 + t * 0.62)
-      const len = spread * 1.5 * (1 - t * 0.45)
-      const ang = i * 2.39996 + (rand() - 0.5) * 0.5 // 黄金角：枝条不扎堆
-      const tilt = 0.42 + rand() * 0.4
-      const branch = new CylinderGeometry(0.035, 0.11, len, 5)
-      branch.rotateZ(Math.PI / 2 - tilt)
-      branch.translate(len / 2, 0, 0)
-      part(parts, branch, {
-        pos: [0, y, 0],
-        rot: [0, -ang, 0],
-        color: 0x4a4238, variance: 0.2, rand, mat: 'bark',
-      })
-    }
   }
   return { parts, tris: 0 }
 }
@@ -238,25 +279,62 @@ function pine(seed, { height = 7.5, spread = 2.0, tiers = 7, needles = true }) {
 function grassClump(seed) {
   const rand = rng(seed)
   const parts = []
-  const blades = 9
+  // 一丛草 = 11 片**带弯曲、带收梢**的叶片。
+  //
+  // 原来每片草是"一个三角形"：根部 7cm 宽、顶端一个点、完全不弯。近景里它
+  // 读成一根荧光绿的小棍，中景直接消失（一个三角形没有厚度，转个角度就没了）。
+  // 现在每片草两个梯形段 + 一个尖：根宽 4.5~6.5cm，中段收到 62%，梢部 8%，
+  // 并且沿出叶方向弯 0.16~0.46m。9 个三角形一丛，比原来多 0 个 draw call。
+  const blades = 14
   for (let i = 0; i < blades; i++) {
-    const ang = (i / blades) * Math.PI * 2 + rand() * 0.5
-    const r = 0.03 + rand() * 0.08
-    const h = 0.28 + rand() * 0.34
+    const ang = (i / blades) * Math.PI * 2 + rand() * 0.6
+    const r = 0.04 + rand() * 0.13
+    const h = 0.26 + rand() * 0.36
+    const lean = 0.14 + rand() * 0.34
     const bx = Math.cos(ang) * r
     const bz = Math.sin(ang) * r
-    const lean = 0.12 + rand() * 0.22
-    const tipX = bx + Math.cos(ang) * lean
-    const tipZ = bz + Math.sin(ang) * lean
-    const w = 0.035
-    const px = Math.cos(ang + Math.PI / 2) * w
-    const pz = Math.sin(ang + Math.PI / 2) * w
-    const g = triangle([bx - px, 0, bz - pz], [bx + px, 0, bz + pz], [tipX, h, tipZ])
-    const c0 = new Color(0x2c3a1d)
-    const c1 = new Color(0x54672f)
-    const colors = new Float32Array([c0.r, c0.g, c0.b, c0.r, c0.g, c0.b, c1.r, c1.g, c1.b])
+    const dx = Math.cos(ang)
+    const dz = Math.sin(ang)
+    const sx = -dz
+    const sz = dx
+    const w0 = 0.022 + rand() * 0.011
+    const w1 = w0 * 0.62
+    const w2 = w0 * 0.08
+    const ym = h * 0.58
+    const mx = bx + dx * lean * 0.45
+    const mz = bz + dz * lean * 0.45
+    const tx = bx + dx * lean
+    const tz = bz + dz * lean
+    const dark = 0x272c1c
+    const mid = 0x3c4626
+    const tip = 0x6a7442
+    const baseL = [bx - sx * w0, 0, bz - sz * w0]
+    const baseR = [bx + sx * w0, 0, bz + sz * w0]
+    const midL = [mx - sx * w1, ym, mz - sz * w1]
+    const midR = [mx + sx * w1, ym, mz + sz * w1]
+    const topT = [tx + sx * w2, h, tz + sz * w2]
+    const pos = new Float32Array([
+      ...baseL, ...baseR, ...midR,
+      ...baseL, ...midR, ...midL,
+      ...midL, ...midR, ...topT,
+    ])
+    const lin = (hex) => {
+      const c = new Color(hex)
+      return [c.r, c.g, c.b]
+    }
+    const c0 = lin(dark)
+    const c1 = lin(mid)
+    const c2 = lin(tip)
+    const colors = new Float32Array([
+      ...c0, ...c0, ...c1,
+      ...c0, ...c1, ...c1,
+      ...c1, ...c1, ...c2,
+    ])
+    const g = new BufferGeometry()
+    g.setAttribute('position', new BufferAttribute(pos, 3))
     g.setAttribute('color', new BufferAttribute(colors, 3))
-    if (!g.attributes.uv) g.setAttribute('uv', new BufferAttribute(new Float32Array(6), 2))
+    g.setAttribute('uv', new BufferAttribute(new Float32Array((pos.length / 3) * 2), 2))
+    g.computeVertexNormals()
     parts.push({ geo: g, mat: 'needle' })
   }
   return { parts }

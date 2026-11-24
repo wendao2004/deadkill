@@ -381,6 +381,13 @@ vec3 applyVolumetricFog( vec3 color, vec2 uv ) {
 
   float transmittance = 1.0;
   vec3 scattered = vec3( 0.0 );
+  // 雾的**入射辐射**比它的"显示色"低一档。
+  //
+  // uFogColor 是为天空/地平线挑的颜色（作者按屏幕上看的样子挑），直接当成
+  // 辐射量再乘曝光，等于默认雾比场景亮；30~60m 的木屋就被抬成一片奶白，
+  // 轮廓消失。0.82 让远景仍然是雾，但比天空暗一点点 —— 这一点差别就是
+  // "山在那儿"和"山不见了"的区别。
+  vec3 fogRadiance = uFogColor * 0.82;
   for ( int i = 0; i < MAX_STEPS; i++ ) {
     if ( i >= uFogSteps || transmittance < 0.015 ) break;
     vec3 p = uCamPos + rayDir * t;
@@ -390,7 +397,7 @@ vec3 applyVolumetricFog( vec3 color, vec2 uv ) {
     density *= 0.65 + 0.35 * fogNoise( p.xz * 0.075 + vec2( uTime * 0.012, -uTime * 0.008 ) );
     float stepT = exp( -density * stepLen );
     float absorbed = 1.0 - stepT;
-    scattered += transmittance * absorbed * ( uFogColor + uMoonColor * hg * 0.055 );
+    scattered += transmittance * absorbed * ( fogRadiance + uMoonColor * hg * 0.055 );
     transmittance *= stepT;
     t += stepLen;
   }

@@ -182,6 +182,19 @@ const GROUND_PALETTE: Record<string, { color: number; tint: number; tintAmount: 
   wood: { color: 0x6b5942, tint: 0x33291a, tintAmount: 0.42, surface: 'wood', specular: 0.04 },
 }
 
+/**
+ * 体积雾相对关卡 fogDensity 的增益。
+ *
+ * 曾经是 1.8：雾在 30m 就吃掉四成、50m 吃掉六成，实测 1600×900 的沼泽正午
+ * 截图里 40m 外的木屋已经洗成与地面同色的土黄块，只剩一条轮廓线 —— 玩家
+ * 看不到"那里有房子"，只能看到"那里更亮一点"。雾该负责的是远远地把远景
+ * 压成剪影，不是把中景糊平。
+ *
+ * 1.55 的取值：50m 透射率约 0.55（原来是 0.44）、110m 约 0.22。近景几乎不
+ * 受影响，中景保住轮廓，远景仍然是雾。
+ */
+const VOLUMETRIC_FOG_GAIN = 1.55
+
 /** 曳光弹存活时间（秒）。短于感知阈值会看不见，长了像激光。 */
 const TRACER_LIFE = 0.09
 /** 曳光弹对象池上限：超量时复用最早一条，避免持续开火造成无界分配。 */
@@ -477,8 +490,15 @@ function applyBoxProjection(geo: BufferGeometry, tileMeters: number): void {
 
 // ------------------------------------------------------------------ 树冠
 
-/** 单位棱球：20 个面、非索引（hence 平直着色）。所有树冠都从它克隆。 */
-const CANOPY_BASE = new IcosahedronGeometry(1, 0)
+/**
+ * 单位棱球（80 面、非索引、平直着色）。所有树冠都从它克隆。
+ *
+ * 细分从 0 提到 1 是为了**低矮灌木**：树冠在 GLB 树接管的地图里会被隐藏，
+ * 但关卡里那些 1m 高的灌木盒不会 —— 它们一直在用这颗棱球，20 个面压扁之后
+ * 在近景读成"四片绿纸扇"。80 面 + 每顶点抖动之后剪影是圆的，代价是每个
+ * 灌木多 60 个三角形。
+ */
+const CANOPY_BASE = new IcosahedronGeometry(1, 1)
 
 /**
  * 树冠是不是该换成棱球。
@@ -896,7 +916,7 @@ export class Renderer {
     // 乘系数，所以要先把原值记下来，否则切两次就再也回不到关卡本来的样子。
     this.fogBase = { color: level.fogColor, density: level.fogDensity }
     this.fogGroundY = level.groundY
-    this.post.setVolumetricFog(level.fogColor, level.fogDensity * 1.8, level.groundY, this.art.lightScale)
+    this.post.setVolumetricFog(level.fogColor, level.fogDensity * VOLUMETRIC_FOG_GAIN, level.groundY, this.art.lightScale)
 
     this.camera = new PerspectiveCamera(BASE_FOV, container.clientWidth / container.clientHeight, 0.05, 400)
     this.scene.add(this.camera)
@@ -3394,7 +3414,7 @@ export class Renderer {
       else fog.color.setHex(this.fogBase.color)
       this.post.setVolumetricFog(
         fog.color.getHex(),
-        this.fogBase.density * scaled * 1.8,
+        this.fogBase.density * scaled * VOLUMETRIC_FOG_GAIN,
         this.fogGroundY,
         this.art.lightScale,
       )

@@ -161,10 +161,10 @@ export function createFirstPersonArms(mats: WeaponMaterialSet): FirstPersonArms 
   // 半径在 0.3m 的观察距离上被放大得很厉害：0.040 的肘部半径在 65° FOV 下
   // 就是画面高度的一成多，两根加起来正好是"两块黑板"。收细到 0.034 仍然
   // 有体积，但不再把地面挡掉。
-  const rightFarm = buildLimb(0.024, 0.034, sleeve)
-  const rightArm = buildLimb(0.034, 0.046, sleeve)
-  const leftFarm = buildLimb(0.024, 0.034, sleeve)
-  const leftArm = buildLimb(0.034, 0.046, sleeve)
+  const rightFarm = buildLimb(0.019, 0.029, sleeve)
+  const rightArm = buildLimb(0.029, 0.042, sleeve)
+  const leftFarm = buildLimb(0.019, 0.029, sleeve)
+  const leftArm = buildLimb(0.029, 0.042, sleeve)
   const limbs = [rightFarm, rightArm, leftFarm, leftArm]
   for (const limb of limbs) limb.renderOrder = 10
   root.add(...limbs)
@@ -204,9 +204,15 @@ export function createFirstPersonArms(mats: WeaponMaterialSet): FirstPersonArms 
   // 肘点决定前臂在屏幕上的斜率。肘点越靠内（x 小）前臂越接近水平，就会
   // 变成一根横穿画面的斜杠；越靠外靠下，前臂越接近竖直，让出中间的视野。
   // 代价是肘部更快出画，但第一人称本来也看不到肘。
-  const ELBOW_OFFSET = [new Vector3(0.255, -0.400, 0.130), new Vector3(-0.265, -0.390, 0.115)]
+  // 肘部位置决定前臂在画面里占多少。
+  //
+  // 决定观感的不是"肘有多低"，而是前臂的**屏幕投影方向**。肘点往外挪
+  // 0.25m 时，前臂从枪身斜拉到屏幕下角，形成两根贯穿半屏的斜木条；
+  // 把肘点收回到手腕正下方（x 只差 0.12m）、略往身后，前臂就变成一小段
+  // 接近竖直的圆柱，从下缘出画 —— 这正是"手托着枪"该有的样子。
+  const ELBOW_OFFSET = [new Vector3(0.120, -0.470, 0.075), new Vector3(-0.130, -0.460, 0.065)]
   /** 上臂从肘继续往画面外/身后走。 */
-  const SHOULDER_OFFSET = [new Vector3(0.075, -0.215, 0.205), new Vector3(-0.085, -0.205, 0.195)]
+  const SHOULDER_OFFSET = [new Vector3(0.075, -0.235, 0.185), new Vector3(-0.085, -0.225, 0.175)]
 
   const setLimb = (mesh: Mesh, from: Vector3, to: Vector3): void => {
     _dir.subVectors(to, from)

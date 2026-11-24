@@ -53,3 +53,13 @@ node tools/qa-bench.mjs --w 1920 --h 1080 --require-gpu \
   `hitches === 0`（>50ms 的帧）才算通过。
 - 这是 GTX 1660 SUPER 的单机基线，不代表核显/移动端。核显默认进 balanced；
   用 `?q=balanced` 另跑一份。
+
+## 2026-11-24 画面打磨后复核（marsh / pine）
+
+| 图 | 文件 | avg | median | p99 | hitches |
+|---|---|---|---|---|---|
+| marsh-p0 | `polish3-marsh-quality-1080.json` | 16.67 | 16.7 | 16.8 | 0 |
+| pine-camp-night | `polish3-pine-quality-1080.json` | 16.67 | 16.7 | 16.8 | 0 |
+
+本轮把草窝密度提到 200/图、新增 150 块小碎石、`pine_dead` 从 192 增到 448
+三角形、树冠棱球从 20 面细分到 80 面 —— 两图仍在 60fps 上限内、无 >50ms 尖峰。

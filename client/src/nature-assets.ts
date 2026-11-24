@@ -13,6 +13,7 @@
 
 import {
   Box3,
+  BufferAttribute,
   DoubleSide,
   Euler,
   FrontSide,
@@ -188,6 +189,7 @@ function prepare(object: Group, kind: NatureKind, textures: AssetTextures | null
     const mesh = child as Mesh
     if (!mesh.isMesh) return
     mesh.material = material
+    ensureUv(mesh.geometry)
     parts.push({ geometry: mesh.geometry, material, matrix: mesh.matrixWorld.clone() })
   })
   return { parts, box }
@@ -204,6 +206,41 @@ interface Placement {
   tiltZ?: number
   /** 水平尺度额外倍率（岩石/草可以更扁）。 */
   width?: number
+}
+
+/**
+ * 给没有 UV 的资产补平面投影 UV。
+ *
+ * `Grass_Large.fbx` 是唯一一份没有 uv 属性的资产。属性缺失时 three 仍然会
+ * 编一张采样器进去 —— 每个片元都按 (0,0) 取色，于是整丛草被烘成一个**纯色**。
+ * 近景那根"荧光绿小棍"就是这么来的：不是模型坏了，是它一直在取贴图左上角
+ * 的那一个像素。
+ *
+ * 投影方式按面朝向选轴（叶片是竖直薄片，水平法线朝外），u 取叶片宽度方向、
+ * v 取高度方向，草叶就能从根部到梢部读出明暗与色差。
+ */
+function ensureUv(geometry: BufferGeometry): void {
+  if (geometry.attributes.uv) return
+  const pos = geometry.attributes.position
+  const nor = geometry.attributes.normal
+  geometry.computeBoundingBox()
+  const box = geometry.boundingBox
+  if (!box) return
+  const sx = Math.max(0.001, box.max.x - box.min.x)
+  const sy = Math.max(0.001, box.max.y - box.min.y)
+  const sz = Math.max(0.001, box.max.z - box.min.z)
+  const uv = new Float32Array(pos.count * 2)
+  for (let i = 0; i < pos.count; i++) {
+    const x = (pos.getX(i) - box.min.x) / sx
+    const z = (pos.getZ(i) - box.min.z) / sz
+    const y = (pos.getY(i) - box.min.y) / sy
+    // 法线朝 X 的薄片沿 Z 展开，朝 Z 的沿 X 展开。
+    const nx = nor ? Math.abs(nor.getX(i)) : 0
+    const nz = nor ? Math.abs(nor.getZ(i)) : 1
+    uv[i * 2] = nx > nz ? z : x
+    uv[i * 2 + 1] = y
+  }
+  geometry.setAttribute('uv', new BufferAttribute(uv, 2))
 }
 
 function addInstances(
@@ -332,20 +369,42 @@ export function scatterNature(
   }
 
   const base =
-    biome === 'swamp' ? { grass: 1100, rock: 70, branch: 140, stump: 50, bush: 260, plant: 180 }
-    : biome === 'farm' ? { grass: 760, rock: 50, branch: 70, stump: 36, bush: 160, plant: 100 }
-    : biome === 'church' ? { grass: 360, rock: 90, branch: 40, stump: 24, bush: 80, plant: 60 }
-    : biome === 'quarry' ? { grass: 160, rock: 220, branch: 26, stump: 18, bush: 30, plant: 30 }
+    biome === 'swamp' ? { grass: 2600, rock: 520, branch: 340, stump: 90, bush: 380, plant: 260 }
+    : biome === 'farm' ? { grass: 1500, rock: 240, branch: 140, stump: 50, bush: 200, plant: 140 }
+    : biome === 'church' ? { grass: 620, rock: 220, branch: 70, stump: 32, bush: 100, plant: 80 }
+    : biome === 'quarry' ? { grass: 240, rock: 420, branch: 34, stump: 22, bush: 36, plant: 36 }
     // 松林营地用自己那套程序化 GLB（generated-assets.ts），这张表只是兜底：
     // 万一 GLB 全部加载失败，仍然有一层能看的植被，不会剩下一张光秃秃的地面。
-    : biome === 'forest' ? { grass: 900, rock: 40, branch: 60, stump: 30, bush: 60, plant: 40 }
-    : { grass: 260, rock: 80, branch: 30, stump: 20, bush: 50, plant: 50 }
+    : biome === 'forest' ? { grass: 1400, rock: 150, branch: 80, stump: 36, bush: 80, plant: 56 }
+    : { grass: 380, rock: 180, branch: 40, stump: 24, bush: 60, plant: 60 }
   const area = Math.min(2.2, Math.max(0.7, ((level.boundsHalf * 2) / 260) ** 2))
   const factor = density * area
 
-  const grassSpots = scatter(Math.round(base.grass * factor), level.boundsHalf, rng, (x, z) =>
-    !insideSolid(level, x, z, 0.12),
+  // 草**成片长**，不撒胡椒面。
+  //
+  // 均匀撒 1100 簇在 260×260m 上等于每 10m 半径只有 5 簇 —— 玩家站在空地上
+  // 往脚下看，一米之内一根草都没有，地面就只剩一张贴图。真正能读出来的草是
+  // "一片一片"的：先找草窝，每个草窝 8~20 簇，占总量七成，剩下三成均匀撒在
+  // 空地之间。总数不变，近处可见的草多了三倍。
+  const total = Math.round(base.grass * factor)
+  const patchCount = Math.max(1, Math.round(total / 16))
+  const patchCenters = scatter(patchCount, level.boundsHalf, rng, (x, z) =>
+    !insideSolid(level, x, z, 0.5) && !insideWater(level, x, z),
   )
+  const grassSpots = scatter(Math.round(total * 0.3), level.boundsHalf, rng, (x, z) =>
+    !insideSolid(level, x, z, 0.12) && !insideWater(level, x, z),
+  )
+  for (const center of patchCenters) {
+    const n = 8 + Math.floor(rng() * 12)
+    for (let i = 0; i < n; i++) {
+      const radius = 1.2 + rng() * 3.4
+      const angle = rng() * TAU
+      const x = center.x + Math.cos(angle) * radius
+      const z = center.z + Math.sin(angle) * radius
+      if (insideSolid(level, x, z, 0.12) || insideWater(level, x, z)) continue
+      grassSpots.push({ x, z })
+    }
+  }
   addInstances(
     parent,
     assets.grass,
@@ -353,9 +412,9 @@ export function scatterNature(
       x: p.x,
       y: heightAt(p.x, p.z),
       z: p.z,
-      height: 0.35 + rng() * 0.45,
+      height: 0.4 + rng() * 0.5,
       rotY: rng() * TAU,
-      width: 0.8 + rng() * 0.55,
+      width: 0.85 + rng() * 0.6,
     })),
     'grass',
   )
