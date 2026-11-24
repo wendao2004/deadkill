@@ -159,7 +159,7 @@ for (const hero of heroes) {
 
 export const LEVEL_PINE_CAMP: LevelDef = {
   id: 'pine-camp-night',
-  name: '松林营地（夜）',
+  name: '松林营地',
   bossKind: 'golem',
   biome: 'forest',
   groundY: 0,

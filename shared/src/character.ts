@@ -225,29 +225,38 @@ export class Character {
    * 清零，重放的第一帧就会把"正按住的空格"当成一次新的按下 —— 长按空格时
    * 每次网络修正都多跳一次，表现就是人物/镜头持续抖动。
    *
+   * 同理，`keepInputState` 时**只拨位置**，不动滑铲/冲刺/攀爬/翻越这些动作
+   * 状态机。它们记录的是"按住某个键以后持续了多久"，快照里没有、服务端也
+   * 不替我们保管；回滚时清掉等于每收到一次快照就把动作打断一次。修复前实测：
+   * 20Hz 快照下一次 1.15s 的滑铲只活 3 帧（滑行 5.3m，之后速度在 1.74 与
+   * 2.44 之间来回跳），冲刺也永远攒不满 0.05s 起步延迟 —— 玩家体感就是
+   * "人物一走一卡"。
+   *
    * 复活/出生仍然用默认值，它们本来就该把输入状态全部重置。
    */
   teleport(feet: Vec3, keepInputState = false): void {
+    // 速度永远要清：它是"上一帧算出来的结果"，重放会重新积分。
     this.vx = 0
     this.vy = 0
     this.vz = 0
-    this.sprinting = false
-    this.sprintHold = 0
-    this.sprintFade = 1
-    this.sliding = false
-    this.slideTime = 0
-    this.slideCooldown = 0
-    this.vaulting = false
-    this.vaultTime = 0
-    this.mantleCooldown = 0
-    this.landingLag = 0
-    this.fallSpeed = 0
-    this.climbing = false
-    this.climbTime = 0
-    this.climbCooldown = 0
-    this.wallContact = 0
-    this.climbLocked = false
     if (!keepInputState) {
+      // 复活/出生/换图：人物是"新的一具"，所有状态都要归零。
+      this.sprinting = false
+      this.sprintHold = 0
+      this.sprintFade = 1
+      this.sliding = false
+      this.slideTime = 0
+      this.slideCooldown = 0
+      this.vaulting = false
+      this.vaultTime = 0
+      this.mantleCooldown = 0
+      this.landingLag = 0
+      this.fallSpeed = 0
+      this.climbing = false
+      this.climbTime = 0
+      this.climbCooldown = 0
+      this.wallContact = 0
+      this.climbLocked = false
       this.prevCrouchHeld = false
       this.jumpBuffer = 0
       this.jumpCooldown = 0
@@ -561,7 +570,16 @@ export class Character {
   private stepSlide(input: PlayerInput, dt: number): void {
     this.slideTime += dt
     let speed = Math.hypot(this.vx, this.vz)
-    if (speed < 1e-5) return
+    // 撞墙/被怪顶住：上一帧的实际位移被吃掉，速度归零。
+    //
+    // 这里必须**先**判退出再返回。早先写成 `if (speed < 1e-5) return`，
+    // 结果是贴墙滑铲时 slideTime 一直在涨、exit 判定却永远走不到 ——
+    // sliding 卡在 true：按着蹲又不能站起、不能冲刺、不能重新滑，只能
+    // 松开蹲键自救。玩家描述为"滑铲完了人卡在那儿"。
+    if (speed < SLIDE_EXIT_SPEED) {
+      this.endSlide()
+      return
+    }
 
     let dx = this.vx / speed
     let dz = this.vz / speed
@@ -592,7 +610,7 @@ export class Character {
     this.slideDirX = dx
     this.slideDirZ = dz
 
-    if (speed < SLIDE_EXIT_SPEED || this.slideTime > SLIDE_DURATION) this.endSlide()
+    if (this.slideTime > SLIDE_DURATION) this.endSlide()
   }
 
   /**

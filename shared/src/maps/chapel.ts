@@ -58,7 +58,7 @@ boxes.list.push(...b.list)
 
 export const LEVEL_CHAPEL: LevelDef = {
   id: 'chapel-night',
-  name: '教堂墓园（夜）',
+  name: '教堂墓园',
   bossKind: 'bellkeeper',
   biome: 'church',
   groundY: 0,

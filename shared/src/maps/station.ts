@@ -69,7 +69,7 @@ boxes.list.push(...b.list)
 
 export const LEVEL_STATION: LevelDef = {
   id: 'station-dusk',
-  name: '火车站废墟（黄昏）',
+  name: '火车站废墟',
   bossKind: 'conductor',
   biome: 'station',
   groundY: 0,

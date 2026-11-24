@@ -129,6 +129,7 @@ import {
   getModifier,
   maxHealthBonus,
   MODIFIERS,
+  type MatchTimeBand,
   monsterDamageScale,
   Rng,
   attachAck,
@@ -506,6 +507,13 @@ interface Player extends PlayerSession, PlayerState {}
 export interface WorldOptions {
   id: string
   level?: LevelDef
+  /**
+   * 大厅选的时段。null/缺省 = 没指定，天气在全池里抽（旧行为）。
+   *
+   * 时段只约束"抽哪半个池子"，具体天气（死寂/浓雾/骤雨/虫潮）仍然随机：
+   * 玩家选的是"几点进场"，不是"玩哪一场"。
+   */
+  timeBand?: MatchTimeBand | null
   /** 最后一名玩家离开时通知注册表，用来决定何时销毁本世界。 */
   onEmpty?: (id: string) => void
   /**
@@ -615,6 +623,8 @@ export class World {
    * 同一个种子复现；跨局重开时再抽一次，避免第二局是上一局的复刻。
    */
   modifier: number
+  /** 大厅指定的时段；开局固化，整局不变（含 reset 后的下一局）。 */
+  private readonly timeBand: MatchTimeBand | null
   /** 本局战利品骰子的偏移。测试要复现同一个点掉什么，就得拿着它去算。 */
   lootSeed: number
   /** 本局搜索点：关卡自带的 + 补给空投动态追加的。 */
@@ -704,6 +714,7 @@ export class World {
     this.trapSprung = (this.level.traps ?? []).map(() => false)
     this.onEmpty = options.onEmpty
     this.onSettle = options.onSettle
+    this.timeBand = options.timeBand ?? null
     this.physics = createLevelWorld(this.level)
     // 油灯灯头：2.35m 高的实心小球。它高于角色胶囊，不会挡路，但会挡子弹。
     for (const [i, lamp] of (this.level.lamps ?? []).entries()) {
@@ -732,7 +743,7 @@ export class World {
     this.spawnRng = forkFor(seed, 'spawn')
     // 先抽天气、再刷怪：刷怪数量与种类都要吃 modifier（虫潮 1.6 倍怪量），
     // 反过来先刷怪就得把整批怪重算一遍。
-    this.modifier = rollModifier(this.rng)
+    this.modifier = rollModifier(this.rng, this.timeBand)
     this.lootSeed = Math.floor(this.rng() * 0x7fffffff)
     // 目标状态机读玩家位置时**必须过滤掉死人**：尸体停在撤离点里不该继续推进度。
     this.match = new MatchDriver(this.level, {
@@ -2409,7 +2420,7 @@ export class World {
       this.pendingEvents.length = 0
       this.lastObjective = null
       // 新一局换天气/换战利品种子：同一房间连续第二局不能是上一局的复刻。
-      this.modifier = rollModifier(this.rng)
+      this.modifier = rollModifier(this.rng, this.timeBand)
       this.lootSeed = Math.floor(this.rng() * 0x7fffffff)
       this.match.state.modifier = this.modifier
       // 怪也要重建：上一局打空的巢穴/残血 Boss 不能直接留给下一局。

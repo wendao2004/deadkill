@@ -152,7 +152,41 @@ export function getModifier(id: number): MatchModifier {
   return MODIFIERS[id] ?? MODIFIERS[0]
 }
 
-/** 用世界的种子 rng 抽一个 —— 传进来的必须是每局固定的那个 rng，不能每 tick 调。 */
-export function rollModifier(rand: () => number): number {
-  return Math.floor(rand() * MODIFIERS.length) % MODIFIERS.length
+/**
+ * 两个可选时段。大厅的地图选择只给这两个整点（塔科夫式：一张图两种天）。
+ *
+ * 用类型而不是自由数字：时段要跟着 Hello 上线上，字符串多一种拼法就会
+ * 变成"我明明选了白天，进去还是夜里"。
+ */
+export type MatchTimeBand = 'day' | 'night'
+
+export const TIME_BANDS: readonly MatchTimeBand[] = ['day', 'night']
+
+/** 时段的展示名与钟点。UI 与 QA 共用一份，避免"卡片写 19:00、局内写夜"的漂移。 */
+export const TIME_BAND_LABEL: Record<MatchTimeBand, { hour: string; cn: string; en: string }> = {
+  day: { hour: '07:00', cn: '白昼', en: 'DAY' },
+  night: { hour: '19:00', cn: '夜', en: 'NIGHT' },
+}
+
+export function isTimeBand(value: unknown): value is MatchTimeBand {
+  return value === 'day' || value === 'night'
+}
+
+/** 某个时段下可用的 modifier id。天气仍在这个池子里随机，只是不再跨时段。 */
+export function modifierIdsOfTime(time: MatchTimeBand): number[] {
+  const out: number[] = []
+  for (const m of MODIFIERS) if (m.time === time) out.push(m.id)
+  return out
+}
+
+/**
+ * 用世界的种子 rng 抽一个 —— 传进来的必须是每局固定的那个 rng，不能每 tick 调。
+ *
+ * 传 `time` 时只在该时段的条目里抽：玩家在大厅选了"19:00"，进去就不能是
+ * 正午的日头。不传则保持旧行为（全池随机），旧调用方与测试不用改。
+ */
+export function rollModifier(rand: () => number, time?: MatchTimeBand | null): number {
+  const pool = time ? modifierIdsOfTime(time) : []
+  if (pool.length === 0) return Math.floor(rand() * MODIFIERS.length) % MODIFIERS.length
+  return pool[Math.floor(rand() * pool.length) % pool.length]!
 }

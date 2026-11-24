@@ -55,6 +55,7 @@ test('hello: 不带关卡时 levelId 为 null 且包体与老格式一致', () =
     partyId: null,
     profileId: null,
     partyCode: null,
+    timeBand: null,
   })
 })
 
@@ -87,6 +88,7 @@ test('hello: 老客户端手工构的包（没有尾部）照样能解', () => {
     partyId: null,
     profileId: null,
     partyCode: null,
+    timeBand: null,
   })
 })
 
@@ -96,6 +98,19 @@ test('hello: 空长度的尾部等同于没有（旧版留的 0 长度是合法�
   padded.set(new Uint8Array(buffer))
   padded[buffer.byteLength] = 0
   assert.equal(decodeHello(padded.buffer as ArrayBuffer).levelId, null)
+})
+
+test('hello: 时段跟在同一串尾巴最后，往返一致', () => {
+  const buffer = encodeHello('ash', OTHER_LEVEL_ID, null, 'prof-1', null, 'day')
+  const hello = decodeHello(buffer)
+  assert.equal(hello.levelId, OTHER_LEVEL_ID)
+  assert.equal(hello.profileId, 'prof-1')
+  assert.equal(hello.partyCode, null)
+  assert.equal(hello.timeBand, 'day')
+  // 只带时段（前面的段全空）时，前面的段要用 0 长度占位，否则读串位。
+  const bare = decodeHello(encodeHello('ash', null, null, null, null, 'night'))
+  assert.equal(bare.timeBand, 'night')
+  assert.equal(bare.levelId, null)
 })
 
 test('hello: 尾部被截断时给 null 而不是抛错', () => {

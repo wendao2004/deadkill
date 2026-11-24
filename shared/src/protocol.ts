@@ -1053,11 +1053,18 @@ function clampLevelId(levelId: string | null | undefined): string {
 /**
  * C→S 握手包：u8 kind + u16le version + u8 昵称长度 + 昵称
  * + 【可选】u8 levelId 长度 + levelId
- * + 【可选】u8 partyId 长度 + partyId。
+ * + 【可选】u8 partyId 长度 + partyId
+ * + 【可选】u8 profileId 长度 + profileId
+ * + 【可选】u8 partyCode 长度 + partyCode
+ * + 【可选】u8 timeBand 长度 + timeBand（"day" / "night"）。
  *
  * 不带 levelId/partyId 时包体与老版本**逐字节相同**（旧服务端照样能读）。
  * partyId 放在最后：服务端在创建角色之前就能知道队伍，从而让第二名队员
  * 直接生成在共享出生点，而不是先落随机点再被纠正一帧。
+ *
+ * timeBand 追加在**最末**：老服务端读到 partyCode 就停了，多出来的尾巴
+ * 对它无影响；新服务端拿不到这一段时按"不指定时段、全池随机"处理，
+ * 与加这个字段之前完全一致。所以不需要升 PROTOCOL_VERSION。
  */
 export function encodeHello(
   nickname: string,
@@ -1065,19 +1072,22 @@ export function encodeHello(
   partyId?: string | null,
   profileId?: string | null,
   partyCode?: string | null,
+  timeBand?: string | null,
 ): ArrayBuffer {
   const bytes = new TextEncoder().encode(truncateUtf8(nickname, NICKNAME_MAX_BYTES))
   const level = clampLevelId(levelId)
   const party = (partyId ?? '').slice(0, 24)
   const profile = (profileId ?? '').slice(0, 64)
   const code = (partyCode ?? '').slice(0, 24)
+  const time = (timeBand ?? '').slice(0, 8)
   // 可选段按顺序写；缺省段用一个 0 长度字节占位，否则后面的段会被读串。
-  const levelPart = level ? tailByteLength(level) : party || profile || code ? 1 : 0
-  const partyPart = party ? tailByteLength(party) : profile || code ? 1 : 0
-  const profilePart = profile ? tailByteLength(profile) : code ? 1 : 0
-  const codePart = tailByteLength(code)
+  const levelPart = level ? tailByteLength(level) : party || profile || code || time ? 1 : 0
+  const partyPart = party ? tailByteLength(party) : profile || code || time ? 1 : 0
+  const profilePart = profile ? tailByteLength(profile) : code || time ? 1 : 0
+  const codePart = code ? tailByteLength(code) : time ? 1 : 0
+  const timePart = tailByteLength(time)
   const buffer = new ArrayBuffer(
-    4 + bytes.length + levelPart + partyPart + profilePart + codePart,
+    4 + bytes.length + levelPart + partyPart + profilePart + codePart + timePart,
   )
   const view = new DataView(buffer)
   view.setUint8(0, Msg.Hello)
@@ -1086,15 +1096,18 @@ export function encodeHello(
   new Uint8Array(buffer, 4).set(bytes)
   let offset = 4 + bytes.length
   if (level) writeTail(view, offset, level)
-  else if (party || profile || code) view.setUint8(offset, 0)
+  else if (party || profile || code || time) view.setUint8(offset, 0)
   offset += levelPart
   if (party) writeTail(view, offset, party)
-  else if (profile || code) view.setUint8(offset, 0)
+  else if (profile || code || time) view.setUint8(offset, 0)
   offset += partyPart
   if (profile) writeTail(view, offset, profile)
-  else if (code) view.setUint8(offset, 0)
+  else if (code || time) view.setUint8(offset, 0)
   offset += profilePart
   if (code) writeTail(view, offset, code)
+  else if (time) view.setUint8(offset, 0)
+  offset += codePart
+  if (time) writeTail(view, offset, time)
   return buffer
 }
 
@@ -1109,6 +1122,11 @@ export function decodeHello(buffer: ArrayBuffer): {
   profileId: string | null
   /** 大厅好友码；服务端用它校验 partyId 是否真的是这个成员的队伍。 */
   partyCode: string | null
+  /**
+   * 大厅选的时段（"day" / "night"）。null = 没指定（旧客户端 / 纯 URL 直连），
+   * 服务端按旧的"全池随机"处理。合法性由服务端再校验一次，见 isTimeBand。
+   */
+  timeBand: string | null
 } {
   const view = new DataView(buffer)
   if (view.getUint8(0) !== Msg.Hello) throw new Error('不是握手包')
@@ -1144,7 +1162,18 @@ export function decodeHello(buffer: ArrayBuffer): {
     offset += profileLen
   }
   const partyCode = readTail(view, offset)
-  return { version, nickname, levelId, partyId, profileId, partyCode }
+  // 不能按 readTail 的返回值决定要不要前进：0 长度占位段也是"有这一段"，
+  // 但它解出来是 null。按长度字节走，才读得到后面的时段。
+  if (offset + 1 <= view.byteLength) offset += 1 + view.getUint8(offset)
+  let timeBand: string | null = null
+  if (offset + 1 <= view.byteLength) {
+    const timeLen = view.getUint8(offset)
+    offset += 1
+    if (timeLen > 0 && offset + timeLen <= view.byteLength) {
+      timeBand = new TextDecoder().decode(new Uint8Array(buffer, offset, timeLen))
+    }
+  }
+  return { version, nickname, levelId, partyId, profileId, partyCode, timeBand }
 }
 
 /**

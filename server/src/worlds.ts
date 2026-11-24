@@ -20,7 +20,9 @@ import {
   LEVELS,
   WORLD_IDLE_TIMEOUT_MS,
   getLevel,
+  isTimeBand,
   type LevelDef,
+  type MatchTimeBand,
 } from '@dk/shared'
 
 import { World } from './world.ts'
@@ -83,6 +85,13 @@ export class WorldRegistry {
   private readonly worlds = new Map<string, World>()
   /** matchId -> 关卡 id。世界被清扫掉时一起删，避免这张表无限增长。 */
   private readonly levels = new Map<string, string>()
+  /**
+   * matchId -> 时段（day / night）。没登记的 matchId 不在表里，世界全池抽。
+   *
+   * 和 levels 一样是世界级的属性：它决定的是"这一局是白昼还是夜"，进世界
+   * 之后由 modifier 固化，客户端从目标包读回来。
+   */
+  private readonly times = new Map<string, MatchTimeBand>()
   /** matchId -> 空房登记时间。只用于回收"创建了但一直没人进"的房间。 */
   private readonly registeredAt = new Map<string, number>()
   private readonly defaultLevelId: string
@@ -180,11 +189,53 @@ export class WorldRegistry {
     return levelId
   }
 
+  /**
+   * 登记"这一局要白天还是夜里"。
+   *
+   * 与关卡同一套规则：**第一个进来的客户端决定**，后来的只能跟随。理由一样 ——
+   * 世界一旦建好，光照/雾/怪物数量都按当时的 modifier 铺下去了，中途改时段
+   * 等于把整局的氛围换掉，而玩家可能正趴在草丛里。
+   *
+   * 返回最终生效的时段；null = 没指定（旧客户端），由 World 自己全池抽。
+   * 空场时可以改（和换图一样），这样"上一局玩的是夜、下一局想试白天"不必
+   * 换个房号。
+   */
+  registerTime(
+    matchId: string,
+    requested: string | null | undefined,
+  ): MatchTimeBand | null {
+    const asked = isTimeBand(requested) ? requested : null
+    if (asked === null) return this.times.get(matchId) ?? null
+    const existing = this.times.get(matchId)
+    if (existing === undefined || existing === asked) {
+      this.times.set(matchId, asked)
+      return asked
+    }
+    const world = this.worlds.get(matchId)
+    if (world === undefined || world.playerCount === 0) {
+      if (world) {
+        world.dispose()
+        this.worlds.delete(matchId)
+      }
+      this.times.set(matchId, asked)
+      console.info(`[worlds] 匹配 ${matchId} 空场，时段 ${existing} → ${asked}`)
+      return asked
+    }
+    console.warn(
+      `[worlds] 匹配 ${matchId} 已经跑在 ${existing}，忽略时段请求 ${asked}（里面还有 ${world.playerCount} 人）`,
+    )
+    return existing
+  }
+
+  /** 这个 matchId 登记的时段；null = 没指定，世界按旧规则全池抽。 */
+  timeBandOf(matchId: string): MatchTimeBand | null {
+    return this.times.get(matchId) ?? null
+  }
+
   /** 大厅创建房间时防止撞上已有 id / 世界。 */
   has(matchId: string): boolean {
     return this.levels.has(matchId) || this.worlds.has(matchId)
   }
-
   /** 当前登记的房间数（含空房），用于创建上限。 */
   get roomCount(): number {
     return this.levels.size
@@ -232,6 +283,7 @@ export class WorldRegistry {
       world = new World({
         id: matchId,
         level: this.levelOf(matchId),
+        timeBand: this.timeBandOf(matchId),
         onEmpty: (id) => this.scheduleSweep(id),
         onSettle: this.onSettle,
       })
@@ -285,6 +337,7 @@ export class WorldRegistry {
     for (const world of this.worlds.values()) world.dispose()
     this.worlds.clear()
     this.levels.clear()
+    this.times.clear()
   }
 
   private scheduleSweep(_id: string): void {
@@ -301,6 +354,7 @@ export class WorldRegistry {
       // 世界没了就别再记着它用哪张图：否则每个来过的 matchId 永久占一条。
       // 重新进来时由 Hello 重新协商，空世界里没有状态可保。
       this.levels.delete(id)
+      this.times.delete(id)
       this.registeredAt.delete(id)
     }
     // 创建了房间但一直没人进：30 分钟后回收登记，否则大厅列表会被空房撑满。
@@ -308,6 +362,7 @@ export class WorldRegistry {
       if (this.worlds.has(id)) continue
       if (now - at < EMPTY_ROOM_TTL_MS) continue
       this.levels.delete(id)
+      this.times.delete(id)
       this.registeredAt.delete(id)
     }
   }

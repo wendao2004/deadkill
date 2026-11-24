@@ -895,6 +895,9 @@ function handleConnection(
     // 会先被塞进默认图的世界里，而世界一旦建好就不能换图。
     // 旧客户端的 Hello 里没有这一段（decodeHello 给 null），登记的就是默认图。
     ctx.registry.registerLevel(matchId, hello.levelId)
+    // 时段与关卡同理：第一个进来的人定，世界按它抽 modifier。没带就是旧行为
+    // （全池随机），所以老客户端照常能进。
+    ctx.registry.registerTime(matchId, hello.timeBand)
     const target = ctx.registry.get(matchId)
     // userId 仍按“本标签页/账号”用于重连；profileId 单独传给世界做结算。
     // 两者分开：同一浏览器开两个标签页互射时不能被重连接管成同一个人，

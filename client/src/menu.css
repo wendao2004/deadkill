@@ -502,6 +502,96 @@
   min-width: 0;
 }
 
+/* ------------------------------------------------------------------ 出击时段
+
+   塔科夫式的一行两档：07:00 / 19:00。它不是"难度选项"，是**这一局的天光**——
+   同一张图在两个钟点是两套光照、两套能见度，打法也跟着换。
+
+   为什么不做成地图卡里的按钮：卡片本身是 <button>，嵌套按钮是非法 HTML，
+   点击会同时命中卡片与时段（选图 + 改时间一次发生），键盘也进不去。做成
+   地图列表上方的一条，语义是"今晚几点出门"。 */
+
+.dk-timerow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 0 0 10px;
+}
+
+.dk-timerow__label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--ash);
+}
+
+.dk-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 2px solid var(--ink);
+  background: rgba(12, 11, 10, 0.82);
+  box-shadow: 2px 2px 0 var(--ink);
+  color: var(--bone);
+  cursor: pointer;
+  transition: transform 80ms steps(2, end), box-shadow 80ms steps(2, end);
+}
+
+.dk-time:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.dk-time:active {
+  transform: translate(1px, 1px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.dk-time__hour {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.dk-time__cn {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--ash);
+}
+
+/* 选中：橙描边 + 极暗的琥珀底。和地图卡的选中态是同一套语言。 */
+.dk-time.is-on {
+  border-color: var(--amber);
+  background: linear-gradient(to bottom, rgba(217, 154, 74, 0.26), rgba(12, 11, 10, 0.9));
+  box-shadow: 2px 2px 0 var(--ink), inset 0 0 0 1px rgba(217, 154, 74, 0.45);
+}
+
+.dk-time.is-on .dk-time__hour {
+  color: var(--amber);
+}
+
+.dk-time.is-on .dk-time__cn {
+  color: var(--bone);
+}
+
+.dk-timerow__hint {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ash);
+  opacity: 0.85;
+}
+
+@media (max-width: 720px) {
+  /* 窄屏上说明文案换行会把这个区域撑成两行，直接藏掉 —— 两个钟点本身
+     已经足够说明问题。 */
+  .dk-timerow__hint {
+    display: none;
+  }
+}
+
 .dk-maps {
   display: grid;
   /* 150px：左列 663~700px 时四张图还能并成一行。178px 会折成两行，

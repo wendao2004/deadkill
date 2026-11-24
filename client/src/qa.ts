@@ -24,7 +24,10 @@
  *   ?bench=1                               基准模式：绕玩家 360° 巡游 600 帧后输出 __bench
  *   ?show=lair|clue|spawn                  子系统/地点展示：进场后自动摆到该点
  *   ?map=<levelId>                         关卡（level-choice.ts 读取）
+ *   ?time=day|night|7|19                   时段（07:00 / 19:00），约束本局天气池
  */
+
+import type { MatchTimeBand } from '@dk/shared'
 
 import type { GraphicsQuality, MenuSettings } from './settings.ts'
 
@@ -66,6 +69,13 @@ export interface QaParams {
    * 想逐图验收就必须换房间号。
    */
   match: string | null
+  /**
+   * `?time=day|night`：把这一局钉在 07:00 或 19:00。
+   *
+   * 之前验收只能用 `fx-N` 一个个试，因为天气是房间种子抽的；有了这个参数，
+   * 画质对比不用再靠运气 —— 光位、雾色、曝光至少有一半变量被钉住。
+   */
+  time: MatchTimeBand | null
   noaudio: boolean
   /** false = ?post=0，关闭画面风格层。 */
   post: boolean
@@ -130,6 +140,15 @@ function parseCamera(raw: string | null): QaCamera | null {
   return { x: parts[0]!, y: parts[1]!, z: parts[2]!, tx: parts[3]!, ty: parts[4]!, tz: parts[5]! }
 }
 
+/** 时段：接受 day/night 与两个整点，其它一律当"没指定"。 */
+function parseTimeBand(raw: string | null): MatchTimeBand | null {
+  if (raw === null) return null
+  const key = raw.trim().toLowerCase()
+  if (key === 'day' || key === '7' || key === '07:00' || key === '07') return 'day'
+  if (key === 'night' || key === '19' || key === '19:00') return 'night'
+  return null
+}
+
 function parseSeed(raw: string | null): number | null {
   if (raw === null || !/^\d+$/.test(raw)) return null
   return Number.parseInt(raw, 10) >>> 0
@@ -169,6 +188,7 @@ export function parseQa(source: string): QaParams {
     colliders: flag(params, 'colliders', false),
     story: flag(params, 'story', false),
     match: params.get('match'),
+    time: parseTimeBand(params.get('time')),
     noaudio: flag(params, 'noaudio', false),
     post: flag(params, 'post', true),
     postFail: flag(params, 'postfail', false),

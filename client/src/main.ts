@@ -504,6 +504,8 @@ async function enter(config: MenuConfig, reconnecting = false): Promise<void> {
     squad: config.squad ?? 0,
     partyId: config.partyId,
     build: config.build,
+    // 时段随 Hello 发给服务端（决定本局抽哪个天气池），同时用于进图前预置光照。
+    timeBand: config.timeBand,
     onTraitFx: flashTrait,
     onStatus: setStatus,
     onConnected: () => {
@@ -767,6 +769,9 @@ if (qa.autostart) {
     // ?match= 优先：QA 逐图验收必须能指定房间，否则服务端按房间首位玩家的图定关卡，
     // 第二条 `?map=` 会被静默忽略（现象是"我明明换了图，画面还是上一张"）。
     matchId: qa.match ?? saved.matchId ?? 'qa',
+    // ?time=day 才能在自动截图里拍白昼：否则天气由房间种子决定，逐图对比
+    // 光照时必须先掷骰子。
+    timeBand: qa.time ?? saved.timeBand,
     primaryId: saved.primaryId ?? DEFAULT_WEAPON_ID,
     traits: saved.traits ?? 0,
     // 自动进场必须复用菜单里选好的改装，否则 ?build= 只改枪模外观、

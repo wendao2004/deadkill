@@ -253,3 +253,24 @@ node tools/qa-shot.mjs --out b.png --url "...?map=quarry-dust&match=shot-quarry&
 ```
 
 第二条如果还拍出教堂，就是忘了 `&match=`。
+
+## 时段固定：`?time=day|night`（2026-11-24）
+
+| 参数 | 作用 |
+|---|---|
+| `?time=day` | 本局钉在 **07:00**（modifier 只在 4..7 里抽） |
+| `?time=night` | 本局钉在 **19:00**（modifier 只在 0..3 里抽） |
+| 不带 | 旧行为：全池随机，一局可能是白天也可能是夜里 |
+
+这是**光照对比**的必要条件。在此之前，同一张图两次截图可能一次日出一次月下，
+曝光/雾色/体积光的差异会盖过哪怕真实的画质改动；只能靠 `fx-N` 一个个试
+（`fx-N` 的天气可以离线算，但仍然是掷骰子）。
+
+```bash
+node tools/qa-shot.mjs --out day.png   --url "...?map=marsh-p0&match=t-day&time=day&shot=1"
+node tools/qa-shot.mjs --out night.png --url "...?map=marsh-p0&match=t-night&time=night&shot=1"
+```
+
+sidecar 里的 `modifier` / `modifierHour` 就是断言依据：`time=day` 必须回
+`07:00`，`time=night` 必须回 `19:00`。**时段由房间的首位玩家决定**，所以
+两个时段必须用两个不同的 `match`。

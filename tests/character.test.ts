@@ -241,3 +241,91 @@ test('长时间连续爬同一面墙会在体力耗尽后强制坠落', () => {
   assert.ok(lockedWhileAirborne, '体力耗尽后应在空中强制脱手')
   assert.ok(!c.climbing, '不能无限贴墙')
 })
+
+/**
+ * 预测回滚不许打断"动作状态机"。
+ *
+ * 2026-11-24 的线上手感问题："滑铲像被拽住、人走起来一卡一卡"。
+ * 20Hz 快照每 50ms 触发一次 reconcile → teleport(keepInputState=true)，
+ * 修复前它会顺手把 sliding / sprinting 清掉：一次 1.15s 的滑铲只活 3 帧，
+ * 之后速度在 1.74 与 2.44 之间来回跳；冲刺也永远攒不满 0.05s 起步延迟。
+ */
+test('预测回滚不会打断滑铲', () => {
+  const world = buildLevelWorld(FLAT)
+  const c = makeCharacter(world)
+  const sprint = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: Buttons.Sprint }
+  const slide = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: Buttons.Sprint | Buttons.Crouch }
+  for (let i = 0; i < 60; i++) {
+    c.step(world, sprint, DT)
+    world.step()
+  }
+  const from = c.feet
+
+  let slideFrames = 0
+  let minWhileSliding = Infinity
+  for (let i = 0; i < 150; i++) {
+    // 每 3 帧一次修正 = 20Hz 快照。修正只拨位置（服务端速度原样写回）。
+    if (i % 3 === 0 && i > 0) {
+      const vx = c.vx
+      const vz = c.vz
+      c.teleport({ x: c.feet.x, y: c.feet.y, z: c.feet.z }, true)
+      c.vx = vx
+      c.vz = vz
+      world.step()
+    }
+    c.step(world, slide, DT)
+    world.step()
+    if (c.sliding) {
+      slideFrames++
+      minWhileSliding = Math.min(minWhileSliding, Math.hypot(c.vx, c.vz))
+    }
+  }
+  const travelled = Math.hypot(c.feet.x - from.x, c.feet.z - from.z)
+  world.free()
+
+  // 1.15s 的滑铲在 60Hz 下是 ~68 帧；给网络修正留 10 帧余量。
+  assert.ok(slideFrames > 58, `滑铲应该完整活过一次滑行（只活了 ${slideFrames} 帧）`)
+  assert.ok(travelled > 8.5, `滑行距离不应被修正吃掉（只走了 ${travelled.toFixed(2)}m）`)
+  // 滑铲中速度必须单调衰减，不能出现"刹住又弹起"的锯齿。
+  assert.ok(minWhileSliding > 2.3, `滑铲速度不应掉到蹲行以下（最低 ${minWhileSliding.toFixed(2)}）`)
+})
+
+test('预测回滚不会重置冲刺的起步延迟', () => {
+  const world = buildLevelWorld(FLAT)
+  const c = makeCharacter(world)
+  const sprint = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: Buttons.Sprint }
+  for (let i = 0; i < 40; i++) {
+    c.step(world, sprint, DT)
+    world.step()
+  }
+  assert.equal(c.sprinting, true, '先要进入冲刺')
+  for (let i = 0; i < 30; i++) {
+    // 每 3 帧一次修正：sprintHold 若被清零，sprinting 会在 false/true 之间抖。
+    if (i % 3 === 0) {
+      const vx = c.vx
+      const vz = c.vz
+      c.teleport({ x: c.feet.x, y: c.feet.y, z: c.feet.z }, true)
+      c.vx = vx
+      c.vz = vz
+      world.step()
+    }
+    c.step(world, sprint, DT)
+    world.step()
+    assert.equal(c.sprinting, true, `第 ${i} 帧冲刺被网络修正打断了`)
+  }
+  world.free()
+})
+
+test('出生/复活用的 teleport 仍然清空全部动作状态', () => {
+  const world = buildLevelWorld(FLAT)
+  const c = makeCharacter(world)
+  const sprint = { forward: 1, right: 0, yaw: 0, pitch: 0, buttons: Buttons.Sprint }
+  for (let i = 0; i < 40; i++) {
+    c.step(world, sprint, DT)
+    world.step()
+  }
+  c.teleport({ x: 0, y: 0, z: 0 })
+  world.free()
+  assert.equal(c.sprinting, false, '复活不该继承上一具身体的冲刺')
+  assert.equal(c.sliding, false, '复活不该继承上一具身体的滑铲')
+})

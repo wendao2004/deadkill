@@ -75,7 +75,7 @@ boxes.list.push(...b.list)
 // 荒野断点：applyCover 在关卡建成后统一撒（它需要看到所有标记点才能避开）
 export const LEVEL_MARSH: LevelDef = {
   id: 'marsh-p0',
-  name: '沼泽农舍（大厅）',
+  name: '沼泽农舍',
   bossKind: 'boss',
   biome: 'swamp',
   groundY: 0,

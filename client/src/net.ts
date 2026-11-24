@@ -24,6 +24,7 @@ import {
   Msg,
   type GameEvent,
   type LootPacket,
+  type MatchTimeBand,
   type NameEntry,
   type ObjectivePacket,
   type ProfilePacket,
@@ -157,6 +158,8 @@ export class Net {
   private squad = 0
   /** 队伍 id：同 party 的玩家由服务端强制编入同一队并共享出生点。 */
   private partyId = ''
+  /** 大厅选的时段；随 Hello 一起发，服务端据此把本局钉在 07:00 或 19:00。 */
+  private timeBand: MatchTimeBand | null = null
   /** 主武器多槽位 build；服务端会重新清洗再算有效数值。 */
   private build: WeaponBuild | undefined
   /** 已经发给服务端的最新输入序号，重连时用来判断是否要丢弃旧输入。 */
@@ -180,6 +183,8 @@ export class Net {
     squad: number,
     partyId: string,
     build: WeaponBuild | undefined,
+    /** 大厅选的时段；null = 不指定，服务端全池随机（旧行为）。 */
+    timeBand: MatchTimeBand | null,
     handlers: NetHandlers,
   ): void {
     this.handlers = handlers
@@ -192,6 +197,7 @@ export class Net {
     this.squad = squad
     this.partyId = partyId
     this.build = build
+    this.timeBand = timeBand
     const socket = new WebSocket(wsUrl(matchId))
     // 必须显式设成 arraybuffer：默认是 blob，而 blob 要先 await arrayBuffer()
     // 才能解析，等于给每个快照加一次微任务延迟。
@@ -200,7 +206,14 @@ export class Net {
 
     socket.onopen = () =>
       socket.send(
-        encodeHello(nickname, levelId, this.partyId, getProfileId(), getPartyCode()),
+        encodeHello(
+          nickname,
+          levelId,
+          this.partyId,
+          getProfileId(),
+          getPartyCode(),
+          this.timeBand ?? undefined,
+        ),
       )
 
     socket.onmessage = (event: MessageEvent) => {

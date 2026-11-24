@@ -62,6 +62,10 @@ import {
   effectiveWeaponSpec,
   sanitizeBuild,
   sanitizeOwnedBuild,
+  TIME_BANDS,
+  TIME_BAND_LABEL,
+  isTimeBand,
+  type MatchTimeBand,
 } from '@dk/shared'
 
 
@@ -134,6 +138,13 @@ export interface MenuConfig {
   squad?: number
   /** 大厅队伍 id；同 partyId 的玩家由服务端强制同队并共享出生点。 */
   partyId?: string
+  /**
+   * 这一局进哪个时段（07:00 / 19:00）。
+   *
+   * 它只约束"抽哪半个天气池"，具体天气仍然一局一抽：玩家选的是几点进场，
+   * 不是哪一场天气。缺省 = 不指定，服务端按旧规则全池随机。
+   */
+  timeBand?: MatchTimeBand
   /** 主武器多槽位 build（塔科夫式工作台）。 */
   build?: WeaponBuild
   /**
@@ -211,6 +222,7 @@ const KEY_ATTACH = 'dk.attachment'
 const KEY_ATTACH_UNLOCKS = 'dk.attachmentUnlocks'
 const KEY_SQUAD = 'dk.squad'
 const KEY_MATCH = 'dk.match'
+const KEY_TIME = 'dk.time'
 const KEY_PRIMARY = 'dk.primary'
 const KEY_TRAITS = 'dk.traits'
 /** 已拥有等级（打包值：每条占 2 bit）。和"这局带哪几条"分开存，升级不必进配装包。 */
@@ -299,6 +311,8 @@ export function loadSavedConfig(): Partial<MenuConfig> {
   if (nickname) out.nickname = nickname
   const match = readRaw(KEY_MATCH)
   if (match) out.matchId = match
+  const time = readRaw(KEY_TIME)
+  if (isTimeBand(time)) out.timeBand = time
   // 主武器只认白名单：手改过 localStorage、或旧版本留下的 id 一律当"没存过"，
   // 由调用方回落到 DEFAULT_WEAPON_ID。Number(null) 是 0，正好被 isPrimaryChoice 挡掉。
   const primary = Number(readRaw(KEY_PRIMARY))
@@ -336,6 +350,9 @@ export function saveConfig(config: Partial<MenuConfig>): void {
   else dropRaw(KEY_NICKNAME)
   if (matchId) writeRaw(KEY_MATCH, matchId)
   else dropRaw(KEY_MATCH)
+  // 时段不回落到默认值：没选过就让它继续"没选过"，服务端全池随机。
+  if (isTimeBand(config.timeBand)) writeRaw(KEY_TIME, config.timeBand)
+  else dropRaw(KEY_TIME)
   // 主武器不做"清空"分支：非法 id 只是不写，上一次的有效选择留着，
   // 免得一次脏输入把玩家的配枪重置成默认。
   if (config.primaryId !== undefined && isPrimaryChoice(config.primaryId)) {
@@ -1390,6 +1407,9 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
 
   const deployState = {
     mapId: MAP_ENTRIES[0]?.id ?? 'marsh-p0',
+    // 时段：URL/存档都认，缺省夜晚 —— 这张游戏的主色调是月光下的沼泽，
+    // 白天是"另一种玩法"，不该是默认。qa.ts 的 ?time= 会在 main.ts 里覆盖。
+    timeBand: (isTimeBand(config.timeBand) ? config.timeBand : 'night') as MatchTimeBand,
     squad: (config.squad === 1 ? 'duo' : 'solo') as 'solo' | 'duo',
     threat: 1,
     contract: 1,
@@ -1399,6 +1419,10 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
   /** 永久解锁的配件（bit = 配件 id）。0 号"不装"永远解锁。 */
   let attachmentUnlocks = (Number(readRaw(KEY_ATTACH_UNLOCKS) ?? '0') | 1) >>> 0
   let deployTimer = 0
+  /** 时段按钮（07:00 / 19:00）与卡片上那行"哪一天的几点"，syncTimeBand 统一刷。 */
+  const timeBtns = new Map<MatchTimeBand, HTMLButtonElement>()
+  let timeHintEl: HTMLElement | null = null
+  const mapWhenEls = new Map<string, HTMLElement>()
   let deploying = false
   let cta: HTMLButtonElement | null = null
   let primaryLine: HTMLElement | null = null
@@ -1761,6 +1785,69 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     }
   }
 
+  /**
+   * 出击时段的说明文案。
+   *
+   * 不写"白天更亮"这种废话：玩家真正需要知道的是**这局的光会怎么改变打法**。
+   * 白天看得远，所以埋伏更难；夜里火光既是路标也是靶心。
+   */
+  const TIME_HINT: Record<MatchTimeBand, string> = {
+    day: '日头压得低。看得远，也更容易被看见。',
+    night: '月光下的沼泽。火光是最好的路标，也是最好的靶心。',
+  }
+
+  /** 卡片上"哪天 · 几点"那一行。时段一变整排卡片一起变。 */
+  function mapWhenLabel(entryId: string): string {
+    const world = artProfile(entryId)
+    const band = TIME_BAND_LABEL[deployState.timeBand]
+    return `${world.date} · ${band.hour} ${band.cn}`
+  }
+
+  /**
+   * 出击时段选择（塔科夫式：一张图两种天）。
+   *
+   * 为什么是"全局一条"而不是每张卡各自两个按钮：卡片本身已经是 `<button>`，
+   * 往里再塞按钮是非法 HTML（点击会同时触发卡片选中与时段切换，键盘也不可达）。
+   * 而玩家心里的模型本来就是"今晚几点出门"，不是"这张图几点、那张图几点"。
+   *
+   * 选中的时段随 Hello 发给服务端，服务端只在这个时段的天气池里抽 modifier，
+   * 局内光照由目标包里的 modifier 驱动（setDaylight）—— 三处指的是同一个值。
+   */
+  function buildTimeBar(): HTMLElement {
+    const bar = mk('div', 'dk-timerow dk-step dk-step-map')
+    bar.appendChild(mk('span', 'dk-timerow__label', '出击时段'))
+    for (const band of TIME_BANDS) {
+      const info = TIME_BAND_LABEL[band]
+      const btn = mkButton('dk-time')
+      btn.dataset.time = band
+      btn.appendChild(mk('span', 'dk-time__hour', info.hour))
+      btn.appendChild(mk('span', 'dk-time__cn', info.cn))
+      btn.addEventListener('click', () => {
+        if (deployState.timeBand === band) return
+        deployState.timeBand = band
+        // 立刻落盘：选完时段直接刷新页面，回来还是这个时段。
+        writeRaw(KEY_TIME, band)
+        syncTimeBand()
+      })
+      timeBtns.set(band, btn)
+      bar.appendChild(btn)
+    }
+    timeHintEl = mk('span', 'dk-timerow__hint', TIME_HINT[deployState.timeBand])
+    bar.appendChild(timeHintEl)
+    return bar
+  }
+
+  /** 时段选择的所有视觉联动：按钮态、说明文案、每张卡上的"几点"。 */
+  function syncTimeBand(): void {
+    for (const [band, btn] of timeBtns) {
+      const on = band === deployState.timeBand
+      btn.classList.toggle('is-on', on)
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+    }
+    if (timeHintEl) timeHintEl.textContent = TIME_HINT[deployState.timeBand]
+    for (const [id, el] of mapWhenEls) el.textContent = mapWhenLabel(id)
+  }
+
   function buildDeploy(): void {
     const pane = panes.get('deploy')
     if (!pane) return
@@ -1777,6 +1864,8 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     head.appendChild(mk('span', 'dk-section-head__rule'))
     left.appendChild(head)
 
+    left.appendChild(buildTimeBar())
+
     const cards = mk('div', 'dk-maps dk-step dk-step-map')
     for (const [entryIndex, entry] of MAP_ENTRIES.entries()) {
       const card = mkButton('dk-map')
@@ -1791,10 +1880,12 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
       body.appendChild(mk('span', 'dk-map__name', entry.name))
       body.appendChild(mk('span', 'dk-map__en', entry.en))
       body.appendChild(mk('span', 'dk-map__desc', entry.desc))
-      // 这张图在世界上是"哪一天、什么天"：五张卡不是一个菜单的五个选项，
-      // 是五个不同日子的记录。数据与局内雾感、出击简报同源（art-direction.ts）。
-      const world = artProfile(entry.id)
-      body.appendChild(mk('span', 'dk-map__when', `${world.date} · ${world.weather}`))
+      // 这张图在世界上是"哪一天的几点"：五张卡不是一个菜单的五个选项，
+      // 是五个不同日子的记录。日期与局内雾感同源（art-direction.ts），
+      // 钟点跟着上面的时段选择一起变 —— 玩家在按下出击之前就该看到"这局是几点"。
+      const when = mk('span', 'dk-map__when', mapWhenLabel(entry.id))
+      mapWhenEls.set(entry.id, when)
+      body.appendChild(when)
       const meta = mk('span', 'dk-map__meta')
       meta.appendChild(mk('span', 'dk-map__threat', '威胁 ' + entry.threat))
       body.appendChild(meta)
@@ -1890,6 +1981,7 @@ export function createMenu(root: HTMLElement, options: MenuOptions): Menu {
     pane.appendChild(grid)
     syncPrimary()
     syncTraits()
+    syncTimeBand()
     setDeployStep(deployStep)
   }
 
@@ -3310,7 +3402,9 @@ function writeBuild(build: WeaponBuild): void {
     stageDesc.textContent = entry.desc
     const contract = contractOf(clampContract(deployState.contract))
     stageBrief.textContent = deployBrief(entry.id, contract.id === CONTRACT_NONE ? null : contract.name)
-    stageState.textContent = '潜 入 中 · · ·'
+    // 黑场是玩家进局前看到的最后一屏：把"几点进"也写上去，进去之后发现是
+    // 白天还是夜里就不该是意外。
+    stageState.textContent = `${TIME_BAND_LABEL[deployState.timeBand].hour} · 潜 入 中 · · ·`
   }
 
   function beginDeploy(): void {
@@ -3333,6 +3427,7 @@ function writeBuild(build: WeaponBuild): void {
     if (identity) {
       config.nickname = identity.nickInput.value.trim().slice(0, 16)
       config.matchId = identity.matchInput.value.trim().slice(0, 32) || 'default'
+    config.timeBand = deployState.timeBand
     config.contract = clampContract(deployState.contract)
     config.extras = deployState.extras & 3
     config.attachment = clampAttachment(deployState.attachment)

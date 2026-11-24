@@ -63,6 +63,7 @@ import {
   type LevelDef,
   type LootItem,
   type LootPacket,
+  type MatchTimeBand,
   type ObjectivePacket,
   type ProfilePacket,
   type PlayerInput,
@@ -244,6 +245,13 @@ export interface GameOptions {
   squad?: number
   /** 队伍 id：同 party 的玩家强制同队并共享出生点。 */
   partyId?: string
+  /**
+   * 大厅选的时段（07:00 / 19:00）。
+   *
+   * 三处用它：随 Hello 告诉服务端"本局抽哪个天气池"、构造时先把光照切过去
+   * （否则白天局开局会先黑一秒等目标包）、重连时沿用同一个选择。
+   */
+  timeBand?: MatchTimeBand
   /** 主武器多槽位 build（塔科夫式工作台）。 */
   build?: WeaponBuild
   /**
@@ -511,6 +519,11 @@ export class Game {
       now: 0,
     }
     this.renderer = new Renderer(options.container, options.level)
+    // 客户端在握手之前就按大厅的时段建好了场景：目标包最早 1Hz 才到，不预置
+    // 的话选白天的玩家会先看到一秒黑夜，再"日出"一次 —— 一次进场闪两次光。
+    // 收到目标包后 setDaylight 仍会按服务端真实 modifier 再对齐一次（重连、
+    // 同房间别人定的时段都以服务端为准）。
+    if (options.timeBand === 'day') this.renderer.setDaylight(true)
     // 配件外观在渲染器建好后立刻生效：它只影响枪模上的镜筒/消音器，
     // 数值效果在服务端与 updateCamera 里各自处理。
     this.renderer.setWeaponAttachment(this.attachment)
@@ -674,6 +687,7 @@ export class Game {
       this.options.squad ?? 0,
       this.options.partyId ?? '',
       this.options.build,
+      this.options.timeBand ?? null,
       {
       onWelcome: (info) => {
         this.myId = info.playerId
