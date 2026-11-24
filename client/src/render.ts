@@ -579,6 +579,18 @@ export class Renderer {
    */
   private readonly viewScene: Scene
   private readonly viewCamera: PerspectiveCamera
+  /**
+   * 武器棚拍灯。它们是**恒定**照度 —— 只有这样，夜里枪管/护木/机匣的分界才
+   * 读得出来。但恒定的代价是：整套武器层不随环境变暗，夜里手臂会变成两根
+   * 发亮的长条（实拍里就是两根卡其色木棍横在画面上）。
+   *
+   * 所以单独留一个昼夜倍率：白天 1.0、夜里 0.66。只压武器层，不碰世界光。
+   */
+  private readonly vmKey: DirectionalLight
+  private readonly vmFill: DirectionalLight
+  private readonly vmRim: DirectionalLight
+  private readonly vmFront: DirectionalLight
+  private readonly vmAmbient: AmbientLight
   /** `?show=weapon` 的棚拍背景：没有它，枪身与纯黑背景同值，细节无法验收。 */
   private weaponBackdrop: Mesh | null = null
   /** HDR 后处理管线：世界 RT → 泛光 → 合成 → FXAA。 */
@@ -901,21 +913,29 @@ export class Renderer {
     this.viewScene.add(this.viewCamera)
     // 枪身底色改成深发蓝钢/深胡桃木后，照度要相应抬高，否则夜里整把枪
     // 退成一块黑剪影。总照度约 3.8，金属仍有足够的暗部，不会冲成塑料白。
-    this.viewScene.add(new AmbientLight(0x9fb4cc, 0.30))
+    const vmAmbient = new AmbientLight(0x9fb4cc, 0.30)
+    this.viewScene.add(vmAmbient)
+    this.vmAmbient = vmAmbient
     const vmKey = new DirectionalLight(0xffe9cf, 1.75)
     vmKey.position.set(-0.7, 1.3, 0.9)
     this.viewScene.add(vmKey)
+    this.vmKey = vmKey
     const vmFill = new DirectionalLight(0x8fb2e0, 0.7)
     vmFill.position.set(1.0, -0.3, 0.5)
     this.viewScene.add(vmFill)
+    this.vmFill = vmFill
     const vmRim = new DirectionalLight(0xcfe2ff, 0.85)
     vmRim.position.set(0.7, 0.5, -1.6)
     this.viewScene.add(vmRim)
+    this.vmRim = vmRim
     // 正面补光：枪的可见面朝 +Z（镜头方向），主光从左后方来，右/正面只剩
     // 环境光时整把枪会掉黑。一盏低强度正面光只抬可见面，不改变形体关系。
     const vmFront = new DirectionalLight(0xdfe8ff, 0.80)
     vmFront.position.set(0.1, 0.35, 1.4)
     this.viewScene.add(vmFront)
+    this.vmFront = vmFront
+    // 初始按当前昼夜落一次照度（isDay 默认 false = 夜）。
+    this.applyViewLighting()
 
     // 天空与光照整块交给 atmosphere.ts：夜空球（月亮/星点/云带/地平线余烬）、
     // 月光 + 天空散射 + 跟随镜头的边缘光、贴地低雾、萤火虫、暗角后期。
@@ -3330,9 +3350,27 @@ export class Renderer {
    * 同一张图用同一份几何，只换光：太阳/月亮颜色、天空色带、环境光、曝光。
    * 天气（雾量/雨/怪量）仍由 modifier 决定，两者独立组合。
    */
+  /**
+   * 武器层昼夜照度。
+   *
+   * 棚拍灯恒定是"夜里也读得出枪管/机匣分界"的前提；代价是手臂不随环境变暗，
+   * 夜里比整个世界亮一大截，读成两根发亮的木棍。这里只缩放 viewScene 的
+   * 灯与环境反射，世界光照一律不动 —— 夜里手臂/袖子仍可见，但不再"发光"。
+   */
+  private applyViewLighting(): void {
+    const k = this.isDay ? 1 : 0.66
+    this.vmAmbient.intensity = 0.30 * k
+    this.vmKey.intensity = 1.75 * k
+    this.vmFill.intensity = 0.70 * k
+    this.vmRim.intensity = 0.85 * k
+    this.vmFront.intensity = 0.80 * k
+    this.viewScene.environmentIntensity = this.isDay ? 1.0 : 0.72
+  }
+
   setDaylight(day: boolean): void {
     if (this.isDay === day) return
     this.isDay = day
+    this.applyViewLighting()
     this.atmo.setDaylight(day)
     this.post.setFogOrb(day, this.art.lightScale)
     const fog = this.scene.fog

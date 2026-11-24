@@ -744,8 +744,12 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
       specular: 0.03,
       map: kit.textures.leather,
     }),
-    // 袖子的布是粗呢，不是皮：更暗、更哑，避免在暖色棚灯下变成一块浅棕木板。
-    sleeve: kit.toon(0x15140f, { hatch: 0.16, specular: 0.012 }),
+    // 袖子的布是粗呢，不是皮：哑光、比手套暗一档，避免在暖色棚灯下变成一块浅棕木板。
+    //
+    // 但不能暗到 0x15140f（约 21/20/15）：第一人称前臂长期占据画面下方两角，
+    // 深灰在日光场景里直接被读成两根黑色剪影条 —— 实测截图里手臂就是两块纯黑。
+    // 这里取深橄榄褐，再把 rim 提到 0.14，让袖子在逆光/暗墙前也有一条轮廓。
+    sleeve: kit.toon(0x403b2d, { hatch: 0.18, specular: 0.025, rim: 0.10, emissive: 0.07 }),
   }
   // 对象空间细节：枪/手会跟着相机动，世界空间噪声会在枪身上流动，
   // 所以颗粒、积垢、边缘露白都按零件自身坐标算（见 model-detail.ts）。
@@ -756,7 +760,7 @@ export function createViewmodel(kit: ViewmodelKit): Viewmodel {
   applyModelDetail(mats.blade, { pattern: 'metal', scale: 320, grain: 0.18, cavity: 0.35, wear: 0.6 })
   applyModelDetail(mats.glove, { pattern: 'leather', scale: 120, grain: 0.40, cavity: 0.42, wear: 0.14, wearColor: 0x8a6a4e })
   applyModelDetail(mats.gloveDark, { pattern: 'leather', scale: 140, grain: 0.36, cavity: 0.5, wear: 0.12, wearColor: 0x6a4c38 })
-  applyModelDetail(mats.sleeve, { pattern: 'leather', scale: 200, grain: 0.30, cavity: 0.35, wear: 0.06 })
+  applyModelDetail(mats.sleeve, { pattern: 'leather', scale: 150, grain: 0.24, cavity: 0.30, wear: 0.10, wearColor: 0x5a5444 })
 
   // 写实档不再给枪身描边，但准星/照门必须保留一圈细线：它们只有几毫米宽，
   // 在暗墙/机匣上没有任何轮廓就真的"看不见"了。Renderer 只认这个标记。

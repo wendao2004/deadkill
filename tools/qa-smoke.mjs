@@ -9,7 +9,7 @@
  *
  * 用法：
  *   node tools/qa-smoke.mjs
- *   node tools/qa-smoke.mjs --url http://127.0.0.1:5173/
+ *   node tools/qa-smoke.mjs --url http://localhost:5173/
  *
  * 退出码：0 = 全部步骤通过；1 = 某一步失败；2 = 环境/启动错误。
  *
@@ -25,7 +25,9 @@ import { join } from 'node:path'
 import { gpuLaunchArgs, installChromeCleanup, isSoftwareGpu, killChromeTree } from './chrome-flags.mjs'
 
 const CHROME = process.env.CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe'
-const url = readFlag('--url') ?? 'http://127.0.0.1:5173/'
+// 用 `localhost` 而不是 `127.0.0.1`：Vite 在 IPv6 优先的机器上只监听 `::1`，
+// 写死 IPv4 会让冒烟在"页面明明开着"的情况下直接 fetch failed。
+const url = readFlag('--url') ?? 'http://localhost:5173/'
 const port = 9300 + Math.floor(Math.random() * 500)
 const profile = mkdtempSync(join(tmpdir(), 'dkqa-smoke-'))
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

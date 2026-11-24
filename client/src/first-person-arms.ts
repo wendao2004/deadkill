@@ -157,16 +157,20 @@ export function createFirstPersonArms(mats: WeaponMaterialSet): FirstPersonArms 
   sleeve.depthTest = false
   sleeve.depthWrite = false
   // 前臂：腕细肘粗；上臂再粗一档，只露出画面外的一小截。
-  const rightFarm = buildLimb(0.026, 0.040, sleeve)
-  const rightArm = buildLimb(0.040, 0.054, sleeve)
-  const leftFarm = buildLimb(0.026, 0.040, sleeve)
-  const leftArm = buildLimb(0.040, 0.054, sleeve)
+  //
+  // 半径在 0.3m 的观察距离上被放大得很厉害：0.040 的肘部半径在 65° FOV 下
+  // 就是画面高度的一成多，两根加起来正好是"两块黑板"。收细到 0.034 仍然
+  // 有体积，但不再把地面挡掉。
+  const rightFarm = buildLimb(0.024, 0.034, sleeve)
+  const rightArm = buildLimb(0.034, 0.046, sleeve)
+  const leftFarm = buildLimb(0.024, 0.034, sleeve)
+  const leftArm = buildLimb(0.034, 0.046, sleeve)
   const limbs = [rightFarm, rightArm, leftFarm, leftArm]
   for (const limb of limbs) limb.renderOrder = 10
   root.add(...limbs)
 
   // 卷起的袖口：前臂靠肘那一端的一圈布，遮住两段袖子的接缝。
-  const cuffGeo = new CylinderGeometry(0.044, 0.044, 0.040, 14, 1, true)
+  const cuffGeo = new CylinderGeometry(0.038, 0.038, 0.040, 14, 1, true)
   const cuffs = [rightFarm, leftFarm].map(() => {
     const mesh = new Mesh(cuffGeo, sleeve)
     mesh.renderOrder = 10
@@ -175,7 +179,19 @@ export function createFirstPersonArms(mats: WeaponMaterialSet): FirstPersonArms 
   })
   root.add(...cuffs)
 
-  const geometries = [...limbs.map((mesh) => mesh.geometry), cuffGeo]
+  // 腕箍：手套是棕色的、前臂是深色布料，两者之间原本是一道硬断层 ——
+  // 近景看起来像"棕色积木浮在管子前面"。一圈窄袖箍压在腕口，手和前臂
+  // 才读成同一条肢体。
+  const wristGeo = new CylinderGeometry(0.030, 0.0325, 0.036, 12, 1, true)
+  const wristWraps = [0, 1].map(() => {
+    const mesh = new Mesh(wristGeo, sleeve)
+    mesh.renderOrder = 12
+    mesh.castShadow = false
+    return mesh
+  })
+  root.add(...wristWraps)
+
+  const geometries = [...limbs.map((mesh) => mesh.geometry), cuffGeo, wristGeo]
   const handMeshes: Mesh[] = []
   for (const hand of [rightHand, leftHand]) {
     hand.traverse((node) => {
@@ -184,9 +200,13 @@ export function createFirstPersonArms(mats: WeaponMaterialSet): FirstPersonArms 
   }
 
   /** 相机空间里"肘垂在身侧"的偏移：向外、向下、略向身后。 */
-  const ELBOW_OFFSET = [new Vector3(0.185, -0.245, 0.150), new Vector3(-0.195, -0.235, 0.130)]
+  //
+  // 肘点决定前臂在屏幕上的斜率。肘点越靠内（x 小）前臂越接近水平，就会
+  // 变成一根横穿画面的斜杠；越靠外靠下，前臂越接近竖直，让出中间的视野。
+  // 代价是肘部更快出画，但第一人称本来也看不到肘。
+  const ELBOW_OFFSET = [new Vector3(0.255, -0.400, 0.130), new Vector3(-0.265, -0.390, 0.115)]
   /** 上臂从肘继续往画面外/身后走。 */
-  const SHOULDER_OFFSET = [new Vector3(0.080, -0.245, 0.195), new Vector3(-0.090, -0.235, 0.185)]
+  const SHOULDER_OFFSET = [new Vector3(0.075, -0.215, 0.205), new Vector3(-0.085, -0.205, 0.195)]
 
   const setLimb = (mesh: Mesh, from: Vector3, to: Vector3): void => {
     _dir.subVectors(to, from)
@@ -244,12 +264,18 @@ export function createFirstPersonArms(mats: WeaponMaterialSet): FirstPersonArms 
       const wrist = placeHand(hand, anchor, gun, offset)
       _w.copy(wrist).add(ELBOW_OFFSET[side]!)
       const shoulder = _e.copy(_w).add(SHOULDER_OFFSET[side]!)
-      setLimb(side === 0 ? rightFarm : leftFarm, _w, wrist)
+      const forearm = side === 0 ? rightFarm : leftFarm
+      setLimb(forearm, _w, wrist)
       setLimb(side === 0 ? rightArm : leftArm, shoulder, _w)
       const cuff = cuffs[side]!
       cuff.visible = true
       cuff.position.copy(_w)
-      cuff.quaternion.copy(side === 0 ? rightFarm.quaternion : leftFarm.quaternion)
+      cuff.quaternion.copy(forearm.quaternion)
+      // 腕箍贴着腕点，轴向跟当前前臂一致：它盖住的是"手套腕口 ↔ 袖子"那道缝。
+      const wrap = wristWraps[side]!
+      wrap.visible = true
+      wrap.position.copy(wrist)
+      wrap.quaternion.copy(forearm.quaternion)
     }
 
     place(0, rightHand, hands.right, 0)
@@ -261,6 +287,7 @@ export function createFirstPersonArms(mats: WeaponMaterialSet): FirstPersonArms 
       leftFarm.visible = false
       leftArm.visible = false
       cuffs[1]!.visible = false
+      wristWraps[1]!.visible = false
     }
   }
 

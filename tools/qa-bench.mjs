@@ -2,7 +2,7 @@
  * 固定路径基准：`?bench=1` 绕玩家 360° 巡游 600 帧，读 __bench。
  *
  * 用法：
- *   node tools/qa-bench.mjs --url "http://127.0.0.1:5173/?bench=1&q=quality&seed=4207&noaudio=1"
+ *   node tools/qa-bench.mjs --url "http://localhost:5173/?bench=1&q=quality&seed=4207&noaudio=1"
  *   node tools/qa-bench.mjs --p99 22 --avg 15
  *
  * 软件渲染（SwiftShader/llvmpipe/软件）只打印警告，不按硬件阈值失败：
@@ -21,7 +21,8 @@ const readFlag = (name) => {
 }
 const url =
   readFlag('--url') ??
-  'http://127.0.0.1:5173/?bench=1&q=performance&seed=4207&noaudio=1&scale=1&dt=16.67'
+  // `localhost` 而非 `127.0.0.1`：Vite 在 IPv6 优先的机器上只监听 `::1`。
+  'http://localhost:5173/?bench=1&q=performance&seed=4207&noaudio=1&scale=1&dt=16.67'
 const width = Number(readFlag('--w') ?? 1280)
 const height = Number(readFlag('--h') ?? 720)
 const p99Limit = Number(readFlag('--p99') ?? 25)
