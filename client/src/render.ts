@@ -148,6 +148,9 @@ const MATERIAL_TINT: Record<string, { tint: number; amount: number }> = {
   mud: { tint: 0x2a2b1c, amount: 0.45 },
   metal: { tint: 0x2c2a20, amount: 0.32 },
   foliage: { tint: 0x1d2a14, amount: 0.4 },
+  // 树皮比墙体更冷更灰：木墙是"刚锯开的板材"，树皮是风吹日晒的旧壳。
+  // 两者如果共用一档暖褐，近景里那根 5m 的树干会和身后的木栅栏同色。
+  bark: { tint: 0x1f2422, amount: 0.42 },
 }
 
 /**
@@ -164,6 +167,12 @@ const MATERIALS: Record<string, { color: number; surface: ComicSurface; specular
   // 金属压暗一档：0x7f8a95 在夜间暖光下会洗成近白，读不出"铁"而像石膏。
   metal: { color: 0x66707a, surface: 'metal', specular: 0.30, rim: 0.1 },
   foliage: { color: 0x5f7248, surface: 'foliage', specular: 0, rim: 0.02 },
+  /**
+   * 树皮。没有自己的表面函数，借用 wood 的板条图案：0.3m 的板宽放在一根
+   * 0.6m 粗的圆柱上，正好读成两三道竖向的树皮沟。真正让它成为树皮的是
+   * 色相 —— 比墙体冷、比墙体暗一档半。
+   */
+  bark: { color: 0x4b4238, surface: 'wood', specular: 0.015, rim: 0.06 },
 }
 
 /**
@@ -567,6 +576,144 @@ function canopyGeometry(brush: BoxBrush): BufferGeometry {
   return geo
 }
 
+// ------------------------------------------------------------------ 树干
+
+/**
+ * 找出"树干"盒刷：细长方柱，而且正上方确实挂着一团树冠。
+ *
+ * 关卡里的树是 `BrushSet.tree()` 造的两块：0.8m 方柱（wood）+ 立方树冠
+ * （foliage）。树冠会被棱球替换、GLB 树加载后整层隐藏，**方柱却一直在**。
+ * 于是每次进沼泽，画面里都立着几根 5m 高、带企口板条的"巨型冰棍棒"——
+ * 木墙的板条+压条图案放大到一根 0.8m 宽的柱子上，读起来是集装箱侧板。
+ *
+ * 返回值里 `false` 表示"这是一根没有冠的界树"。农场那一区还有 8 根这样的
+ * 实体柱（`zone_farm.ts` 的 stumps 表，注释写着"叶子由客户端装饰"，但客户端
+ * 一直没补）—— 它们同样要换圆柱，只是冠得由这里补上。
+ *
+ * 判据只认木柱：同样细长的灯杆、旗杆、篱笆桩是金属/石头的，本来就该是方的。
+ * 高度不足 3m 的木柱是**树桩**，树桩就该是一截矮方墩。
+ */
+function trunkBrushes(level: LevelDef): Map<BoxBrush, boolean> {
+  const crowns = level.boxes.filter((b) => b.material === 'foliage' && b.hy >= 1)
+  const out = new Map<BoxBrush, boolean>()
+  for (const b of level.boxes) {
+    if ((b.material ?? 'wood') !== 'wood') continue
+    if (Math.max(b.hx, b.hz) > 0.62 || Math.abs(b.hx - b.hz) > 0.12) continue
+    const height = b.hy * 2
+    if (height < 3) continue
+    const top = b.y + b.hy
+    let crowned = false
+    for (const c of crowns) {
+      if (Math.abs(c.x - b.x) > 0.6 || Math.abs(c.z - b.z) > 0.6) continue
+      // 冠底必须压在柱顶附近：树冠离柱顶差半米以内才算同一棵树。
+      if (Math.abs(c.y - c.hy - top) < 1.4) {
+        crowned = true
+        break
+      }
+    }
+    out.set(b, crowned)
+  }
+  return out
+}
+
+/**
+ * 一根树干的几何：锥形圆柱 + 每圈半径抖动。
+ *
+ * 为什么不直接用 CylinderGeometry：机器车出来的圆柱是完美同心圆，配上
+ * 齿状阴影会读成水泥管。沿高度和角度做 ±12% 的半径抖动（按盒子坐标取
+ * 确定性种子，同一棵树每局一样），剪影才开始像"长出来的东西"。
+ *
+ * 7 边 × 3 段 = 42 个三角形（含两端环），两端不封口：下端埋在土里，上端
+ * 要么在树冠里、要么在 GLB 树的树干里，都看不见。
+ */
+function trunkGeometry(brush: BoxBrush): BufferGeometry {
+  const height = brush.hy * 2
+  const seed = brush.x * 12.9898 + brush.z * 78.233
+  const rBase = Math.min(brush.hx, brush.hz) * 0.74
+  // 收分：树根粗、树梢细。0.5 的收分比是照着"离地 5m 处的白蜡树"写的。
+  const geo = new CylinderGeometry(rBase * 0.52, rBase, height, 7, 3, true)
+  const pos = geo.getAttribute('position') as Float32BufferAttribute
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const y = pos.getY(i)
+    const z = pos.getZ(i)
+    const r = Math.hypot(x, z)
+    if (r < 1e-4) continue
+    const angle = Math.atan2(z, x)
+    // 抖动只跟"角度 + 高度"走，于是同一条竖棱上的顶点一起进退，不会把圆柱
+    // 撕成锯齿。
+    const wobble =
+      Math.sin(seed + angle * 2.3 + y * 1.7) * 0.5 + Math.sin(seed * 1.7 + angle * 5.1 - y * 0.9) * 0.5
+    const k = 0.88 + wobble * 0.12
+    pos.setXYZ(i, x * k, y, z * k)
+  }
+  pos.needsUpdate = true
+  geo.computeVertexNormals()
+  // 原点挪到树根，再绕根轻微歪一点：直上直下的杆子是电线杆，不是树。
+  geo.translate(0, height / 2, 0)
+  geo.rotateX(Math.sin(seed * 0.7) * 0.035)
+  geo.rotateZ(Math.cos(seed * 0.9) * 0.035)
+  geo.translate(brush.x, brush.y - brush.hy, brush.z)
+  return geo
+}
+
+/**
+ * 界树的冠：三层锥体。
+ *
+ * 不能用 `canopyGeometry` 的棱球 —— 那套是给"只有 4 个面的树冠盒刷"兜底的，
+ * 在 8m 距离上棱球的 60 个面会读成一团揉皱的彩纸。这张图的林带全是针叶，
+ * 界树也得是针叶：三层锥体（下宽上窄、层间留缝）在同样的三角形预算下，
+ * 剪影就是一棵松。
+ */
+function scrubCrownGeometry(brush: BoxBrush): BufferGeometry {
+  const base = brush.y - brush.hy
+  const top = brush.y + brush.hy
+  const seed = brush.x * 12.9898 + brush.z * 78.233
+  // 冠从离地 1.7m 起、到柱顶以上 1.6m 收尖：一根 5m 的树，冠占 4.9m。
+  // 只给柱顶戴一顶"帽子"是错的 —— 针叶树的下部枝条本来就垂到接近地面，
+  // 露着 3m 光溜溜的杆子只会读成圣诞树插在电线杆上。
+  const y0 = base + 1.7
+  const y1 = top + 1.6
+  const span = y1 - y0
+  const tiers: [number, number, number][] = [
+    [1.9, span * 0.55, y0 + span * 0.275],
+    [1.42, span * 0.45, y0 + span * 0.55],
+    [0.95, span * 0.34, y0 + span * 0.8],
+  ]
+  const geos: BufferGeometry[] = []
+  for (let t = 0; t < tiers.length; t++) {
+    const [radius, height, y] = tiers[t]!
+    // 底面必须封口。站树下往上看，看到的是锥体的**底面**：开口锥在这一视角
+    // 下只剩一圈边缘，三层叠起来就是三片悬空的三角形纸。
+    const geo = new ConeGeometry(radius, height, 8, 2, false)
+    const pos = geo.getAttribute('position') as Float32BufferAttribute
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i)
+      const z = pos.getZ(i)
+      const r = Math.hypot(x, z)
+      if (r < 1e-4) continue
+      // 每一圈单独抖：锥面被推出不规则的褶皱，远看才有"枝条参差"的边。
+      // 振幅 ±12%：界树必须能和 GLB 松树并排站着 —— 那批树是一圈乱枝，
+      // 太规整的锥体会立刻暴露"这是程序画的"。
+      const angle = Math.atan2(z, x)
+      const k = 0.9 + 0.24 * (0.5 + 0.5 * Math.sin(seed + t * 2.7 + angle * 3.1 + pos.getY(i) * 1.9))
+      const py = pos.getY(i)
+      // 最下一圈再往下坠一点：锥体的底边如果是一条水平直线，整层就变成
+      // "一片绿色的盘子"。真实枝条的末端是参差的，把底边抖开才有垂枝感。
+      const droop = py < -height / 2 + 0.05 ? -0.26 * (0.5 + 0.5 * Math.sin(seed * 1.3 + angle * 4.1 + t)) : 0
+      pos.setXYZ(i, x * k, py + droop, z * k)
+    }
+    pos.needsUpdate = true
+    geo.computeVertexNormals()
+    geo.rotateY(seed * 0.37 + t * 0.9)
+    geo.translate(brush.x, y, brush.z)
+    geos.push(geo)
+  }
+  const merged = mergeGeometries(geos, false) ?? geos[0]!
+  for (const g of geos) if (g !== merged) g.dispose()
+  return merged
+}
+
 /** 把 `?build=brake,scope4` 这类清单翻译成一套只用于外观的 WeaponBuild。 */
 function forcedBuild(list: string): WeaponBuild {
   const slotOf: Record<string, 'muzzle' | 'sight' | 'magazine' | 'stock'> = {
@@ -726,6 +873,14 @@ export class Renderer {
   private brightness = 1
   /** 程序化树冠的独立网格：GLTF 树加载成功后隐藏它。 */
   private canopyMesh: Mesh | null = null
+  /**
+   * 程序化树干（锥形圆柱）的独立网格。
+   *
+   * 它**不**跟着树冠一起隐藏：树冠是"色块"，GLB 树的松针可以完整替代；
+   * 树干是"碰撞盒的可视对应物"，GLB 树的细树干替代不了 0.8m 宽的碰撞体，
+   * 一旦隐藏就会有半米宽的空气墙。留着它，玩家至少能看见自己撞的是什么。
+   */
+  private trunkMesh: Mesh | null = null
   /** GLTF 自然资产根节点（纯视觉）。 */
   private natureGroup: Group | null = null
   /** 程序化松树是否已经接管树木；决定 nature-assets 是否还要种一套枯树。 */
@@ -2337,9 +2492,32 @@ export class Renderer {
     const buckets = new Map<string, BufferGeometry[]>()
     // 树冠单独收集：GLTF 树加载成功后整块隐藏，避免"绿球 + 真树"重叠。
     const canopyGeos: BufferGeometry[] = []
+    // 树干也单独收：它们要换成圆柱 + 树皮材质，不能混进木墙那个桶。
+    const trunkGeos: BufferGeometry[] = []
+    // 界树的冠：这些位置在关卡里没有树冠盒刷，GLB 树也就永远不会种到这里，
+    // 所以必须由客户端永久补上 —— 它们不能进 canopyGeos，那一层会被隐藏。
+    const scrubGeos: BufferGeometry[] = []
+    const trunks = trunkBrushes(level)
     for (const brush of level.boxes) {
       // noRender：只给碰撞/判定用的隐形骨架（GLB 建筑的墙、立柱）。
       if (brush.noRender) continue
+      const crowned = trunks.get(brush)
+      if (crowned !== undefined) {
+        const geo = trunkGeometry(brush)
+        if (this.realistic) applyBoxProjection(geo, 1.2)
+        paintPanel(geo, panelTint(brush))
+        trunkGeos.push(geo)
+        if (!crowned) {
+          const crown = scrubCrownGeometry(brush)
+          if (this.realistic) applyBoxProjection(crown, this.surfaceMaps.foliage.tileMeters)
+          // 压暗 0.82：GLB 松树的 VertexColor 是深橄榄绿，而关卡 foliage 的固有色
+          // 是给"树冠盒刷"准备的亮绿。不压这一档，界树会在同一片林子里绿得发荧光。
+          const tint = panelTint(brush, true)
+          paintPanel(crown, [tint[0] * 0.82, tint[1] * 0.84, tint[2] * 0.82])
+          scrubGeos.push(crown)
+        }
+        continue
+      }
       const matKey = brush.material ?? 'wood'
       let list = buckets.get(matKey)
       if (!list) {
@@ -2388,6 +2566,59 @@ export class Renderer {
         this.levelGroup.add(mesh)
         this.canopyMesh = mesh
         this.disposables.push(merged)
+      }
+    }
+
+    // 界树的冠：单独一份 foliage 材质，永不隐藏。
+    if (scrubGeos.length > 0) {
+      const merged = mergeGeometries(scrubGeos, false)
+      for (const geo of scrubGeos) geo.dispose()
+      if (merged) {
+        const spec = MATERIALS.foliage!
+        const tint = MATERIAL_TINT.foliage!
+        const material: Material = this.realistic
+          ? this.pbrSurfaceMaterial(spec.color, spec.surface, tint.tint, tint.amount, true)
+          : this.toonMaterial(spec.color, {
+              tint: tint.tint,
+              tintAmount: tint.amount,
+              surface: spec.surface,
+              specular: spec.specular,
+              rim: spec.rim,
+              vertexColors: true,
+            })
+        const mesh = new Mesh(merged, material)
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+        this.levelGroup.add(mesh)
+        this.disposables.push(merged)
+      }
+    }
+
+    // 树干：一次合并、一份树皮材质。影子照投 —— 树影是林带唯一能在地上
+    // 读出来的东西，少了它，一排树干会像贴在背景上的贴纸。
+    if (trunkGeos.length > 0) {
+      const merged = mergeGeometries(trunkGeos, false)
+      for (const geo of trunkGeos) geo.dispose()
+      if (merged) {
+        const spec = MATERIALS.bark!
+        const tint = MATERIAL_TINT.bark!
+        const material: Material = this.realistic
+          ? this.pbrSurfaceMaterial(spec.color, spec.surface, tint.tint, tint.amount, true)
+          : this.toonMaterial(spec.color, {
+              tint: tint.tint,
+              tintAmount: tint.amount,
+              surface: spec.surface,
+              specular: spec.specular,
+              rim: spec.rim,
+              vertexColors: true,
+            })
+        const mesh = new Mesh(merged, material)
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+        this.levelGroup.add(mesh)
+        this.trunkMesh = mesh
+        this.disposables.push(merged)
+        if (!this.realistic) this.addInk(mesh)
       }
     }
 
