@@ -198,44 +198,79 @@ function pine(seed, { height = 7.5, spread = 2.0, tiers = 7, needles = true }) {
     // **枝条往垂下来**、**顶端是折断的**。这三件事都不需要更多三角形。
     const deadTrunkH = height * 0.9
     const lowerH = deadTrunkH * 0.55
-    part(parts, new CylinderGeometry(trunkR * 0.66, trunkR, lowerH, 8), {
-      pos: [0, lowerH / 2, 0], color: 0x3f352b, variance: 0.24, rand, mat: 'bark',
+    // 树干必须**有起伏**：8 边等径圆柱在两个面之间是直的，3m 外看就是一根
+    // 光滑的纸筒。径向抖 5cm 后剪影出现树皮的鼓包，法线也不再是一圈平面。
+    const lower = jitter(new CylinderGeometry(trunkR * 0.80, trunkR, lowerH, 9), 0.055, rand, [1, 0, 1])
+    part(parts, lower, {
+      pos: [0, lowerH / 2, 0], color: 0x38312a, variance: 0.24, rand, mat: 'bark',
     })
     // 上半段带一点倾斜：完全笔直的树干是电线杆。
     const lean = (rand() - 0.5) * 0.06
-    part(parts, new CylinderGeometry(0.10, trunkR * 0.66, deadTrunkH - lowerH, 7), {
+    const upper = jitter(
+      new CylinderGeometry(0.23, trunkR * 0.80, deadTrunkH - lowerH, 8),
+      0.04,
+      rand,
+      [1, 0, 1],
+    )
+    part(parts, upper, {
       pos: [0, lowerH + (deadTrunkH - lowerH) / 2, 0],
       rot: [0, 0, lean],
-      color: 0x4a3d30, variance: 0.2, rand, mat: 'bark',
+      color: 0x3f362c, variance: 0.2, rand, mat: 'bark',
     })
-    // 断顶：一截斜劈的残桩，比"慢慢收成一个尖"更像被风折断。
-    part(parts, new CylinderGeometry(0.045, 0.10, height * 0.075, 5), {
-      pos: [lean * deadTrunkH, deadTrunkH + height * 0.02, 0],
-      rot: [0, 0, lean + 0.28],
-      color: 0x534434, variance: 0.18, rand, mat: 'bark',
+    // 断顶：一段**粗而斜的残桩 + 两根劈裂的木刺**。原来的写法是 0.075→0.22
+    // 的小圆锥，接在收细的树干上就是一根削尖的铅笔 —— 近景一眼假。
+    part(parts, jitter(new CylinderGeometry(0.17, 0.23, height * 0.1, 6), 0.05, rand, [1, 0, 1]), {
+      pos: [lean * deadTrunkH, deadTrunkH + height * 0.05, 0],
+      rot: [0.06, 0, lean + 0.16],
+      color: 0x463c31, variance: 0.18, rand, mat: 'bark',
     })
+    for (let i = 0; i < 2; i++) {
+      const a = rand() * Math.PI * 2
+      part(parts, new CylinderGeometry(0.012, 0.055, height * (0.12 + rand() * 0.08), 4), {
+        pos: [
+          lean * deadTrunkH + Math.cos(a) * 0.12,
+          deadTrunkH + height * 0.09,
+          Math.sin(a) * 0.12,
+        ],
+        rot: [Math.cos(a) * 0.3, 0, lean + (rand() - 0.5) * 0.5],
+        color: 0x4a4035, variance: 0.16, rand, mat: 'bark',
+      })
+    }
 
     // 枝条：下垂（tilt 取负）+ 分叉。枝条的**根部**必须落在树干半径内，否则
     // 会看到一圈悬空的杆子绕着树干转。
-    const n = 9
+    const n = 11
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1)
-      const y = height * (0.26 + t * 0.6)
-      const len = spread * (1.55 + rand() * 0.75) * (1 - t * 0.35)
+      const y = height * (0.30 + t * 0.56)
+      // 枯枝比活枝短得多：旧参数给出 4m 长的近乎水平的杆子，配上 7m 树干
+      // 就是一根电线杆挂着几副横担。真实枯松的枝条向下垂 30~50 度，越往上越短。
+      const len = spread * (0.95 + rand() * 0.55) * (1 - t * 0.5)
       const ang = i * 2.39996 + (rand() - 0.5) * 0.6 // 黄金角：枝条不扎堆
-      const droop = 0.06 + t * 0.22 + rand() * 0.16
+      const droop = 0.34 + t * 0.24 + rand() * 0.22
       const trunkAtY = trunkR * (1 - 0.62 * Math.min(1, y / deadTrunkH))
-      const r0 = 0.105 - t * 0.055
+      const r0 = 0.092 - t * 0.046
       const branch = new CylinderGeometry(r0 * 0.35, r0, len, 4)
       branch.rotateZ(Math.PI / 2 + droop)
       branch.translate(len / 2, 0, 0)
       part(parts, branch, {
         pos: [Math.max(0, trunkAtY - 0.12), y, 0],
         rot: [0, -ang, 0],
-        color: 0x4a4034, variance: 0.22, rand, mat: 'bark',
+        color: 0x3d342c, variance: 0.22, rand, mat: 'bark',
       })
       // 分叉：每根主枝 1~2 根更细的侧枝，往下垂得更多。
+      //
+      // 侧枝的根部必须落在**主枝的轴线上**。主枝经过 rotateZ(π/2+droop) 之后
+      // 是朝 −X 伸展的，旧代码按 +X 偏移，于是每根侧枝都悬在树干另一侧的空气里
+      // —— 中景里就是一堆绕着树飘的木棍。
       const forks = 1 + (rand() < 0.55 ? 1 : 0)
+      const rootX = Math.max(0, trunkAtY - 0.12)
+      // 主枝先绕 Z 压低、再绕 Y 转到方位角，所以它的轴向在树干坐标系里是
+      // (−cos·cosAng, −sin, −cos·sinAng)。侧枝沿这个轴偏移才能接在枝条上；
+      // 只减 X 不减 Z，侧枝就会横着飘出枝条之外。
+      const dirX = -Math.cos(droop) * Math.cos(ang)
+      const dirY = -Math.sin(droop)
+      const dirZ = -Math.cos(droop) * Math.sin(ang)
       for (let k = 0; k < forks; k++) {
         const at = len * (0.45 + rand() * 0.35)
         const flen = len * (0.32 + rand() * 0.22)
@@ -244,9 +279,9 @@ function pine(seed, { height = 7.5, spread = 2.0, tiers = 7, needles = true }) {
         fork.rotateZ(Math.PI / 2 + droop + 0.35 + rand() * 0.3)
         fork.translate(flen / 2, 0, 0)
         part(parts, fork, {
-          pos: [Math.max(0, trunkAtY - 0.12) + Math.cos(droop) * at, y - Math.sin(droop) * at, 0],
+          pos: [rootX + dirX * at, y + dirY * at, dirZ * at],
           rot: [0, -fang, 0],
-          color: 0x4a4034, variance: 0.22, rand, mat: 'bark',
+          color: 0x3d342c, variance: 0.22, rand, mat: 'bark',
         })
       }
     }
@@ -297,7 +332,7 @@ function grassClump(seed) {
     const dz = Math.sin(ang)
     const sx = -dz
     const sz = dx
-    const w0 = 0.022 + rand() * 0.011
+    const w0 = 0.029 + rand() * 0.013
     const w1 = w0 * 0.62
     const w2 = w0 * 0.08
     const ym = h * 0.58
@@ -305,9 +340,9 @@ function grassClump(seed) {
     const mz = bz + dz * lean * 0.45
     const tx = bx + dx * lean
     const tz = bz + dz * lean
-    const dark = 0x272c1c
+    const dark = 0x252b1c
     const mid = 0x3c4626
-    const tip = 0x6a7442
+    const tip = 0x5e6739
     const baseL = [bx - sx * w0, 0, bz - sz * w0]
     const baseR = [bx + sx * w0, 0, bz + sz * w0]
     const midL = [mx - sx * w1, ym, mz - sz * w1]

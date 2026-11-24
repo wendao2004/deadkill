@@ -158,7 +158,7 @@ const MATERIAL_TINT: Record<string, { tint: number; amount: number }> = {
  */
 const MATERIALS: Record<string, { color: number; surface: ComicSurface; specular: number; rim: number }> = {
   wood: { color: 0x8d7154, surface: 'wood', specular: 0.04, rim: 0.03 },
-  stone: { color: 0x5a6169, surface: 'stone', specular: 0.05, rim: 0.035 },
+  stone: { color: 0x605e56, surface: 'stone', specular: 0.05, rim: 0.035 },
   mud: { color: 0x746349, surface: 'mud', specular: 0.025, rim: 0.02 },
   // 金属压暗一档：0x7f8a95 在夜间暖光下会洗成近白，读不出"铁"而像石膏。
   metal: { color: 0x66707a, surface: 'metal', specular: 0.30, rim: 0.1 },
@@ -175,7 +175,10 @@ const MATERIALS: Record<string, { color: number; surface: ComicSurface; specular
  */
 const GROUND_PALETTE: Record<string, { color: number; tint: number; tintAmount: number; surface: ComicSurface; specular: number }> = {
   /** 沼泽泥地：湿冷偏绿的深棕。 */
-  mud: { color: 0x51493a, tint: 0x2a2c1c, tintAmount: 0.5, surface: 'mud', specular: 0.03 },
+  // 沼泽泥地：湿冷偏绿的深棕。压得太狠（0x51493a × 0x2a2c1c@0.5）时，
+  // 背光处的地面亮度只剩 0.03 —— 泥地的干裂/湿洼是**乘性**细节，底子一黑
+  // 就全被乘没了，脚下读成一块纯色板。抬一档底色、减一点压暗量保住细节。
+  mud: { color: 0x585041, tint: 0x2c2e1f, tintAmount: 0.44, surface: 'mud', specular: 0.03 },
   /** 石地/采石场：冷灰，比泥地亮一档，碎石的亮面才站得住。 */
   stone: { color: 0x63655e, tint: 0x232830, tintAmount: 0.44, surface: 'stone', specular: 0.05 },
   /** 车站木栈：偏暖的旧木，尘埃感靠 tint 的暖棕。 */
@@ -1546,11 +1549,14 @@ export class Renderer {
       // 外壳统一走当前画风的材质：屋顶因此吃到"高处朝上木面 → 瓦片"的
       // 函数图案，而不是一张与墨线场景打架的 PBR 贴图。
       const materials = {
+        // 屋顶走 stone 表面（横向砌层 = 石板瓦），不再用 wood：
+        // 木纹让屋顶和木墙同一个色调，远景里屋顶直接融进墙体，建筑的
+        // 剪影就只剩一个方盒子。石板瓦还顺手拿到冷色调，和暖木墙分开。
         roof: this.surfaceMaterial(VILLAGE_COLORS.roof, {
-          hatch: 0.32,
-          surface: 'wood',
-          specular: 0.03,
-          rim: 0.04,
+          hatch: 0.34,
+          surface: 'stone',
+          specular: 0.05,
+          rim: 0.09,
         }),
         wood: this.surfaceMaterial(VILLAGE_COLORS.wood, {
           hatch: 0.3,
@@ -1566,6 +1572,13 @@ export class Renderer {
           hatch: 0.22,
           surface: 'metal',
           specular: 0.2,
+        }),
+        // 檐板/角柱：比墙体（0x4c3928）暗两档的熟褐。它们的作用是给盒子
+        // 画"交接线"，所以必须靠明度拉开，而不是靠色相。
+        trim: this.surfaceMaterial(VILLAGE_COLORS.trim, {
+          hatch: 0.26,
+          surface: 'wood',
+          specular: 0.02,
         }),
       }
       const group = new Group()
@@ -1598,8 +1611,11 @@ export class Renderer {
       // 作者导入的模型保留自己的材质：它们可能是带贴图的 authored 资产，
       // 强行换成顶点色卡通材质会直接变白/变黑。
       if (asset.tags.includes('imported')) continue
-      const surface: ComicSurface =
-        asset.tags.includes('tree') || asset.tags.includes('grass')
+      // 枯树走 wood：它的可见部分全是**树皮**，用 foliage 的叶簇斑块会让
+      // 树干变成一块发绿的迷彩。
+      const surface: ComicSurface = asset.tags.includes('dead')
+        ? 'wood'
+        : asset.tags.includes('tree') || asset.tags.includes('grass')
           ? 'foliage'
           : asset.tags.includes('building')
             ? 'wood'
@@ -1650,6 +1666,10 @@ export class Renderer {
         // "方块绿球 + 真松树"叠在一起。
         if (this.canopyMesh) this.canopyMesh.visible = false
         if (this.natureGroup) this.natureGroup.visible = false
+        // props 里那套程序化枯树也要退场：`loadNature()` 在 generatedTrees
+        // 为真时直接 return，永远不会走到 setNatureVisible(false)，于是
+        // 5 棵"光滑圆锥"枯树会和 pine_dead.glb 并排站着。只藏树，不藏芦苇。
+        this.props.setTreesVisible(false)
         this.generatedTrees = true
       }
     } catch (error) {

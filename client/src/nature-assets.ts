@@ -33,6 +33,7 @@ import {
   type Texture,
 } from 'three'
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { terrainHeightAt, type LevelDef } from '@dk/shared'
 import { tintInstances } from './procedural-tint.ts'
 
@@ -121,8 +122,28 @@ export async function loadNatureAssets(): Promise<NatureAssets> {
   }
 
   const loader = new FBXLoader()
+  /**
+   * 草簇优先用程序化的 `grass_clump.glb`：顶点色、实体叶片、42 三角形。
+   *
+   * 原来四张图的草全部走 `Grass_Large.fbx`，而那个 FBX **没有 uv 属性**。
+   * three 对缺 uv 的几何照样编采样器，每个片元按 (0,0) 取色 —— 一整丛草被
+   * 烘成一块纯色，正是画面里那些"荧光绿小棍"。程序化草簇没有贴图依赖，
+   * 颜色是根深梢浅的顶点色，近看是一丛、远看也不会跳。
+   */
+  const generatedGrass = await (async (): Promise<NatureModel | null> => {
+    try {
+      const url = new URL('./models/generated/grass_clump.glb', document.baseURI).href
+      const gltf = await new GLTFLoader().loadAsync(url)
+      return prepare(gltf.scene, 'grass', null, true)
+    } catch (error) {
+      console.warn('[nature] grass_clump.glb 加载失败，回退 Grass_Large.fbx', error)
+      return null
+    }
+  })()
+
   const entries = await Promise.all(
     (Object.entries(FILES) as [NatureKind, string][]).map(async ([kind, file]) => {
+      if (kind === 'grass' && generatedGrass) return [kind, generatedGrass] as const
       try {
         const url = new URL(`./models/quaternius/${file}.fbx`, document.baseURI).href
         const object = await loader.loadAsync(url)
@@ -138,7 +159,7 @@ export async function loadNatureAssets(): Promise<NatureAssets> {
   return out
 }
 
-function materialFor(kind: NatureKind, textures: AssetTextures | null): MeshStandardMaterial {
+function materialFor(kind: NatureKind, textures: AssetTextures | null, vertexColors = false): MeshStandardMaterial {
   const common = { metalness: 0, roughness: 0.95, fog: true }
   if (kind === 'rock') {
     return new MeshStandardMaterial({
@@ -150,6 +171,16 @@ function materialFor(kind: NatureKind, textures: AssetTextures | null): MeshStan
     })
   }
   if (kind === 'grass') {
+    // 顶点色草簇（程序化 grass_clump.glb）：颜色烘在顶点上，不需要贴图，
+    // 也就不需要 alphaTest —— 它是**实体叶片**，不是插片。
+    if (vertexColors) {
+      return new MeshStandardMaterial({
+        ...common,
+        color: 0xffffff,
+        vertexColors: true,
+        side: DoubleSide,
+      })
+    }
     return new MeshStandardMaterial({
       ...common,
       color: 0xffffff,
@@ -180,10 +211,15 @@ function materialFor(kind: NatureKind, textures: AssetTextures | null): MeshStan
   return new MeshStandardMaterial({ ...common, color: 0x4a3a2c, roughness: 0.88 })
 }
 
-function prepare(object: Group, kind: NatureKind, textures: AssetTextures | null): NatureModel {
+function prepare(
+  object: Group,
+  kind: NatureKind,
+  textures: AssetTextures | null,
+  vertexColors = false,
+): NatureModel {
   object.updateMatrixWorld(true)
   const box = new Box3().setFromObject(object)
-  const material = materialFor(kind, textures)
+  const material = materialFor(kind, textures, vertexColors)
   const parts: ModelPart[] = []
   object.traverse((child) => {
     const mesh = child as Mesh

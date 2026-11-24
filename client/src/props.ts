@@ -82,6 +82,14 @@ export interface Props {
    * 调 false；加载失败时保持可见，作为回退。
    */
   setNatureVisible(visible: boolean): void
+  /**
+   * 只隐藏程序化**枯树与树挂**，保留芦苇。
+   *
+   * 生成资产（pine_dead.glb）接管树木的地图走这条：程序化的圆锥枯树必须先
+   * 退场，否则两套树并排站着 —— 一套有断顶和垂枝，一套是光滑的纸筒，
+   * 一眼就看出是两拨人做的。芦苇是沼泽唯一的环境标志，不能一起砍掉。
+   */
+  setTreesVisible(visible: boolean): void
   /** 天气湿度 0..1：驱动水面雨圈（骤雨才有，死寂没有）。 */
   setWetness(value: number): void
   /** 把昼夜/天气同步到水面（雾色、雾密度、亮度）。 */
@@ -185,14 +193,18 @@ export function buildProps(scene: Scene, level: LevelDef, options?: PropsOptions
   const natureRoot = new Group()
   natureRoot.name = 'procedural-nature'
   root.add(natureRoot)
+  // 枯树单独一层：生成资产接管树木时只藏这一层，芦苇继续留在水里。
+  const treeRoot = new Group()
+  treeRoot.name = 'procedural-dead-trees'
+  natureRoot.add(treeRoot)
   const reeds = swamp ? buildReeds(natureRoot, level, bag, gradientMap, rng, dens, placeable, wetness) : null
-  const trees = buildDeadTrees(natureRoot, level, bag, gradientMap, rng, Math.round(6 * dens), placeable)
+  const trees = buildDeadTrees(treeRoot, level, bag, gradientMap, rng, Math.round(6 * dens), placeable)
   buildFence(root, level, bag, gradientMap, rng, dens, placeable)
   buildBiomeProps(root, level, bag, gradientMap, rng, dens, placeable, biome)
   // 叙事静物排在群系装饰之后：它贴着墙根长，先让大件落位才不会被挤掉。
   buildNarrative(root, level, bag, gradientMap, rng, dens, placeable, biome, options?.debugStory === true)
   // 破布得挂在真的树上，所以树列表要从 buildDeadTrees 带出来。
-  buildTreeRags(natureRoot, level, bag, gradientMap, rng, trees)
+  buildTreeRags(treeRoot, level, bag, gradientMap, rng, trees)
   buildFogWalls(root, level, bag, rng, density)
   buildSearchSpots(root, level, bag, gradientMap)
 
@@ -201,6 +213,9 @@ export function buildProps(scene: Scene, level: LevelDef, options?: PropsOptions
     root,
     setNatureVisible(visible: boolean): void {
       natureRoot.visible = visible
+    },
+    setTreesVisible(visible: boolean): void {
+      treeRoot.visible = visible
     },
     setWetness(value: number): void {
       if (water) water.wet.value = Math.min(1, Math.max(0, value))
@@ -751,14 +766,16 @@ function buildReeds(
   for (const spot of spots) {
     if (accepted.length >= target) break
     if (!placeable(spot.x, spot.z)) continue
-    // 芦苇要长在水边。但也留一小撮旱地芦苇 —— 纯沿水线会长成一圈画出来的环。
-    if (wetness(spot.x, spot.z) < 0.08 && rng() > 0.2) continue
+    // 芦苇要长在水边。旱地只留极小一撮（6%），否则每个墙根都会站着一根
+    // 孤零零的绿色小棍 —— 实测 1600×900 的谷仓正面能看到四五根，像散落的
+    // 塑料草，比不长还难看。纯沿水线又会连成一圈画出来的环，所以留这一点。
+    if (wetness(spot.x, spot.z) < 0.15 && rng() > 0.06) continue
     accepted.push(spot)
   }
 
   const geo = makeReedGeometry()
   bag.add(geo)
-  const mat = makeToon(0x6f8f3e, bag, { gradientMap, side: DoubleSide, surface: 'foliage' })
+  const mat = makeToon(0x66843a, bag, { gradientMap, side: DoubleSide, surface: 'foliage' })
   patchReedSway(mat, uReedTime)
 
   const mesh = new InstancedMesh(geo, mat, Math.max(1, accepted.length))
@@ -795,16 +812,20 @@ function buildReeds(
 function makeReedGeometry(): BufferGeometry {
   const geo = new BufferGeometry()
   const positions: number[] = []
-  const blades = 3
+  // 六片叶、根部向外推 6cm：三片叶共用一个根部时，整丛在中景里收成一根
+  // 竖线；把根部推散开、叶片加到六片，才有"一丛"的宽度（仍然只有 18 个三角形）。
+  const blades = 6
   for (let b = 0; b < blades; b++) {
     const rot = (b * Math.PI) / blades
     const cos = Math.cos(rot)
     const sin = Math.sin(rot)
-    const w = 0.035
+    const w = 0.032
     const h = REED_UNIT
     const bend = (b % 2 === 0 ? 1 : -1) * 0.16
+    const ox = Math.cos(rot) * 0.06
+    const oz = Math.sin(rot) * 0.06
     const put = (x: number, y: number, z: number): void => {
-      positions.push(x * cos + z * sin, y, -x * sin + z * cos)
+      positions.push(x * cos + z * sin + ox, y, -x * sin + z * cos + oz)
     }
     const bl: [number, number, number] = [-w, 0, 0]
     const br: [number, number, number] = [w, 0, 0]
@@ -1413,21 +1434,26 @@ function specsFor(biome: Biome, level: LevelDef): PropSpec[] {
           count: Math.round(34 * big), scaleMin: 0.7, scaleMax: 1.4, sink: 0.06, ink: 1.1, tilt: 0.3,
         },
         {
-          // 蕨丛：六片斜向上的锥叶，中间一撮更暗的芯。
+          // 蕨丛：八片**压扁、外翻**的锥叶，中间一撮更暗的芯。
+          //
+          // 旧写法是 6 片又细又长的圆锥斜插着，10m 外读成"地上插着几根亮绿
+          // 小棍"，近看也不是蕨。压扁 Z 让叶片有正反面、把叶片从 0.85 缩到
+          // 0.6、再往下翻，整丛才是一个矮而散的深色团，不是针。
           geo: assemble([
-            ...Array.from({ length: 6 }, (_, i) => {
-              const a = (i / 6) * Math.PI * 2
+            ...Array.from({ length: 8 }, (_, i) => {
+              const a = (i / 8) * Math.PI * 2 + 0.3
               return paint(
-                new ConeGeometry(0.16, 0.85, 4)
-                  .rotateZ(Math.PI / 2 - 0.55)
+                new ConeGeometry(0.17, 0.62, 4)
+                  .scale(1, 1, 0.55)
+                  .rotateZ(Math.PI / 2 - 0.30)
                   .rotateY(a)
-                  .translate(Math.cos(a) * 0.34, 0.34, Math.sin(a) * 0.34),
-                0x3c5228,
+                  .translate(Math.cos(a) * 0.30, 0.26, Math.sin(a) * 0.30),
+                0x39481f,
               )
             }),
-            paint(new SphereGeometry(0.2, 6, 4).scale(1, 0.7, 1).translate(0, 0.22, 0), 0x2c3c1d),
+            paint(new SphereGeometry(0.22, 6, 4).scale(1, 0.55, 1).translate(0, 0.18, 0), 0x26331a),
           ]),
-          count: Math.round(70 * big), scaleMin: 0.8, scaleMax: 1.5, sink: 0.04, ink: 1.0, tilt: 0.2,
+          count: Math.round(70 * big), scaleMin: 0.8, scaleMax: 1.4, sink: 0.04, ink: 1.0, tilt: 0.2,
         },
         {
           // 苔石：比采石场小、比教堂圆，埋在落叶层里只露半截。
